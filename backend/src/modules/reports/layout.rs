@@ -30,6 +30,13 @@ pub struct BlockLayout {
     pub dx: f64,
     pub dy: f64,
     pub hidden: bool,
+    pub width: f64,
+    pub height: f64,
+    pub background: String,
+    pub border_color: String,
+    pub border_width: f64,
+    pub radius: f64,
+    pub texts: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -158,15 +165,46 @@ impl PageLayout {
                 }
                 let dx = clamp_num(block.dx, -1000.0, 1000.0, 0.0);
                 let dy = clamp_num(block.dy, -1000.0, 1000.0, 0.0);
-                if !block.hidden && dx.abs() < 0.005 && dy.abs() < 0.005 {
+                let width = clamp_num(block.width, 0.0, PAGE_WIDTH_MM, 0.0);
+                let height = clamp_num(block.height, 0.0, PAGE_HEIGHT_MM, 0.0);
+                let background = optional_color(&block.background);
+                let border_color = optional_color(&block.border_color);
+                let border_width = clamp_num(block.border_width, 0.0, 20.0, 0.0);
+                let radius = clamp_num(block.radius, 0.0, 100.0, 0.0);
+                let texts = block
+                    .texts
+                    .into_iter()
+                    .filter(|(text_id, _)| valid_id(text_id))
+                    .take(50)
+                    .map(|(text_id, value)| (text_id, normalize_text(&value)))
+                    .collect::<BTreeMap<_, _>>();
+
+                let is_empty = !block.hidden
+                    && dx.abs() < 0.005
+                    && dy.abs() < 0.005
+                    && width == 0.0
+                    && height == 0.0
+                    && background.is_empty()
+                    && border_width == 0.0
+                    && radius == 0.0
+                    && texts.is_empty();
+                if is_empty {
                     return None;
                 }
+
                 Some((
                     id,
                     BlockLayout {
                         dx,
                         dy,
                         hidden: block.hidden,
+                        width,
+                        height,
+                        background,
+                        border_color,
+                        border_width,
+                        radius,
+                        texts,
                     },
                 ))
             })
@@ -287,6 +325,14 @@ fn safe_image_src(value: &str) -> Option<String> {
     safe.then(|| value.to_string())
 }
 
+fn optional_color(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        return String::new();
+    }
+    safe_color(value, "")
+}
+
 fn safe_color(value: &str, fallback: &str) -> String {
     let value = value.trim();
     if value.eq_ignore_ascii_case("transparent") || value.eq_ignore_ascii_case("none") {
@@ -339,6 +385,7 @@ mod tests {
                             dx: 5000.0,
                             dy: -5000.0,
                             hidden: false,
+                            ..Default::default()
                         },
                     ),
                     (
@@ -347,6 +394,7 @@ mod tests {
                             dx: 10.0,
                             dy: 0.0,
                             hidden: false,
+                            ..Default::default()
                         },
                     ),
                 ]),

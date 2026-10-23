@@ -68,7 +68,7 @@ pub fn render_with_layout(
             format_count(metrics.narkoba.by_polres.len() as i64),
             metrics.period_label
         ),
-        &render_narkoba(metrics, content),
+        &render_narkoba(metrics, content, &ctx),
         "",
         &ctx,
     );
@@ -84,7 +84,7 @@ pub fn render_with_layout(
             format_count(metrics.green_policing.bibit),
             format_count(metrics.green_policing.area_m2)
         ),
-        &render_green(metrics, content),
+        &render_green(metrics, content, &ctx),
         "",
         &ctx,
     );
@@ -108,6 +108,7 @@ pub fn render_with_layout(
             "Masjid",
             false,
             4,
+            &ctx,
         ),
         "",
         &ctx,
@@ -132,6 +133,7 @@ pub fn render_with_layout(
             "Masjid",
             false,
             5,
+            &ctx,
         ),
         "",
         &ctx,
@@ -156,6 +158,7 @@ pub fn render_with_layout(
             "Lokasi ibadah",
             true,
             6,
+            &ctx,
         ),
         "",
         &ctx,
@@ -167,7 +170,7 @@ pub fn render_with_layout(
         "ASPIRASI WARGA · SUBUH KELILING & MINGGU KASIH",
         "Aspirasi Masyarakat",
         "Tema aspirasi yang muncul dari kegiatan Jumat Keliling, Subuh Keliling, dan Minggu Kasih.",
-        &render_aspirations(metrics, content),
+        &render_aspirations(metrics, content, &ctx),
         "",
         &ctx,
     );
@@ -178,7 +181,7 @@ pub fn render_with_layout(
         "TINDAK LANJUT ASPIRASI · KEGIATAN GABUNGAN / KRYD",
         "Menjawab Aspirasi Masyarakat",
         "Tindak lanjut lintas fungsi atas keluhan dan masukan yang disampaikan masyarakat.",
-        &render_follow_up(metrics, content),
+        &render_follow_up(metrics, content, &ctx),
         "",
         &ctx,
     );
@@ -189,7 +192,7 @@ pub fn render_with_layout(
         "AMPLIFIKASI MEDIA PER KEGIATAN",
         "Amplifikasi Media",
         "Rekap publikasi dan dokumentasi yang dilampirkan pada laporan satuan wilayah.",
-        &render_media(metrics, content, config),
+        &render_media(metrics, content, config, &ctx),
         "last-page",
         &ctx,
     );
@@ -235,43 +238,72 @@ fn render_cover(metrics: &ReportMetrics, content: &ReportContent, ctx: &DesignCo
         ));
     }
 
-    let summary = editorial(
-        &content.summary,
-        &format!(
-            "Rekap pelaksanaan Program Prioritas dan Quick Wins Kapolri periode {} di lingkungan {}. \
+    let summary_fallback = format!(
+        "Rekap pelaksanaan Program Prioritas dan Quick Wins Kapolri periode {} di lingkungan {}. \
 Data disusun dari {} baris laporan yang diimpor dari {}.",
-            metrics.period_label,
-            metrics.polda_name,
-            format_count(metrics.total_rows),
-            metrics.source_filename
-        ),
+        metrics.period_label,
+        metrics.polda_name,
+        format_count(metrics.total_rows),
+        metrics.source_filename
     );
+    let summary_text =
+        override_text(ctx, 1, "cover-summary", "body").unwrap_or_else(|| content.summary.clone());
+    let summary = editorial(&summary_text, &summary_fallback);
+
+    let polda_text = text_or(ctx, 1, "cover-top", "polda", &metrics.polda_name);
+    let doc_text = text_or(
+        ctx,
+        1,
+        "cover-top",
+        "doc",
+        "PROGRAM PRIORITAS & QUICK WINS KAPOLRI",
+    );
+    let title_text = text_or(
+        ctx,
+        1,
+        "cover-top",
+        "title",
+        "Laporan Mingguan\nPelaksanaan",
+    );
+    let period_text = text_or(ctx, 1, "cover-top", "period", &metrics.period_label);
+    let source_default = format!(
+        "Sumber data: {} · {} baris laporan",
+        metrics.source_filename,
+        format_count(metrics.total_rows)
+    );
+    let source_text = text_or(ctx, 1, "cover-top", "source", &source_default);
+    let footer_left_default = format!("LAPORAN MINGGUAN PBM · {}", metrics.polda_name);
+    let footer_left = text_or(ctx, 1, "cover-footer", "left", &footer_left_default);
+    let footer_right = text_or(ctx, 1, "cover-footer", "right", &metrics.period_label);
 
     format!(
         "<section class=\"page cover\">\
   <div class=\"cover-top\" data-block=\"cover-top\">\
-    <div class=\"cover-brand\"><span class=\"crest-logo cover-crest\" role=\"img\" aria-label=\"Logo Polda Bali\"></span><span><strong>{polda}</strong><small>LAPORAN MINGGUAN PBM</small></span></div>\
-    <span class=\"cover-doc\">PROGRAM PRIORITAS &amp; QUICK WINS KAPOLRI</span>\
-    <h1>Laporan Mingguan<br>Pelaksanaan</h1>\
-    <p class=\"cover-period\">{label}</p>\
-    <p class=\"cover-source\">Sumber data: {source} · {rows} baris laporan</p>\
+    <div class=\"cover-brand\"><span class=\"crest-logo cover-crest\" role=\"img\" aria-label=\"Logo Polda Bali\"></span><span><strong data-text-id=\"polda\">{polda}</strong><small>LAPORAN MINGGUAN PBM</small></span></div>\
+    <span class=\"cover-doc\" data-text-id=\"doc\">{doc}</span>\
+    <h1 data-text-id=\"title\">{title}</h1>\
+    <p class=\"cover-period\" data-text-id=\"period\">{label}</p>\
+    <p class=\"cover-source\" data-text-id=\"source\">{source}</p>\
   </div>\
   <div class=\"cover-kpis\" data-block=\"cover-kpis\">{cards}</div>\
-  <div class=\"cover-summary\" data-block=\"cover-summary\"><span class=\"eyebrow gold\">RINGKASAN PELAKSANAAN</span>{summary}</div>\
-  <div class=\"cover-footer\" data-block=\"cover-footer\"><span>LAPORAN MINGGUAN PBM · {polda}</span><span>{label}</span></div>\
+  <div class=\"cover-summary\" data-block=\"cover-summary\"><span class=\"eyebrow gold\">RINGKASAN PELAKSANAAN</span><div data-text-id=\"body\">{summary}</div></div>\
+  <div class=\"cover-footer\" data-block=\"cover-footer\"><span data-text-id=\"left\">{footer_left}</span><span data-text-id=\"right\">{footer_right}</span></div>\
   {layer}\
 </section>",
-        polda = escape_html(&metrics.polda_name),
-        label = escape_html(&metrics.period_label),
-        source = escape_html(&metrics.source_filename),
-        rows = format_count(metrics.total_rows),
+        polda = escape_html(&polda_text),
+        doc = escape_html(&doc_text),
+        title = text_with_breaks(&title_text),
+        label = escape_html(&period_text),
+        source = escape_html(&source_text),
         cards = cards,
         summary = summary,
+        footer_left = escape_html(&footer_left),
+        footer_right = escape_html(&footer_right),
         layer = layout_layer(1, ctx),
     )
 }
 
-fn render_narkoba(metrics: &ReportMetrics, content: &ReportContent) -> String {
+fn render_narkoba(metrics: &ReportMetrics, content: &ReportContent, ctx: &DesignContext) -> String {
     let mut body = String::new();
     body.push_str(&kpi_row(
         &[
@@ -287,10 +319,12 @@ fn render_narkoba(metrics: &ReportMetrics, content: &ReportContent) -> String {
         "page-2-kpi",
     ));
     body.push_str(&editorial_block(
+        ctx,
+        2,
+        "page-2-editorial",
         "Catatan pelaksanaan",
         &content.narkoba,
         "Bagian ini dapat diisi dengan konteks penindakan, hasil assault, dan rencana pemulihan kawasan.",
-        "page-2-editorial",
     ));
     body.push_str("<div class=\"two-col\">");
     body.push_str(&format!(
@@ -310,7 +344,7 @@ fn render_narkoba(metrics: &ReportMetrics, content: &ReportContent) -> String {
     body
 }
 
-fn render_green(metrics: &ReportMetrics, content: &ReportContent) -> String {
+fn render_green(metrics: &ReportMetrics, content: &ReportContent, ctx: &DesignContext) -> String {
     let green = &metrics.green_policing;
     let mut body = String::new();
     body.push_str(&kpi_row(
@@ -323,10 +357,12 @@ fn render_green(metrics: &ReportMetrics, content: &ReportContent) -> String {
         "page-3-kpi",
     ));
     body.push_str(&editorial_block(
+        ctx,
+        3,
+        "page-3-editorial",
         "Catatan pelaksanaan",
         &content.green_policing,
         "Uraikan lokasi prioritas, jenis tanaman, kolaborasi dengan pemda, serta pemeliharaan pasca-tanam.",
-        "page-3-editorial",
     ));
     body.push_str("<div class=\"two-col\">");
     body.push_str(&format!(
@@ -338,11 +374,16 @@ fn render_green(metrics: &ReportMetrics, content: &ReportContent) -> String {
         bar_list(&green.by_kegiatan, 8)
     ));
     body.push_str("</div>");
-    body.push_str(&format!(
-        "<div class=\"note-strip\" data-block=\"page-3-note\"><strong>{}</strong><span> kegiatan penanaman · {} peserta terlibat · {} m² area ditangani</span></div>",
-        format_count(green.penanaman),
-        format_count(green.peserta),
-        format_count(green.area_m2)
+    body.push_str(&note_strip(
+        ctx,
+        3,
+        "page-3-note",
+        &format_count(green.penanaman),
+        &format!(
+            " kegiatan penanaman · {} peserta terlibat · {} m² area ditangani",
+            format_count(green.peserta),
+            format_count(green.area_m2)
+        ),
     ));
     body
 }
@@ -354,6 +395,7 @@ fn render_religious(
     location_label: &str,
     show_religion: bool,
     page_no: usize,
+    ctx: &DesignContext,
 ) -> String {
     let mut body = String::new();
     body.push_str(&kpi_row(
@@ -366,10 +408,12 @@ fn render_religious(
         &format!("page-{page_no}-kpi"),
     ));
     body.push_str(&editorial_block(
+        ctx,
+        page_no,
+        &format!("page-{page_no}-editorial"),
         "Catatan pelaksanaan",
         editorial_text,
         "Lengkapi dengan pesan kamtibmas yang disampaikan, tokoh yang ditemui, dan aspirasi utama warga.",
-        &format!("page-{page_no}-editorial"),
     ));
     body.push_str("<div class=\"two-col\">");
     body.push_str(&format!(
@@ -393,16 +437,25 @@ fn render_religious(
         "<div class=\"panel\" data-block=\"page-{page_no}-panel-lokasi\">{aside}</div>"
     ));
     body.push_str("</div>");
-    body.push_str(&format!(
-        "<div class=\"note-strip\" data-block=\"page-{page_no}-note\"><strong>{}</strong><span> laporan kegiatan keagamaan dalam periode {} · total {} orang dijangkau</span></div>",
-        format_count(section.rows),
-        escape_html(&metrics.period_label),
-        format_count(section.people)
+    body.push_str(&note_strip(
+        ctx,
+        page_no,
+        &format!("page-{page_no}-note"),
+        &format_count(section.rows),
+        &format!(
+            " laporan kegiatan keagamaan dalam periode {} · total {} orang dijangkau",
+            metrics.period_label,
+            format_count(section.people)
+        ),
     ));
     body
 }
 
-fn render_aspirations(metrics: &ReportMetrics, content: &ReportContent) -> String {
+fn render_aspirations(
+    metrics: &ReportMetrics,
+    content: &ReportContent,
+    ctx: &DesignContext,
+) -> String {
     let aspirations = &metrics.aspirations;
     let completed: i64 = aspirations
         .statuses
@@ -429,10 +482,12 @@ fn render_aspirations(metrics: &ReportMetrics, content: &ReportContent) -> Strin
         "page-7-kpi",
     ));
     body.push_str(&editorial_block(
+        ctx,
+        7,
+        "page-7-editorial",
         "Catatan pelaksanaan",
         &content.aspirations,
         "Rangkum pola aspirasi lintas kegiatan dan tentukan prioritas tindak lanjut bersama satuan wilayah.",
-        "page-7-editorial",
     ));
     body.push_str("<div class=\"two-col\">");
     body.push_str(&format!(
@@ -457,7 +512,11 @@ fn render_aspirations(metrics: &ReportMetrics, content: &ReportContent) -> Strin
     body
 }
 
-fn render_follow_up(metrics: &ReportMetrics, content: &ReportContent) -> String {
+fn render_follow_up(
+    metrics: &ReportMetrics,
+    content: &ReportContent,
+    ctx: &DesignContext,
+) -> String {
     let follow_up = &metrics.follow_up;
     let mut body = String::new();
     body.push_str(&kpi_row(
@@ -474,10 +533,12 @@ fn render_follow_up(metrics: &ReportMetrics, content: &ReportContent) -> String 
         "page-8-kpi",
     ));
     body.push_str(&editorial_block(
+        ctx,
+        8,
+        "page-8-editorial",
         "Catatan pelaksanaan",
         &content.follow_up,
         "Jelaskan kegiatan gabungan, KRYD, dan koordinasi lintas instansi yang dilakukan untuk menjawab aspirasi.",
-        "page-8-editorial",
     ));
     body.push_str("<div class=\"two-col\">");
     body.push_str(&format!(
@@ -492,7 +553,12 @@ fn render_follow_up(metrics: &ReportMetrics, content: &ReportContent) -> String 
     body
 }
 
-fn render_media(metrics: &ReportMetrics, content: &ReportContent, config: &Config) -> String {
+fn render_media(
+    metrics: &ReportMetrics,
+    content: &ReportContent,
+    config: &Config,
+    ctx: &DesignContext,
+) -> String {
     let media = &metrics.media;
     let mut body = String::new();
     body.push_str(&kpi_row(
@@ -505,10 +571,12 @@ fn render_media(metrics: &ReportMetrics, content: &ReportContent, config: &Confi
         "page-9-kpi",
     ));
     body.push_str(&editorial_block(
+        ctx,
+        9,
+        "page-9-editorial",
         "Catatan pelaksanaan",
         &content.media,
         "Rekap kanal pemberitaan, akun media sosial, dan tautan dokumentasi yang paling banyak digunakan.",
-        "page-9-editorial",
     ));
     body.push_str("<div class=\"two-col\">");
     body.push_str(&format!(
@@ -520,11 +588,16 @@ fn render_media(metrics: &ReportMetrics, content: &ReportContent, config: &Confi
         bar_list(&media.by_activity, 6)
     ));
     body.push_str("</div>");
-    body.push_str(&format!(
-        "<div class=\"note-strip\" data-block=\"page-9-note\"><strong>{}</strong><span> total tautan terverifikasi · {} dokumentasi kegiatan · {} kegiatan memiliki publikasi</span></div>",
-        format_count(media.total),
-        format_count(media.documentation),
-        format_count(media.rows_with_media)
+    body.push_str(&note_strip(
+        ctx,
+        9,
+        "page-9-note",
+        &format_count(media.total),
+        &format!(
+            " total tautan terverifikasi · {} dokumentasi kegiatan · {} kegiatan memiliki publikasi",
+            format_count(media.documentation),
+            format_count(media.rows_with_media)
+        ),
     ));
 
     let closing = editorial(
@@ -554,30 +627,41 @@ fn render_media(metrics: &ReportMetrics, content: &ReportContent, config: &Confi
     let rank = content.signatory_rank.trim();
     let nip = content.signatory_nip.trim();
 
+    let place_default = format!("{}, {}", city, date_long(&report_date));
+    let place_text = text_or(ctx, 9, "page-9-signature", "place", &place_default);
+    let title_default = if rank.is_empty() { "Pimpinan" } else { rank };
+    let title_text = text_or(ctx, 9, "page-9-signature", "title", title_default);
+    let name_text = text_or(ctx, 9, "page-9-signature", "name", name);
+    let nip_default = if nip.is_empty() {
+        String::new()
+    } else {
+        format!("NIP. {nip}")
+    };
+    let nip_text = text_or(ctx, 9, "page-9-signature", "nip", &nip_default);
+    let foot_text = text_or(ctx, 9, "page-9-signature", "foot", &config.polda_name);
+    let nip_html = if nip_text.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<div class=\"signature-nip\" data-text-id=\"nip\">{}</div>",
+            escape_html(&nip_text)
+        )
+    };
+
     body.push_str(&format!(
         "<div class=\"signature\" data-block=\"page-9-signature\">\
-           <div class=\"signature-place\">{}, {}</div>\
-           <div class=\"signature-title\">{}</div>\
+           <div class=\"signature-place\" data-text-id=\"place\">{}</div>\
+           <div class=\"signature-title\" data-text-id=\"title\">{}</div>\
            <div class=\"signature-space\"></div>\
-           <div class=\"signature-name\">{}</div>\
-           {}{}\
+           <div class=\"signature-name\" data-text-id=\"name\">{}</div>\
+           {}\
+           <div class=\"signature-foot\" data-text-id=\"foot\">{}</div>\
          </div>",
-        escape_html(city),
-        escape_html(&date_long(&report_date)),
-        escape_html(if rank.is_empty() { "Pimpinan" } else { rank }),
-        escape_html(name),
-        if nip.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "<div class=\"signature-nip\">NIP. {}</div>",
-                escape_html(nip)
-            )
-        },
-        format!(
-            "<div class=\"signature-foot\">{}</div>",
-            escape_html(&config.polda_name)
-        )
+        escape_html(&place_text),
+        escape_html(&title_text),
+        escape_html(&name_text),
+        nip_html,
+        escape_html(&foot_text)
     ));
 
     body
@@ -597,24 +681,57 @@ fn page(
         .map(|value| format!("<span>Halaman {value}</span>"))
         .unwrap_or_default();
     let page_no = number.unwrap_or(9);
+    let head_id = format!("page-{page_no}-head");
+    let foot_id = format!("page-{page_no}-foot");
+    let eyebrow_text = text_or(ctx, page_no, &head_id, "eyebrow", eyebrow);
+    let title_text = text_or(ctx, page_no, &head_id, "title", title);
+    let subtitle_text = text_or(ctx, page_no, &head_id, "subtitle", subtitle);
+    let foot_default = format!(
+        "LAPORAN MINGGUAN PBM · {} · {}",
+        metrics.polda_name, metrics.period_label
+    );
+    let foot_text = text_or(ctx, page_no, &foot_id, "left", &foot_default);
     format!(
         "<section class=\"page {extra_class}\">\
-  <header class=\"page-head\" data-block=\"page-{page_no}-head\"><div class=\"page-head-text\"><span class=\"eyebrow gold\">{eyebrow}</span><h1>{title}</h1><p>{subtitle}</p></div><span class=\"crest-logo page-crest\" role=\"img\" aria-label=\"Logo Polda Bali\"></span></header>\
+  <header class=\"page-head\" data-block=\"page-{page_no}-head\"><div class=\"page-head-text\"><span class=\"eyebrow gold\" data-text-id=\"eyebrow\">{eyebrow}</span><h1 data-text-id=\"title\">{title}</h1><p data-text-id=\"subtitle\">{subtitle}</p></div><span class=\"crest-logo page-crest\" role=\"img\" aria-label=\"Logo Polda Bali\"></span></header>\
   <div class=\"page-body\">{body}</div>\
-  <footer class=\"page-foot\" data-block=\"page-{page_no}-foot\"><span>LAPORAN MINGGUAN PBM · {polda} · {period}</span>{page_number}</footer>\
+  <footer class=\"page-foot\" data-block=\"page-{page_no}-foot\"><span data-text-id=\"left\">{foot}</span>{page_number}</footer>\
   {layer}\
 </section>",
         extra_class = extra_class,
-        eyebrow = escape_html(eyebrow),
-        title = escape_html(title),
-        subtitle = escape_html(subtitle),
+        eyebrow = escape_html(&eyebrow_text),
+        title = escape_html(&title_text),
+        subtitle = escape_html(&subtitle_text),
         body = body,
-        polda = escape_html(&metrics.polda_name),
-        period = escape_html(&metrics.period_label),
+        foot = escape_html(&foot_text),
         page_number = page_number,
         page_no = page_no,
         layer = layout_layer(page_no, ctx),
     )
+}
+
+fn override_text(
+    ctx: &DesignContext,
+    page_no: usize,
+    block_id: &str,
+    text_id: &str,
+) -> Option<String> {
+    let page = ctx.layout.pages.iter().find(|page| page.page == page_no)?;
+    page.blocks.get(block_id)?.texts.get(text_id).cloned()
+}
+
+fn text_or(
+    ctx: &DesignContext,
+    page_no: usize,
+    block_id: &str,
+    text_id: &str,
+    fallback: &str,
+) -> String {
+    override_text(ctx, page_no, block_id, text_id).unwrap_or_else(|| fallback.to_string())
+}
+
+fn text_with_breaks(value: &str) -> String {
+    escape_html(value).replace('\n', "<br>")
 }
 
 fn layout_layer(page_no: usize, ctx: &DesignContext) -> String {
@@ -704,11 +821,39 @@ fn block_css(layout: &ReportLayout) -> String {
             }
             if block.hidden {
                 css.push_str(&format!("[data-block=\"{id}\"]{{display:none!important;}}"));
-            } else if block.dx.abs() > 0.005 || block.dy.abs() > 0.005 {
-                css.push_str(&format!(
-                    "[data-block=\"{id}\"]{{transform:translate({:.3}mm,{:.3}mm);}}",
+                continue;
+            }
+
+            let mut declarations = String::new();
+            if block.dx.abs() > 0.005 || block.dy.abs() > 0.005 {
+                declarations.push_str(&format!(
+                    "transform:translate({:.3}mm,{:.3}mm);",
                     block.dx, block.dy
                 ));
+            }
+            if block.width > 0.0 {
+                declarations.push_str(&format!("width:{:.3}mm;", block.width));
+            }
+            if block.height > 0.0 {
+                declarations.push_str(&format!("height:{:.3}mm;", block.height));
+            }
+            if block.width > 0.0 || block.height > 0.0 {
+                declarations.push_str("overflow:hidden;box-sizing:border-box;");
+            }
+            if !block.background.is_empty() {
+                declarations.push_str(&format!("background:{};", block.background));
+            }
+            if block.border_width > 0.0 {
+                declarations.push_str(&format!(
+                    "border:{}pt solid {};",
+                    block.border_width, block.border_color
+                ));
+            }
+            if block.radius > 0.0 {
+                declarations.push_str(&format!("border-radius:{:.3}mm;", block.radius));
+            }
+            if !declarations.is_empty() {
+                css.push_str(&format!("[data-block=\"{id}\"]{{{declarations}}}"));
             }
         }
     }
@@ -729,11 +874,35 @@ fn kpi_row(items: &[(&str, i64, &str)], block_id: &str) -> String {
     output
 }
 
-fn editorial_block(title: &str, text: &str, fallback: &str, block_id: &str) -> String {
+fn editorial_block(
+    ctx: &DesignContext,
+    page_no: usize,
+    block_id: &str,
+    title: &str,
+    text: &str,
+    fallback: &str,
+) -> String {
+    let effective =
+        override_text(ctx, page_no, block_id, "body").unwrap_or_else(|| text.to_string());
     format!(
-        "<div class=\"editorial-block\" data-block=\"{block_id}\"><h3>{}</h3>{}</div>",
+        "<div class=\"editorial-block\" data-block=\"{block_id}\"><h3>{}</h3><div class=\"editorial-body\" data-text-id=\"body\">{}</div></div>",
         escape_html(title),
-        editorial(text, fallback)
+        editorial(&effective, fallback)
+    )
+}
+
+fn note_strip(
+    ctx: &DesignContext,
+    page_no: usize,
+    block_id: &str,
+    strong: &str,
+    text: &str,
+) -> String {
+    let effective = text_or(ctx, page_no, block_id, "text", text);
+    format!(
+        "<div class=\"note-strip\" data-block=\"{block_id}\"><strong>{}</strong><span data-text-id=\"text\">{}</span></div>",
+        escape_html(strong),
+        escape_html(&effective)
     )
 }
 

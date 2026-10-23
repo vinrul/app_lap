@@ -45,7 +45,7 @@
     | null
 
   type DragState = {
-    type: 'block' | 'element' | 'resize'
+    type: 'block' | 'block-resize' | 'element' | 'resize'
     page: number
     id: string
     startX: number
@@ -98,6 +98,7 @@
   let loadedKey = ''
   let boundDoc: Document | null = null
   let drag: DragState | null = null
+  const defaultTexts = new Map<string, string>()
 
   const hasImport = $derived(Boolean(selectedImportId))
   const dirty = $derived(JSON.stringify(layout) !== savedJson)
@@ -109,6 +110,13 @@
   const activeBlock = $derived.by(() => {
     if (!selected || selected.kind !== 'block') return null
     return getPage(selected.page)?.blocks[selected.id] ?? { dx: 0, dy: 0, hidden: false }
+  })
+  const hiddenBlocks = $derived.by(() => {
+    const page = getPage(currentPage)
+    if (!page) return []
+    return Object.entries(page.blocks)
+      .filter(([, block]) => block.hidden)
+      .map(([id]) => id)
   })
 
   $effect(() => {
@@ -276,7 +284,9 @@
     installEditorStyles(doc)
     if (boundDoc !== doc) {
       boundDoc = doc
+      defaultTexts.clear()
       doc.addEventListener('pointerdown', onPointerDown)
+      doc.addEventListener('dblclick', onDoubleClick)
       doc.addEventListener('keydown', handleKeydown)
     }
     applyLayoutToDom()
@@ -352,6 +362,34 @@
         // Selalu set inline agar rule transform dari layout tersimpan tidak
         // menempel saat blok di-reset ke posisi awal.
         blockEl.style.transform = `translate(${offset?.dx ?? 0}mm, ${offset?.dy ?? 0}mm)`
+        blockEl.style.width = offset?.width ? `${offset.width}mm` : ''
+        blockEl.style.height = offset?.height ? `${offset.height}mm` : ''
+        blockEl.style.overflow = offset?.width || offset?.height ? 'hidden' : ''
+        blockEl.style.boxSizing = offset?.width || offset?.height ? 'border-box' : ''
+        blockEl.style.background = offset?.background ?? ''
+        blockEl.style.border =
+          offset?.border_width && offset.border_width > 0
+            ? `${offset.border_width}pt solid ${offset.border_color || '#143d30'}`
+            : ''
+        blockEl.style.borderRadius = offset?.radius ? `${offset.radius}mm` : ''
+
+        blockEl.querySelectorAll<HTMLElement>('[data-text-id]').forEach((textEl) => {
+          const textId = textEl.dataset.textId
+          if (!textId) return
+          const key = `${pageNo}:${id}:${textId}`
+          if (!defaultTexts.has(key)) {
+            defaultTexts.set(key, textEl.innerHTML)
+          }
+          const value = offset?.texts?.[textId]
+          if (value !== undefined) {
+            textEl.textContent = value
+            textEl.style.whiteSpace = 'pre-line'
+          } else {
+            const fallback = defaultTexts.get(key)
+            if (fallback !== undefined) textEl.innerHTML = fallback
+            textEl.style.whiteSpace = ''
+          }
+        })
       })
 
       pageEl.querySelectorAll('.editor-selection').forEach((node) => node.remove())
@@ -383,7 +421,28 @@
 
     if (selected.kind === 'block') {
       const blockEl = pageEl.querySelector<HTMLElement>(`[data-block="${selected.id}"]`)
-      blockEl?.classList.add('editor-block-selected')
+      if (!blockEl) {
+        selected = null
+        return
+      }
+      blockEl.classList.add('editor-block-selected')
+      const pageRect = pageEl.getBoundingClientRect()
+      const rect = blockEl.getBoundingClientRect()
+      const frame = doc.createElement('div')
+      frame.className = 'editor-selection'
+      frame.dataset.kind = 'block'
+      frame.style.left = `${((rect.left - pageRect.left) / pageRect.width) * PAGE_WIDTH}mm`
+      frame.style.top = `${((rect.top - pageRect.top) / pageRect.height) * PAGE_HEIGHT}mm`
+      frame.style.width = `${(rect.width / pageRect.width) * PAGE_WIDTH}mm`
+      frame.style.height = `${(rect.height / pageRect.height) * PAGE_HEIGHT}mm`
+      const handle = doc.createElement('div')
+      handle.className = 'editor-handle'
+      handle.dataset.handle = 'se'
+      handle.style.left = 'calc(100% - 5px)'
+      handle.style.top = 'calc(100% - 5px)'
+      handle.style.cursor = 'nwse-resize'
+      frame.appendChild(handle)
+      pageEl.appendChild(frame)
       return
     }
 
@@ -424,6 +483,82 @@
     return Array.from(doc.querySelectorAll<HTMLElement>('.page')).indexOf(pageEl) + 1
   }
 
+  function positionBlockFrame() {
+    if (!selected || selected.kind !== 'block') return
+    const doc = iframeEl?.contentDocument
+    const pageEl = doc?.querySelectorAll<HTMLElement>('.page')[selected.page - 1]
+    const blockEl = pageEl?.querySelector<HTMLElement>(`[data-block="${selected.id}"]`)
+    const frame = pageEl?.querySelector<HTMLElement>('.editor-selection')
+    if (!pageEl || !blockEl || !frame) return
+    const pageRect = pageEl.getBoundingClientRect()
+    const rect = blockEl.getBoundingClientRect()
+    frame.style.left = `${((rect.left - pageRect.left) / pageRect.width) * PAGE_WIDTH}mm`
+    frame.style.top = `${((rect.top - pageRect.top) / pageRect.height) * PAGE_HEIGHT}mm`
+    frame.style.width = `${(rect.width / pageRect.width) * PAGE_WIDTH}mm`
+    frame.style.height = `${(rect.height / pageRect.height) * PAGE_HEIGHT}mm`
+  }
+
+  function onDoubleClick(event: MouseEvent) {
+    const doc = iframeEl?.contentDocument
+    if (!doc) return
+    const target = event.target as HTMLElement | null
+    const textEl = target?.closest<HTMLElement>('[data-text-id]')
+    const blockEl = textEl?.closest<HTMLElement>('[data-block]')
+    const pageEl = blockEl?.closest<HTMLElement>('.page')
+    if (!textEl || !blockEl || !pageEl) return
+    const page = pageIndexOf(pageEl)
+    const blockId = blockEl.dataset.block
+    const textId = textEl.dataset.textId
+    if (!blockId || !textId) return
+    event.preventDefault()
+    event.stopPropagation()
+    pushHistory()
+    selected = { kind: 'block', page, id: blockId }
+    textEl.setAttribute('contenteditable', 'plaintext-only')
+    textEl.style.whiteSpace = 'pre-line'
+    textEl.focus()
+    const selection = doc.defaultView?.getSelection()
+    if (selection) {
+      const range = doc.createRange()
+      range.selectNodeContents(textEl)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
+    const commit = (): string => {
+      const value = textEl.innerText.replace(/\u00a0/g, ' ').replace(/\r\n/g, '\n')
+      const pageData = getPage(page)
+      if (pageData) {
+        const block = pageData.blocks[blockId] ?? { dx: 0, dy: 0, hidden: false }
+        block.texts = { ...(block.texts ?? {}), [textId]: value }
+        pageData.blocks[blockId] = block
+      }
+      return value
+    }
+    const onInput = () => {
+      commit()
+    }
+    const finish = () => {
+      textEl.removeEventListener('blur', finish)
+      textEl.removeEventListener('input', onInput)
+      textEl.removeAttribute('contenteditable')
+      const value = commit()
+      textEl.textContent = value
+      renderSelection()
+    }
+    textEl.addEventListener('input', onInput)
+    textEl.addEventListener('blur', finish, { once: true })
+    textEl.addEventListener(
+      'keydown',
+      (keyboardEvent) => {
+        if (keyboardEvent.key === 'Escape') {
+          keyboardEvent.preventDefault()
+          textEl.blur()
+        }
+      },
+      { once: true },
+    )
+  }
+
   function beginDrag(state: DragState) {
     const doc = iframeEl?.contentDocument
     if (!doc) return
@@ -442,10 +577,37 @@
     if (!target) return
     const pageEl = target.closest<HTMLElement>('.page')
     if (!pageEl) return
+    if (target.isContentEditable || target.closest('[contenteditable="true"]')) return
     const page = pageIndexOf(pageEl)
     currentPage = page
 
     const handleEl = target.closest<HTMLElement>('[data-handle]')
+    if (handleEl && selected?.kind === 'block') {
+      const pageData = getPage(selected.page)
+      const blockEl = pageEl.querySelector<HTMLElement>(`[data-block="${selected.id}"]`)
+      if (!pageData || !blockEl) return
+      const pageRect = pageEl.getBoundingClientRect()
+      const rect = blockEl.getBoundingClientRect()
+      const offset = pageData.blocks[selected.id] ?? { dx: 0, dy: 0, hidden: false }
+      event.preventDefault()
+      beginDrag({
+        type: 'block-resize',
+        page: selected.page,
+        id: selected.id,
+        startX: event.clientX,
+        startY: event.clientY,
+        startDx: 0,
+        startDy: 0,
+        startElX: 0,
+        startElY: 0,
+        startElW: offset.width || (rect.width / pageRect.width) * PAGE_WIDTH,
+        startElH: offset.height || (rect.height / pageRect.height) * PAGE_HEIGHT,
+        moved: false,
+        historyPushed: false,
+        before: cloneLayout(layout),
+      })
+      return
+    }
     if (handleEl && selected?.kind === 'element') {
       const element = getElement(selected.page, selected.id)
       if (!element) return
@@ -558,6 +720,23 @@
       }
       page.blocks[drag.id] = next
       blockEl.style.transform = `translate(${next.dx}mm, ${next.dy}mm)`
+      positionBlockFrame()
+      return
+    }
+
+    if (drag.type === 'block-resize') {
+      const page = getPage(drag.page)
+      const blockEl = pageEl.querySelector<HTMLElement>(`[data-block="${drag.id}"]`)
+      if (!page || !blockEl) return
+      const block = page.blocks[drag.id] ?? { dx: 0, dy: 0, hidden: false }
+      block.width = Math.round(clamp(drag.startElW + dx, 10, PAGE_WIDTH) * 1000) / 1000
+      block.height = Math.round(clamp(drag.startElH + dy, 5, PAGE_HEIGHT) * 1000) / 1000
+      page.blocks[drag.id] = block
+      blockEl.style.width = `${block.width}mm`
+      blockEl.style.height = `${block.height}mm`
+      blockEl.style.overflow = 'hidden'
+      blockEl.style.boxSizing = 'border-box'
+      positionBlockFrame()
       return
     }
 
@@ -802,7 +981,34 @@
     const page = getPage(selected.page)
     if (!page) return
     pushHistory()
-    delete page.blocks[selected.id]
+    const current = page.blocks[selected.id]
+    if (current && current.texts && Object.keys(current.texts).length) {
+      page.blocks[selected.id] = { dx: 0, dy: 0, hidden: false, texts: current.texts }
+    } else {
+      delete page.blocks[selected.id]
+    }
+    applyLayoutToDom()
+  }
+
+  function hideBlock() {
+    if (!selected || selected.kind !== 'block') return
+    const page = getPage(selected.page)
+    if (!page) return
+    pushHistory()
+    const block = page.blocks[selected.id] ?? { dx: 0, dy: 0, hidden: false }
+    block.hidden = true
+    page.blocks[selected.id] = block
+    selected = null
+    applyLayoutToDom()
+  }
+
+  function showBlock(id: string) {
+    const page = getPage(currentPage)
+    if (!page) return
+    const block = page.blocks[id] ?? { dx: 0, dy: 0, hidden: false }
+    block.hidden = false
+    page.blocks[id] = block
+    selected = { kind: 'block', page: currentPage, id }
     applyLayoutToDom()
   }
 
@@ -896,7 +1102,7 @@
   function handleKeydown(event: KeyboardEvent) {
     const target = event.target as HTMLElement | null
     const tag = target?.tagName?.toLowerCase()
-    if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable) return
     const mod = event.ctrlKey || event.metaKey
     if (mod && event.key.toLowerCase() === 's') {
       event.preventDefault()
@@ -1201,7 +1407,7 @@
           </div>
           <div class="space-y-4 p-5">
             <p class="text-xs leading-relaxed text-ink-muted">
-              Blok ini bagian dari laporan otomatis. Geser dengan mouse atau atur offset berikut.
+              Blok ini bagian dari laporan otomatis. Geser dengan mouse, atur ukuran/style, atau klik dua kali teksnya untuk edit.
             </p>
             <div class="grid grid-cols-2 gap-3">
               <label class="block">
@@ -1216,9 +1422,54 @@
                   onfocus={pushHistory}
                   oninput={(event) => updateBlock({ dy: numberValue((event.currentTarget as HTMLInputElement).value) })} />
               </label>
+              <label class="block">
+                <span class="label">Lebar (mm)</span>
+                <input class="input py-1.5 text-xs" type="number" min="0" step="0.5" value={activeBlock.width ?? 0}
+                  onfocus={pushHistory}
+                  oninput={(event) => updateBlock({ width: numberValue((event.currentTarget as HTMLInputElement).value) })} />
+              </label>
+              <label class="block">
+                <span class="label">Tinggi (mm)</span>
+                <input class="input py-1.5 text-xs" type="number" min="0" step="0.5" value={activeBlock.height ?? 0}
+                  onfocus={pushHistory}
+                  oninput={(event) => updateBlock({ height: numberValue((event.currentTarget as HTMLInputElement).value) })} />
+              </label>
             </div>
+            <p class="text-[10px] text-ink-muted">Isi 0 pada lebar/tinggi untuk ukuran otomatis.</p>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block">
+                <span class="label">Background</span>
+                <input class="input py-1.5 text-xs" value={activeBlock.background ?? ''} placeholder="transparent / #ffffff"
+                  onfocus={pushHistory}
+                  onchange={(event) => updateBlock({ background: (event.currentTarget as HTMLInputElement).value })} />
+              </label>
+              <label class="block">
+                <span class="label">Warna garis</span>
+                <input class="input h-9 py-1" type="color" value={pickerColor(activeBlock.border_color)}
+                  onfocus={pushHistory}
+                  oninput={(event) => updateBlock({ border_color: (event.currentTarget as HTMLInputElement).value })} />
+              </label>
+              <label class="block">
+                <span class="label">Tebal garis (pt)</span>
+                <input class="input py-1.5 text-xs" type="number" min="0" step="0.25" value={activeBlock.border_width ?? 0}
+                  onfocus={pushHistory}
+                  oninput={(event) => updateBlock({ border_width: numberValue((event.currentTarget as HTMLInputElement).value) })} />
+              </label>
+              <label class="block">
+                <span class="label">Sudut (mm)</span>
+                <input class="input py-1.5 text-xs" type="number" min="0" step="0.5" value={activeBlock.radius ?? 0}
+                  onfocus={pushHistory}
+                  oninput={(event) => updateBlock({ radius: numberValue((event.currentTarget as HTMLInputElement).value) })} />
+              </label>
+            </div>
+            {#if activeBlock.texts && Object.keys(activeBlock.texts).length}
+              <span class="badge badge-progress">Ada teks yang diedit</span>
+            {/if}
             <p class="break-all text-[10px] text-ink-muted">ID: {selected?.id}</p>
-            <Button variant="secondary" size="sm" onclick={resetBlock}>Reset posisi</Button>
+            <div class="flex flex-wrap gap-2 border-t border-line pt-4">
+              <Button variant="secondary" size="sm" onclick={resetBlock}>Reset ukuran & gaya</Button>
+              <Button variant="danger" size="sm" onclick={hideBlock}>Sembunyikan</Button>
+            </div>
           </div>
         </section>
       {:else}
@@ -1228,9 +1479,24 @@
             <li>1. Klik halaman yang ingin ditata.</li>
             <li>2. Tambah teks, kotak, gambar, atau URL.</li>
             <li>3. Tarik elemen untuk menggeser; tarik sudut untuk mengubah ukuran.</li>
-            <li>4. Klik blok laporan yang ada untuk menggeser posisinya.</li>
-            <li>5. Simpan, lalu Buat PDF.</li>
+            <li>4. Klik blok laporan untuk geser; tarik sudut kanan bawah untuk resize.</li>
+            <li>5. Klik dua kali teks blok untuk mengeditnya.</li>
+            <li>6. Simpan, lalu Buat PDF.</li>
           </ul>
+        </section>
+      {/if}
+
+      {#if hiddenBlocks.length}
+        <section class="card p-5">
+          <span class="eyebrow">BLOK TERSEMBUNYI</span>
+          <div class="mt-3 space-y-2">
+            {#each hiddenBlocks as id}
+              <button class="flex w-full items-center justify-between gap-3 rounded-lg border border-line px-3 py-2 text-left text-[11px] text-ink hover:bg-stone-50" onclick={() => showBlock(id)}>
+                <span class="truncate">{id}</span>
+                <span class="shrink-0 font-semibold text-forest-700">Tampilkan</span>
+              </button>
+            {/each}
+          </div>
         </section>
       {/if}
     </aside>

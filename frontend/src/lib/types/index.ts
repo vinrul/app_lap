@@ -43,6 +43,13 @@ export interface LayoutBlockOffset {
   dx: number
   dy: number
   hidden?: boolean
+  width?: number
+  height?: number
+  background?: string
+  border_color?: string
+  border_width?: number
+  radius?: number
+  texts?: Record<string, string>
 }
 
 export interface LayoutElement {
