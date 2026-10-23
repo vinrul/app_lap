@@ -7,6 +7,8 @@
     ArrowUp,
     BarChart3,
     Check,
+    ChevronLeft,
+    ChevronRight,
     Copy,
     CreditCard,
     Eye,
@@ -75,6 +77,8 @@
 
   const PAGE_WIDTH = 210
   const PAGE_HEIGHT = 297
+  const PAGE_WIDTH_PX = 793.7
+  const PAGE_HEIGHT_PX = 1122.5
   const MAX_HISTORY = 40
 
   let {
@@ -86,7 +90,11 @@
   }: Props = $props()
 
   let iframeEl = $state<HTMLIFrameElement | null>(null)
+  let canvasAreaEl = $state<HTMLDivElement | null>(null)
   let iframeHtml = $state('')
+  let canvasWidth = $state(PAGE_WIDTH_PX)
+  let canvasHeight = $state(PAGE_HEIGHT_PX)
+  let canvasZoom = $state(1)
   let fileInput = $state<HTMLInputElement | null>(null)
   let textAreaEl = $state<HTMLTextAreaElement | null>(null)
 
@@ -162,6 +170,15 @@
     if (key === loadedKey) return
     loadedKey = key
     untrack(() => void load())
+  })
+
+  $effect(() => {
+    const node = canvasAreaEl
+    if (!node) return
+    const observer = new ResizeObserver(() => updateCanvasSize())
+    observer.observe(node)
+    updateCanvasSize()
+    return () => observer.disconnect()
   })
 
   function emptyLayout(): ReportLayout {
@@ -555,6 +572,9 @@
     const style = doc.createElement('style')
     style.id = 'laporan-editor-style'
     style.textContent = `
+      html, body { margin: 0; padding: 0; overflow: hidden; background: #fff; }
+      .page { display: none !important; margin: 0 auto !important; box-shadow: none !important; }
+      .page.editor-current-page { display: flex !important; zoom: var(--editor-page-zoom, 1); }
       body { user-select: none; }
       [data-block] { cursor: move; }
       [data-block]:hover { outline: 1px dashed rgba(184,137,75,.55); outline-offset: 2px; }
@@ -584,6 +604,35 @@
       doc.addEventListener('keydown', handleKeydown)
     }
     applyLayoutToDom()
+    updateCanvasSize()
+    applyPageVisibility()
+  }
+
+  function applyPageVisibility(): void {
+    const doc = iframeEl?.contentDocument
+    if (!doc) return
+    doc.documentElement.style.setProperty('--editor-page-zoom', String(canvasZoom))
+    const pages = doc.querySelectorAll<HTMLElement>('.page')
+    pages.forEach((pageEl, index) => {
+      pageEl.classList.toggle('editor-current-page', index + 1 === currentPage)
+    })
+  }
+
+  function updateCanvasSize(): void {
+    const area = canvasAreaEl
+    if (!area) return
+    const availableWidth = area.clientWidth - 28
+    const availableHeight = area.clientHeight - 28
+    if (availableWidth <= 0 || availableHeight <= 0) return
+    const scale = Math.min(
+      availableWidth / PAGE_WIDTH_PX,
+      availableHeight / PAGE_HEIGHT_PX,
+      1,
+    ) * 0.998
+    canvasZoom = Math.max(0.05, scale)
+    canvasWidth = Math.ceil(PAGE_WIDTH_PX * canvasZoom) + 3
+    canvasHeight = Math.ceil(PAGE_HEIGHT_PX * canvasZoom) + 3
+    applyPageVisibility()
   }
 
   function sourceMessage(doc: Document, message: string): HTMLElement {
@@ -1612,13 +1661,15 @@
     applyLayoutToDom()
   }
 
-  function goToPage(page: number, scroll = true) {
-    if (page !== currentPage) checkedIds = []
+  function goToPage(page: number) {
+    if (page < 1 || page > pageNumbers.length) return
+    if (page !== currentPage) {
+      checkedIds = []
+      selected = null
+    }
     currentPage = page
-    if (!scroll) return
-    const doc = iframeEl?.contentDocument
-    const pageEl = doc?.querySelectorAll<HTMLElement>('.page')[page - 1]
-    pageEl?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    applyPageVisibility()
+    renderSelection()
   }
 
   function addElement(element: LayoutElement) {
@@ -2227,7 +2278,13 @@
       return
     }
     const step = event.shiftKey ? 5 : 1
-    if (event.key === 'ArrowLeft') {
+    if (event.key === 'PageUp') {
+      event.preventDefault()
+      goToPage(currentPage - 1)
+    } else if (event.key === 'PageDown') {
+      event.preventDefault()
+      goToPage(currentPage + 1)
+    } else if (event.key === 'ArrowLeft') {
       event.preventDefault()
       nudge(-step, 0)
     } else if (event.key === 'ArrowRight') {
@@ -2305,23 +2362,34 @@
         <span class="mx-1 h-6 w-px bg-line"></span>
         <Button variant="ghost" size="sm" disabled={!history.length} onclick={undo}><Undo2 size={14} /> Undo</Button>
         <Button variant="ghost" size="sm" disabled={!redoStack.length} onclick={redo}><Redo2 size={14} /> Redo</Button>
-        <span class="ml-auto text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Halaman</span>
-        <select class="input max-w-[130px] py-1.5 text-xs" value={currentPage} onchange={(event) => goToPage(Number((event.currentTarget as HTMLSelectElement).value))}>
-          {#each pageNumbers as page}
-            <option value={page}>Halaman {page}</option>
-          {/each}
-        </select>
         <input bind:this={fileInput} class="hidden" type="file" accept="image/png,image/jpeg" onchange={handleFile} />
       </div>
 
-      <div class="max-h-[76vh] overflow-auto bg-stone-100 p-3">
+      <div class="flex flex-wrap items-center justify-center gap-2 border-b border-line bg-stone-50/60 px-3 py-2">
+        <Button variant="ghost" size="sm" disabled={currentPage <= 1} onclick={() => goToPage(currentPage - 1)}>
+          <ChevronLeft size={14} /> Sebelumnya
+        </Button>
+        <select class="input max-w-[150px] py-1.5 text-xs" value={currentPage}
+          data-page-selector
+          onchange={(event) => goToPage(Number((event.currentTarget as HTMLSelectElement).value))}>
+          {#each pageNumbers as page}
+            <option value={page}>Halaman {page} / {pageNumbers.length}</option>
+          {/each}
+        </select>
+        <Button variant="ghost" size="sm" disabled={currentPage >= pageNumbers.length} onclick={() => goToPage(currentPage + 1)}>
+          Berikutnya <ChevronRight size={14} />
+        </Button>
+      </div>
+
+      <div bind:this={canvasAreaEl} class="flex h-[calc(100vh-230px)] min-h-[480px] items-center justify-center overflow-hidden bg-stone-100 p-3">
         {#if loading}
-          <div class="flex h-[72vh] items-center justify-center text-sm text-ink-muted">Menyiapkan kanvas laporan…</div>
+          <div class="flex h-full w-full items-center justify-center text-sm text-ink-muted">Menyiapkan kanvas laporan…</div>
         {:else}
           <iframe
             bind:this={iframeEl}
             title="Editor tata letak laporan"
-            class="mx-auto block h-[72vh] w-[900px] rounded-lg border border-line bg-white"
+            class="block rounded-lg border border-line bg-white"
+            style={`width:${canvasWidth}px;height:${canvasHeight}px`}
             srcdoc={iframeHtml}
             onload={handleIframeLoad}
           ></iframe>
@@ -2329,8 +2397,8 @@
       </div>
 
       <div class="border-t border-line bg-stone-50/60 px-4 py-2.5 text-[10px] leading-relaxed text-ink-muted">
-        Klik halaman untuk memilih tujuan elemen baru. Tarik blok laporan atau elemen untuk menggeser.
-        Gunakan sudut seleksi untuk mengubah ukuran. Perubahan baru masuk ke PDF setelah disimpan.
+        Satu halaman ditampilkan pada satu waktu. Gunakan Sebelumnya/Berikutnya atau Page Up/Page Down untuk berpindah halaman.
+        Tarik blok atau elemen untuk menggeser; gunakan sudut seleksi untuk mengubah ukuran. Perubahan baru masuk ke PDF setelah disimpan.
       </div>
     </section>
 
@@ -2875,7 +2943,7 @@
         <section class="card p-5">
           <span class="eyebrow">CARA PAKAI</span>
           <ul class="mt-3 space-y-2 text-[11px] leading-relaxed text-ink-muted">
-            <li>1. Klik halaman yang ingin ditata.</li>
+            <li>1. Gunakan Sebelumnya/Berikutnya untuk berpindah halaman; kanvas hanya menampilkan satu halaman.</li>
             <li>2. Tambah teks, kotak, gambar, URL, tabel, atau grafik.</li>
             <li>3. Tarik elemen untuk menggeser; tarik sudut untuk mengubah ukuran.</li>
             <li>4. Klik blok laporan untuk geser; tarik sudut kanan bawah untuk resize.</li>
