@@ -86,6 +86,11 @@ pub struct LayoutElement {
     pub chart_show_values: bool,
     pub chart_show_legend: bool,
     pub chart_axis_color: String,
+    pub card_label: String,
+    pub card_value: String,
+    pub card_unit: String,
+    pub card_detail: String,
+    pub card_accent: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -151,6 +156,11 @@ impl Default for LayoutElement {
             chart_show_values: true,
             chart_show_legend: true,
             chart_axis_color: String::new(),
+            card_label: String::new(),
+            card_value: String::new(),
+            card_unit: String::new(),
+            card_detail: String::new(),
+            card_accent: String::new(),
         }
     }
 }
@@ -265,7 +275,7 @@ impl LayoutElement {
         self.kind = self.kind.trim().to_ascii_lowercase();
         if !matches!(
             self.kind.as_str(),
-            "image" | "rect" | "text" | "table" | "chart"
+            "image" | "rect" | "text" | "table" | "chart" | "card"
         ) {
             return None;
         }
@@ -289,6 +299,7 @@ impl LayoutElement {
             "rect" => (40.0, 20.0),
             "table" => (120.0, 60.0),
             "chart" => (120.0, 80.0),
+            "card" => (48.0, 33.0),
             _ => (60.0, 15.0),
         };
         self.width = clamp_num(self.width, 5.0, PAGE_WIDTH_MM, default_width);
@@ -351,6 +362,37 @@ impl LayoutElement {
                 self.table_header_bg = safe_color(&self.table_header_bg, "#143d30");
                 self.table_header_color = safe_color(&self.table_header_color, "#ffffff");
                 self.table_stripe = safe_color(&self.table_stripe, "#f6f8f5");
+            }
+            "card" => {
+                self.src.clear();
+                self.alt.clear();
+                self.clear_table_chart();
+                self.card_label = truncate(
+                    &self.card_label.replace('\r', " ").replace('\n', " ").trim(),
+                    80,
+                );
+                self.card_value = truncate(
+                    &self.card_value.replace('\r', " ").replace('\n', " ").trim(),
+                    40,
+                );
+                self.card_unit = truncate(
+                    &self.card_unit.replace('\r', " ").replace('\n', " ").trim(),
+                    40,
+                );
+                self.card_detail = truncate(
+                    &self
+                        .card_detail
+                        .replace('\r', " ")
+                        .replace('\n', " ")
+                        .trim(),
+                    160,
+                );
+                self.card_accent = safe_color(&self.card_accent, "#b8894b");
+                self.fill = safe_color(&self.fill, "#f6f8f5");
+                self.color = safe_color(&self.color, "#143d30");
+                self.border_width = clamp_num(self.border_width, 0.0, 10.0, 2.0);
+                self.radius = clamp_num(self.radius, 0.0, 20.0, 1.5);
+                self.font_size = clamp_num(self.font_size, 6.0, 24.0, 9.0);
             }
             "chart" => {
                 self.src.clear();
@@ -704,6 +746,46 @@ mod tests {
         assert!(valid_binding("media.by_channel"));
         assert!(!valid_binding("media by channel"));
         assert!(!valid_binding(&"a".repeat(101)));
+    }
+
+    #[test]
+    fn sanitizes_card_elements() {
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![PageLayout {
+                page: 2,
+                blocks: BTreeMap::new(),
+                elements: vec![LayoutElement {
+                    id: "card-1".into(),
+                    kind: "card".into(),
+                    card_label: "  Bibit ditanam\n".into(),
+                    card_value: "0".into(),
+                    card_unit: "bibit".into(),
+                    card_detail: "x".repeat(300),
+                    card_accent: "not-a-color".into(),
+                    fill: "nope".into(),
+                    color: "bad".into(),
+                    border_width: 99.0,
+                    radius: 99.0,
+                    font_size: 100.0,
+                    ..Default::default()
+                }],
+            }],
+        };
+
+        let sanitized = layout.sanitize();
+        let card = &sanitized.pages[1].elements[0];
+        assert_eq!(card.kind, "card");
+        assert_eq!(card.card_label, "Bibit ditanam");
+        assert_eq!(card.card_value, "0");
+        assert_eq!(card.card_unit, "bibit");
+        assert_eq!(card.card_detail.chars().count(), 160);
+        assert_eq!(card.card_accent, "#b8894b");
+        assert_eq!(card.fill, "#f6f8f5");
+        assert_eq!(card.color, "#143d30");
+        assert_eq!(card.border_width, 10.0);
+        assert_eq!(card.radius, 20.0);
+        assert_eq!(card.font_size, 24.0);
     }
 
     #[test]

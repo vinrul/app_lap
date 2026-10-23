@@ -8,6 +8,7 @@
     BarChart3,
     Check,
     Copy,
+    CreditCard,
     Eye,
     EyeOff,
     FileDown,
@@ -140,6 +141,7 @@
     const pageEl = doc?.querySelectorAll<HTMLElement>('.page')[selected.page - 1]
     const blockEl = pageEl?.querySelector<HTMLElement>(`[data-block="${selected.id}"]`)
     if (!blockEl) return ''
+    if (blockEl.querySelector('.kpi')) return 'cards'
     if (blockEl.querySelector('table')) return 'table'
     if (blockEl.querySelector('.bar-row')) return 'chart'
     return ''
@@ -273,14 +275,18 @@
             ? 'Tabel'
             : element.type === 'chart'
               ? 'Grafik'
-              : 'Gambar'
-    const detail =
-      element.type === 'text'
-        ? (element.text ?? '').replace(/\s+/g, ' ').trim()
-        : element.type === 'table'
-          ? (element.table_rows?.[0] ?? []).join(' · ')
-          : element.type === 'chart'
-            ? (element.chart_title ?? '').trim()
+              : element.type === 'card'
+                ? 'Kartu'
+                : 'Gambar'
+  const detail =
+    element.type === 'text'
+      ? (element.text ?? '').replace(/\s+/g, ' ').trim()
+      : element.type === 'table'
+        ? (element.table_rows?.[0] ?? []).join(' · ')
+        : element.type === 'chart'
+          ? (element.chart_title ?? '').trim()
+          : element.type === 'card'
+            ? (element.card_label ?? '').trim()
             : (element.alt ?? '').trim()
     const summary = detail.length > 32 ? `${detail.slice(0, 31)}…` : detail
     return summary ? `${type} — ${summary}` : type
@@ -452,12 +458,12 @@
       src: '',
       alt: '',
       object_fit: 'contain',
-      fill: '#ffffff',
+      fill: type === 'card' ? '#f6f8f5' : '#ffffff',
       border_color: '#143d30',
-      border_width: 0.5,
-      radius: 1,
+      border_width: type === 'card' ? 2 : 0.5,
+      radius: type === 'card' ? 1.5 : 1,
       text: '',
-      font_size: 12,
+      font_size: type === 'card' ? 9 : 12,
       font_family: 'sans',
       color: '#143d30',
       bold: false,
@@ -484,6 +490,11 @@
       chart_show_values: true,
       chart_show_legend: true,
       chart_axis_color: '#6d7872',
+      card_label: 'Label kartu',
+      card_value: '0',
+      card_unit: 'unit',
+      card_detail: '',
+      card_accent: '#b8894b',
     }
   }
 
@@ -675,6 +686,37 @@
         wrapper.appendChild(createChartSvg(doc, chartElement))
       }
       node = wrapper
+    } else if (element.type === 'card') {
+      const card = doc.createElement('div')
+      card.style.display = 'flex'
+      card.style.flexDirection = 'column'
+      card.style.padding = '3mm 3.5mm'
+      card.style.background = element.fill ?? '#f6f8f5'
+      card.style.borderLeft = `${element.border_width ?? 2}pt solid ${element.card_accent ?? '#b8894b'}`
+      card.style.borderRadius = `${element.radius ?? 1.5}mm`
+      card.style.overflow = 'hidden'
+      const label = doc.createElement('span')
+      label.className = 'layout-card-label'
+      label.textContent = element.card_label ?? ''
+      label.style.fontSize = `${element.font_size ?? 9}pt`
+      const value = doc.createElement('strong')
+      value.className = 'layout-card-value'
+      value.textContent = element.card_value ?? ''
+      value.style.fontSize = `${Math.min(40, Math.max(14, (element.font_size ?? 9) * 2.35))}pt`
+      value.style.color = element.color ?? '#143d30'
+      const unit = doc.createElement('span')
+      unit.className = 'layout-card-unit'
+      unit.textContent = element.card_unit ?? ''
+      unit.style.fontSize = `${(element.font_size ?? 9) * 0.82}pt`
+      card.append(label, value, unit)
+      if (element.card_detail?.trim()) {
+        const detail = doc.createElement('span')
+        detail.className = 'layout-card-detail'
+        detail.textContent = element.card_detail
+        detail.style.fontSize = `${(element.font_size ?? 9) * 0.78}pt`
+        card.appendChild(detail)
+      }
+      node = card
     } else {
       const text = doc.createElement('div')
       text.textContent = element.text ?? ''
@@ -1027,6 +1069,25 @@
     return value.length <= max ? value : `${value.slice(0, max - 1)}…`
   }
 
+  function clearHiddenBlockRule(doc: Document, id: string): void {
+    for (const sheet of Array.from(doc.styleSheets)) {
+      const rules = (() => {
+        try {
+          return sheet.cssRules
+        } catch {
+          return null
+        }
+      })()
+      if (!rules) continue
+      for (let index = rules.length - 1; index >= 0; index -= 1) {
+        const rule = rules[index]
+        if (rule.type === 1 && (rule as CSSStyleRule).selectorText === `[data-block="${id}"]`) {
+          sheet.deleteRule(index)
+        }
+      }
+    }
+  }
+
   function applyLayoutToDom() {
     const doc = iframeEl?.contentDocument
     if (!doc) return
@@ -1040,6 +1101,7 @@
         const id = blockEl.dataset.block
         if (!id) return
         const offset = page.blocks[id]
+        if (!offset?.hidden) clearHiddenBlockRule(doc, id)
         blockEl.classList.remove('editor-block-selected')
         if (offset?.hidden && !offset.preserve_space) {
           blockEl.style.display = 'none'
@@ -1619,6 +1681,17 @@
     addElement(element)
   }
 
+  function addCard() {
+    const element = baseElement('card')
+    element.width = 48
+    element.height = 33
+    element.card_label = 'Label kartu'
+    element.card_value = '0'
+    element.card_unit = 'unit'
+    element.card_detail = ''
+    addElement(element)
+  }
+
   function updateTableCell(rowIndex: number, columnIndex: number, value: string) {
     if (!activeElement || activeElement.type !== 'table' || activeElement.binding) return
     const rows = activeElement.table_rows
@@ -1894,7 +1967,9 @@
     const rect = blockRect(blockEl, pageEl)
     const tableEl = blockEl.querySelector<HTMLTableElement>('table')
     const barRows = Array.from(blockEl.querySelectorAll<HTMLElement>('.bar-row'))
-    let element: LayoutElement | null = null
+    const cardEls = Array.from(blockEl.querySelectorAll<HTMLElement>('.kpi'))
+    const elements: LayoutElement[] = []
+    let message = ''
 
     if (tableEl) {
       const rows = Array.from(tableEl.querySelectorAll('tr'))
@@ -1915,7 +1990,8 @@
         table.table_header_color = '#5b6861'
         table.table_stripe = 'transparent'
         table.source_block = selected.id
-        element = table
+        elements.push(table)
+        message = 'Blok di-detach. Isi tabel sekarang bisa diedit.'
       }
     } else if (barRows.length) {
       const labels = barRows.map(
@@ -1937,29 +2013,52 @@
       chart.color = '#143d30'
       chart.font_size = 9
       chart.source_block = selected.id
-      element = chart
+      elements.push(chart)
+      message = 'Blok di-detach. Grafik sekarang bisa diedit.'
+    } else if (cardEls.length) {
+      const group = newId()
+      for (const cardEl of cardEls) {
+        const cardRect = blockRect(cardEl, pageEl)
+        const card = baseElement('card')
+        card.card_label = cardEl.querySelector('.kpi-label')?.textContent?.trim() ?? ''
+        card.card_value = cardEl.querySelector('strong')?.textContent?.trim() ?? ''
+        card.card_unit = cardEl.querySelector('.kpi-unit')?.textContent?.trim() ?? ''
+        card.x = cardRect.x
+        card.y = cardRect.y
+        card.width = cardRect.width
+        card.height = cardRect.height
+        card.z = 30
+        card.source_block = selected.id
+        card.group = group
+        clampElement(card)
+        elements.push(card)
+      }
+      message = `${elements.length} kartu di-detach dan digabung. Gunakan Pisahkan di panel Layer untuk memisahkannya.`
     }
 
-    if (!element) {
-      toast.error('Blok ini tidak memiliki tabel atau grafik yang bisa di-detach.')
+    if (!elements.length) {
+      toast.error('Blok ini tidak memiliki tabel, grafik, atau kartu yang bisa di-detach.')
       return
     }
 
     pushHistory()
-    element.x = rect.x
-    element.y = rect.y
-    element.width = rect.width
-    element.height = rect.height
-    element.z = 30
-    clampElement(element)
+    if (tableEl || barRows.length) {
+      const element = elements[0]
+      element.x = rect.x
+      element.y = rect.y
+      element.width = rect.width
+      element.height = rect.height
+      element.z = 30
+      clampElement(element)
+    }
     const block = page.blocks[selected.id] ?? { dx: 0, dy: 0, hidden: false }
     block.hidden = true
     block.preserve_space = true
     page.blocks[selected.id] = block
-    page.elements.push(element)
-    selected = { kind: 'element', page: selected.page, id: element.id }
+    page.elements.push(...elements)
+    selected = { kind: 'element', page: selected.page, id: elements[0].id }
     applyLayoutToDom()
-    toast.success('Blok di-detach. Isi tabel/grafik sekarang bisa diedit.')
+    toast.success(message)
   }
 
   function resetDetached() {
@@ -1969,10 +2068,18 @@
     if (!source) return
     const page = getPage(selected.page)
     if (!page) return
-    const elementId = selected.id
+    const removed = new Set(
+      page.elements.filter((item) => item.source_block === source).map((item) => item.id),
+    )
     pushHistory()
-    page.elements = page.elements.filter((item) => item.id !== elementId)
-    delete page.blocks[source]
+    page.elements = page.elements.filter((item) => item.source_block !== source)
+    checkedIds = checkedIds.filter((id) => !removed.has(id))
+    const current = page.blocks[source]
+    if (current?.texts && Object.keys(current.texts).length) {
+      page.blocks[source] = { dx: 0, dy: 0, hidden: false, texts: current.texts }
+    } else {
+      delete page.blocks[source]
+    }
     selected = { kind: 'block', page: selected.page, id: source }
     applyLayoutToDom()
     toast.success('Blok dikembalikan ke data otomatis.')
@@ -2194,6 +2301,7 @@
         <Button variant="secondary" size="sm" onclick={addTable}><Table2 size={14} /> Tabel</Button>
         <Button variant="secondary" size="sm" onclick={addChart}><BarChart3 size={14} /> Grafik</Button>
         <Button variant="secondary" size="sm" onclick={addHBarChart}><AlignLeft size={14} /> Bar Samping</Button>
+        <Button variant="secondary" size="sm" onclick={addCard}><CreditCard size={14} /> Kartu</Button>
         <span class="mx-1 h-6 w-px bg-line"></span>
         <Button variant="ghost" size="sm" disabled={!history.length} onclick={undo}><Undo2 size={14} /> Undo</Button>
         <Button variant="ghost" size="sm" disabled={!redoStack.length} onclick={redo}><Redo2 size={14} /> Redo</Button>
@@ -2233,7 +2341,7 @@
             <div>
               <span class="eyebrow">ELEMEN TERPILIH</span>
               <h2 class="panel-title mt-1">
-                {activeElement.type === 'text' ? 'Teks' : activeElement.type === 'rect' ? 'Kotak' : activeElement.type === 'table' ? 'Tabel' : activeElement.type === 'chart' ? 'Grafik' : 'Gambar'}
+                {activeElement.type === 'text' ? 'Teks' : activeElement.type === 'rect' ? 'Kotak' : activeElement.type === 'table' ? 'Tabel' : activeElement.type === 'chart' ? 'Grafik' : activeElement.type === 'card' ? 'Kartu' : 'Gambar'}
               </h2>
             </div>
             <div class="flex flex-col items-end gap-1">
@@ -2360,6 +2468,75 @@
                   <input class="input py-1.5 text-xs" type="number" min="0" step="0.5" value={activeElement.radius ?? 1}
                     onfocus={pushHistory}
                     oninput={(event) => updateElement({ radius: numberValue((event.currentTarget as HTMLInputElement).value) })} />
+                </label>
+              </div>
+            {:else if activeElement.type === 'card'}
+              <label class="block">
+                <span class="label">Label</span>
+                <input class="input py-1.5 text-xs" value={activeElement.card_label ?? ''}
+                  data-card-field="label"
+                  onfocus={pushHistory}
+                  oninput={(event) => updateElement({ card_label: (event.currentTarget as HTMLInputElement).value })} />
+              </label>
+              <div class="grid grid-cols-2 gap-3">
+                <label class="block">
+                  <span class="label">Nilai</span>
+                  <input class="input py-1.5 text-xs" value={activeElement.card_value ?? ''}
+                    data-card-field="value"
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ card_value: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+                <label class="block">
+                  <span class="label">Satuan</span>
+                  <input class="input py-1.5 text-xs" value={activeElement.card_unit ?? ''}
+                    data-card-field="unit"
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ card_unit: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+              </div>
+              <label class="block">
+                <span class="label">Keterangan tambahan</span>
+                <input class="input py-1.5 text-xs" value={activeElement.card_detail ?? ''}
+                  data-card-field="detail"
+                  onfocus={pushHistory}
+                  oninput={(event) => updateElement({ card_detail: (event.currentTarget as HTMLInputElement).value })} />
+              </label>
+              <div class="grid grid-cols-2 gap-3">
+                <label class="block">
+                  <span class="label">Warna aksen</span>
+                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.card_accent)}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ card_accent: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+                <label class="block">
+                  <span class="label">Latar kartu</span>
+                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.fill)}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ fill: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+                <label class="block">
+                  <span class="label">Warna nilai</span>
+                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.color)}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ color: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+                <label class="block">
+                  <span class="label">Sudut (mm)</span>
+                  <input class="input py-1.5 text-xs" type="number" min="0" step="0.5" value={activeElement.radius ?? 1.5}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ radius: numberValue((event.currentTarget as HTMLInputElement).value) })} />
+                </label>
+                <label class="block">
+                  <span class="label">Ukuran teks (pt)</span>
+                  <input class="input py-1.5 text-xs" type="number" min="6" step="0.5" value={activeElement.font_size ?? 9}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ font_size: numberValue((event.currentTarget as HTMLInputElement).value) })} />
+                </label>
+                <label class="block">
+                  <span class="label">Tebal aksen (pt)</span>
+                  <input class="input py-1.5 text-xs" type="number" min="0" step="0.5" value={activeElement.border_width ?? 2}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ border_width: numberValue((event.currentTarget as HTMLInputElement).value) })} />
                 </label>
               </div>
             {:else if activeElement.type === 'table'}
@@ -2683,9 +2860,13 @@
             {#if activeBlockDetachKind}
               <div class="rounded-xl border border-gold-200 bg-gold-50/60 p-3.5">
                 <p class="text-[11px] leading-relaxed text-gold-800">
-                  Detach mengubah isi {activeBlockDetachKind === 'table' ? 'tabel' : 'grafik'} ini menjadi objek manual yang bisa diedit. Blok asli disembunyikan tetapi ruangnya dipertahankan.
+                  {#if activeBlockDetachKind === 'cards'}
+                    Detach memecah kartu menjadi objek kartu mandiri yang bisa diedit dan digeser. Semua kartu digabung agar bergerak bersama; gunakan Pisahkan di panel Layer untuk memisahkannya.
+                  {:else}
+                    Detach mengubah isi {activeBlockDetachKind === 'table' ? 'tabel' : 'grafik'} ini menjadi objek manual yang bisa diedit. Blok asli disembunyikan tetapi ruangnya dipertahankan.
+                  {/if}
                 </p>
-                <Button variant="primary" size="sm" class="mt-3" onclick={detachBlock}>Detach & edit isi</Button>
+                <Button variant="primary" size="sm" class="mt-3" onclick={detachBlock}>{activeBlockDetachKind === 'cards' ? 'Detach & pecah kartu' : 'Detach & edit isi'}</Button>
               </div>
             {/if}
           </div>

@@ -231,17 +231,46 @@ pub fn render_with_layout(
 fn render_cover(metrics: &ReportMetrics, content: &ReportContent, ctx: &DesignContext) -> String {
     let mut cards = String::new();
     for (index, card) in metrics.cards.iter().enumerate() {
+        let n = index + 1;
+        let label = text_or(
+            ctx,
+            1,
+            "cover-kpis",
+            &format!("cover-card-{n}-label"),
+            &card.label,
+        );
+        let value = text_or(
+            ctx,
+            1,
+            "cover-kpis",
+            &format!("cover-card-{n}-value"),
+            &format_count(card.value),
+        );
+        let unit = text_or(
+            ctx,
+            1,
+            "cover-kpis",
+            &format!("cover-card-{n}-unit"),
+            &card.unit,
+        );
+        let detail = text_or(
+            ctx,
+            1,
+            "cover-kpis",
+            &format!("cover-card-{n}-detail"),
+            &card.detail,
+        );
         cards.push_str(&format!(
-            "<div class=\"cover-kpi tone-{}\"><span class=\"cover-kpi-index\">{:02}</span>\
-             <span class=\"cover-kpi-label\">{}</span>\
-             <strong>{}</strong><span class=\"cover-kpi-unit\">{}</span>\
-             <span class=\"cover-kpi-detail\">{}</span></div>",
-            index % 3,
-            index + 1,
-            escape_html(&card.label),
-            format_count(card.value),
-            escape_html(&card.unit),
-            escape_html(&card.detail),
+            "<div class=\"cover-kpi tone-{tone}\"><span class=\"cover-kpi-index\">{number:02}</span>\
+             <span class=\"cover-kpi-label\" data-text-id=\"cover-card-{n}-label\">{label}</span>\
+             <strong data-text-id=\"cover-card-{n}-value\">{value}</strong><span class=\"cover-kpi-unit\" data-text-id=\"cover-card-{n}-unit\">{unit}</span>\
+             <span class=\"cover-kpi-detail\" data-text-id=\"cover-card-{n}-detail\">{detail}</span></div>",
+            tone = index % 3,
+            number = index + 1,
+            label = escape_html(&label),
+            value = escape_html(&value),
+            unit = escape_html(&unit),
+            detail = escape_html(&detail),
         ));
     }
 
@@ -324,6 +353,7 @@ fn render_narkoba(metrics: &ReportMetrics, content: &ReportContent, ctx: &Design
             ),
         ],
         "page-2-kpi",
+        ctx,
     ));
     body.push_str(&editorial_block(
         ctx,
@@ -362,6 +392,7 @@ fn render_green(metrics: &ReportMetrics, content: &ReportContent, ctx: &DesignCo
             ("Kerja bakti", green.kerja_bakti, "kegiatan"),
         ],
         "page-3-kpi",
+        ctx,
     ));
     body.push_str(&editorial_block(
         ctx,
@@ -413,6 +444,7 @@ fn render_religious(
             ("Polsek", section.polsek, "satuan"),
         ],
         &format!("page-{page_no}-kpi"),
+        ctx,
     ));
     body.push_str(&editorial_block(
         ctx,
@@ -487,6 +519,7 @@ fn render_aspirations(
             ),
         ],
         "page-7-kpi",
+        ctx,
     ));
     body.push_str(&editorial_block(
         ctx,
@@ -538,6 +571,7 @@ fn render_follow_up(
             ("Total laporan", metrics.total_rows, "baris"),
         ],
         "page-8-kpi",
+        ctx,
     ));
     body.push_str(&editorial_block(
         ctx,
@@ -576,6 +610,7 @@ fn render_media(
             ("Kanal publikasi", media.by_channel.len() as i64, "kanal"),
         ],
         "page-9-kpi",
+        ctx,
     ));
     body.push_str(&editorial_block(
         ctx,
@@ -817,6 +852,7 @@ fn render_layout_element(element: &LayoutElement, ctx: &DesignContext) -> String
         }
         "table" => render_table_element(element, ctx, &style),
         "chart" => render_chart_element(element, ctx, &style),
+        "card" => render_card_element(element, &style),
         _ => String::new(),
     }
 }
@@ -836,6 +872,39 @@ fn render_missing_source(element: &LayoutElement, style: &str, message: &str) ->
         escape_html(&element.id),
         style,
         escape_html(message)
+    )
+}
+
+fn render_card_element(element: &LayoutElement, style: &str) -> String {
+    let value_size = (element.font_size * 2.35).clamp(14.0, 40.0);
+    let detail = if element.card_detail.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<span class=\"layout-card-detail\" style=\"font-size:{:.1}pt;\">{}</span>",
+            element.font_size * 0.78,
+            escape_html(&element.card_detail)
+        )
+    };
+    format!(
+        "<div class=\"layout-element layout-card\" data-element-id=\"{}\" style=\"{}display:flex;flex-direction:column;box-sizing:border-box;padding:3mm 3.5mm;overflow:hidden;background:{};border-left:{}pt solid {};border-radius:{}mm;\">\
+         <span class=\"layout-card-label\" style=\"font-size:{:.1}pt;\">{}</span>\
+         <strong class=\"layout-card-value\" style=\"font-size:{:.1}pt;color:{};\">{}</strong>\
+         <span class=\"layout-card-unit\" style=\"font-size:{:.1}pt;\">{}</span>{}</div>",
+        escape_html(&element.id),
+        style,
+        element.fill,
+        element.border_width,
+        element.card_accent,
+        element.radius,
+        element.font_size,
+        escape_html(&element.card_label),
+        value_size,
+        element.color,
+        escape_html(&element.card_value),
+        element.font_size * 0.82,
+        escape_html(&element.card_unit),
+        detail
     )
 }
 
@@ -1346,14 +1415,29 @@ fn block_css(layout: &ReportLayout) -> String {
     css
 }
 
-fn kpi_row(items: &[(&str, i64, &str)], block_id: &str) -> String {
+fn kpi_row(items: &[(&str, i64, &str)], block_id: &str, ctx: &DesignContext) -> String {
+    let page_no = block_id
+        .strip_prefix("page-")
+        .and_then(|rest| rest.split('-').next())
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
     let mut output = format!("<div class=\"kpi-row\" data-block=\"{block_id}\">");
-    for (label, value, unit) in items {
+    for (index, (label, value, unit)) in items.iter().enumerate() {
+        let n = index + 1;
+        let label_id = format!("card-{n}-label");
+        let value_id = format!("card-{n}-value");
+        let unit_id = format!("card-{n}-unit");
         output.push_str(&format!(
-            "<div class=\"kpi\"><span class=\"kpi-label\">{}</span><strong>{}</strong><span class=\"kpi-unit\">{}</span></div>",
-            escape_html(label),
-            format_count(*value),
-            escape_html(unit)
+            "<div class=\"kpi\"><span class=\"kpi-label\" data-text-id=\"{label_id}\">{}</span><strong data-text-id=\"{value_id}\">{}</strong><span class=\"kpi-unit\" data-text-id=\"{unit_id}\">{}</span></div>",
+            escape_html(&text_or(ctx, page_no, block_id, &label_id, label)),
+            escape_html(&text_or(
+                ctx,
+                page_no,
+                block_id,
+                &value_id,
+                &format_count(*value)
+            )),
+            escape_html(&text_or(ctx, page_no, block_id, &unit_id, unit))
         ));
     }
     output.push_str("</div>");
@@ -1634,6 +1718,10 @@ h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; color: #143d30; mar
 .layout-element { position: absolute; box-sizing: border-box; }
 .layout-image { display: block; width: 100%; height: 100%; }
 .layout-text { white-space: pre-wrap; overflow: hidden; padding: .8mm; }
+.layout-card-label { color: #46534b; font-weight: 600; }
+.layout-card-value { font-family: Georgia, serif; font-weight: 500; line-height: 1.05; margin-top: auto; }
+.layout-card-unit { color: #5b6861; }
+.layout-card-detail { color: #7a857f; margin-top: 1mm; line-height: 1.3; }
 .layout-table table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .layout-table th, .layout-table td { border: var(--table-border, .5pt solid #d7ddd6); padding: 1.2mm 1.5mm; vertical-align: top; word-break: break-word; }
 .layout-table th { font-weight: 700; }
@@ -1759,6 +1847,118 @@ table.data.compact td { padding: 1.3mm 1.5mm; }
 mod tests {
     use super::*;
     use crate::modules::reports::models::{MetricCard, ReportMetrics};
+
+    #[test]
+    fn applies_kpi_card_text_overrides() {
+        let mut metrics = ReportMetrics::default();
+        metrics.cards = vec![crate::modules::reports::models::MetricCard {
+            key: "green".into(),
+            label: "Green Policing".into(),
+            value: 12,
+            unit: "kegiatan".into(),
+            detail: "Seluruh polres".into(),
+        }];
+        let mut cover_texts = std::collections::BTreeMap::new();
+        cover_texts.insert("cover-card-1-label".to_string(), "Green baru".to_string());
+        let mut kpi_texts = std::collections::BTreeMap::new();
+        kpi_texts.insert("card-1-label".to_string(), "Bibit baru".to_string());
+        kpi_texts.insert("card-1-value".to_string(), "999".to_string());
+        kpi_texts.insert("card-1-unit".to_string(), "pohon".to_string());
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![
+                crate::modules::reports::layout::PageLayout {
+                    page: 1,
+                    blocks: std::collections::BTreeMap::from([(
+                        "cover-kpis".to_string(),
+                        crate::modules::reports::layout::BlockLayout {
+                            texts: cover_texts,
+                            ..Default::default()
+                        },
+                    )]),
+                    elements: Vec::new(),
+                },
+                crate::modules::reports::layout::PageLayout {
+                    page: 3,
+                    blocks: std::collections::BTreeMap::from([(
+                        "page-3-kpi".to_string(),
+                        crate::modules::reports::layout::BlockLayout {
+                            texts: kpi_texts,
+                            ..Default::default()
+                        },
+                    )]),
+                    elements: Vec::new(),
+                },
+            ],
+        };
+
+        let html = render_with_layout(
+            &metrics,
+            &ReportContent::default(),
+            &Config::test_config(),
+            &layout,
+            &HashMap::new(),
+        );
+        assert!(html.contains("Green baru"));
+        assert!(html.contains("Bibit baru"));
+        assert!(html.contains(">999<"));
+        assert!(html.contains(">pohon<"));
+        assert!(!html.contains("Bibit ditanam"));
+    }
+
+    #[test]
+    fn renders_card_elements_and_kpi_text_ids() {
+        let mut metrics = ReportMetrics::default();
+        metrics.cards = vec![crate::modules::reports::models::MetricCard {
+            key: "green".into(),
+            label: "Green Policing".into(),
+            value: 12,
+            unit: "kegiatan".into(),
+            detail: "Seluruh polres".into(),
+        }];
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![crate::modules::reports::layout::PageLayout {
+                page: 2,
+                blocks: std::collections::BTreeMap::new(),
+                elements: vec![LayoutElement {
+                    id: "card-1".into(),
+                    kind: "card".into(),
+                    x: 10.0,
+                    y: 10.0,
+                    width: 48.0,
+                    height: 33.0,
+                    card_label: "Bibit ditanam".into(),
+                    card_value: "1.250".into(),
+                    card_unit: "bibit".into(),
+                    card_detail: "Sejak awal periode".into(),
+                    card_accent: "#b8894b".into(),
+                    fill: "#f6f8f5".into(),
+                    color: "#143d30".into(),
+                    border_width: 2.0,
+                    radius: 1.5,
+                    font_size: 9.0,
+                    ..Default::default()
+                }],
+            }],
+        };
+
+        let html = render_with_layout(
+            &metrics,
+            &ReportContent::default(),
+            &Config::test_config(),
+            &layout,
+            &HashMap::new(),
+        );
+        assert!(html.contains("layout-card"));
+        assert!(html.contains("Bibit ditanam"));
+        assert!(html.contains("1.250"));
+        assert!(html.contains("Sejak awal periode"));
+        assert!(html.contains("border-left:2pt solid #b8894b"));
+        assert!(html.contains("data-text-id=\"card-1-label\""));
+        assert!(html.contains("data-text-id=\"card-1-value\""));
+        assert!(html.contains("data-text-id=\"cover-card-1-label\""));
+    }
 
     #[test]
     fn renders_horizontal_bar_chart() {
