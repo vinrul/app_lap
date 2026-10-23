@@ -73,7 +73,7 @@ export interface LayoutElement {
   radius?: number
   text?: string
   font_size?: number
-  font_family?: 'sans' | 'serif'
+  font_family?: string
   color?: string
   bold?: boolean
   italic?: boolean

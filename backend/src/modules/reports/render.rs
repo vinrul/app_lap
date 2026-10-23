@@ -6,7 +6,7 @@ use chrono::{Datelike, NaiveDate};
 use crate::{
     config::Config,
     modules::reports::{
-        icons,
+        fonts, icons,
         layout::{DesignSource, LayoutElement, ReportLayout, image_id_from_src, valid_id},
         models::{GroupMetrics, ReportContent, ReportMetrics, RowSummary},
         sources::design_sources,
@@ -206,7 +206,8 @@ pub fn render_with_layout(
     );
 
     let css = format!(
-        "{}{}",
+        "{}{}{}",
+        fonts::face_css(),
         REPORT_CSS.replace("__LOGO_DATA_URI__", logo_data_uri()),
         block_css(layout)
     );
@@ -829,11 +830,7 @@ fn render_layout_element(element: &LayoutElement, ctx: &DesignContext) -> String
             )
         }
         "text" => {
-            let font_family = if element.font_family == "serif" {
-                "Georgia, 'Times New Roman', serif"
-            } else {
-                "'Segoe UI', Arial, sans-serif"
-            };
+            let font_family = fonts::stack(&element.font_family);
             let justify = match element.valign.as_str() {
                 "middle" => "center",
                 "bottom" => "flex-end",
@@ -1931,6 +1928,42 @@ mod tests {
         assert!(html.contains(">999<"));
         assert!(html.contains(">pohon<"));
         assert!(!html.contains("Bibit ditanam"));
+    }
+
+    #[test]
+    fn renders_bundled_google_fonts() {
+        let metrics = ReportMetrics::default();
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![crate::modules::reports::layout::PageLayout {
+                page: 2,
+                blocks: std::collections::BTreeMap::new(),
+                elements: vec![LayoutElement {
+                    id: "text-font".into(),
+                    kind: "text".into(),
+                    x: 10.0,
+                    y: 10.0,
+                    width: 80.0,
+                    height: 20.0,
+                    text: "Judul Playfair".into(),
+                    font_family: "playfair-display".into(),
+                    ..Default::default()
+                }],
+            }],
+        };
+
+        let html = render_with_layout(
+            &metrics,
+            &ReportContent::default(),
+            &Config::test_config(),
+            &layout,
+            &HashMap::new(),
+        );
+        assert!(html.contains("font-family:'Playfair Display', Georgia"));
+        assert!(html.contains("@font-face"));
+        assert!(html.contains("font-family: 'Playfair Display'"));
+        assert!(html.contains("font-weight: 100 900"));
+        assert!(html.contains("Judul Playfair"));
     }
 
     #[test]

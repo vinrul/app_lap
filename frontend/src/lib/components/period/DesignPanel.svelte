@@ -42,6 +42,7 @@
     ReportLayout,
   } from '../../types'
   import { iconByName, iconCatalog, type IconDefinition } from '../../icons/catalog'
+  import { fontOptions, fontStack } from '../../fonts/catalog'
   import { emptyContent } from '../../utils/constants'
   import { formatDateTime } from '../../utils/format'
   import { toast } from '../../stores/toast.svelte'
@@ -147,6 +148,9 @@
   const canZoomOut = $derived((zoomOverride ?? fitZoom) > MIN_ZOOM + 0.001)
   const canZoomIn = $derived((zoomOverride ?? fitZoom) < MAX_ZOOM - 0.001)
   const iconCategories = ['Semua', ...new Set(iconCatalog.map((icon) => icon.category))]
+  const systemFontOptions = fontOptions.filter((font) => font.category === 'Sistem')
+  const sansFontOptions = fontOptions.filter((font) => font.category === 'Sans')
+  const serifFontOptions = fontOptions.filter((font) => font.category === 'Serif')
   const iconPickerTitle = $derived(iconPickerTarget === 'replace' ? 'Ganti ikon' : 'Tambah ikon')
   const filteredIcons = $derived.by(() => {
     const query = iconSearch.trim().toLowerCase()
@@ -869,10 +873,7 @@
       text.style.flexDirection = 'column'
       text.style.justifyContent =
         element.valign === 'middle' ? 'center' : element.valign === 'bottom' ? 'flex-end' : 'flex-start'
-      text.style.fontFamily =
-        element.font_family === 'serif'
-          ? "Georgia, 'Times New Roman', serif"
-          : "'Segoe UI', Arial, sans-serif"
+      text.style.fontFamily = fontStack(element.font_family)
       text.style.fontSize = `${element.font_size ?? 12}pt`
       text.style.color = element.color ?? '#143d30'
       text.style.fontWeight = element.bold ? '700' : '400'
@@ -2644,9 +2645,23 @@
                 <label class="block">
                   <span class="label">Font</span>
                   <select class="input py-1.5 text-xs" value={activeElement.font_family ?? 'sans'}
-                    onchange={(event) => updateElement({ font_family: (event.currentTarget as HTMLSelectElement).value as 'sans' | 'serif' }, true)}>
-                    <option value="sans">Sans</option>
-                    <option value="serif">Serif</option>
+                    data-text-font
+                    onchange={(event) => updateElement({ font_family: (event.currentTarget as HTMLSelectElement).value }, true)}>
+                    <optgroup label="Sistem">
+                      {#each systemFontOptions as font}
+                        <option value={font.key}>{font.label}</option>
+                      {/each}
+                    </optgroup>
+                    <optgroup label="Google Fonts · Sans">
+                      {#each sansFontOptions as font}
+                        <option value={font.key}>{font.label}</option>
+                      {/each}
+                    </optgroup>
+                    <optgroup label="Google Fonts · Serif">
+                      {#each serifFontOptions as font}
+                        <option value={font.key}>{font.label}</option>
+                      {/each}
+                    </optgroup>
                   </select>
                 </label>
                 <label class="block">

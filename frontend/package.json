@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
-    "generate:icons": "bun scripts/generate-icon-catalog.mjs"
+    "generate:icons": "bun scripts/generate-icon-catalog.mjs",
+    "generate:fonts": "bun scripts/download-google-fonts.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",

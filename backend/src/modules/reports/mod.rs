@@ -1,3 +1,4 @@
+pub mod fonts;
 mod handlers;
 pub mod icons;
 pub mod layout;

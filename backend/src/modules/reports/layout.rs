@@ -344,10 +344,13 @@ impl LayoutElement {
                 self.src.clear();
                 self.alt.clear();
                 self.font_size = clamp_num(self.font_size, 6.0, 72.0, 11.0);
-                self.font_family = if self.font_family.trim().eq_ignore_ascii_case("serif") {
-                    "serif".to_string()
-                } else {
-                    "sans".to_string()
+                self.font_family = {
+                    let key = self.font_family.trim().to_ascii_lowercase();
+                    if key == "sans" || key == "serif" || super::fonts::find(&key).is_some() {
+                        key
+                    } else {
+                        "sans".to_string()
+                    }
                 };
                 self.color = safe_color(&self.color, "#143d30");
                 self.background = safe_color(&self.background, "transparent");
@@ -818,6 +821,42 @@ mod tests {
         assert_eq!(card.border_width, 10.0);
         assert_eq!(card.radius, 20.0);
         assert_eq!(card.font_size, 24.0);
+    }
+
+    #[test]
+    fn sanitizes_text_font_family() {
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![PageLayout {
+                page: 2,
+                blocks: BTreeMap::new(),
+                elements: vec![
+                    LayoutElement {
+                        id: "text-google".into(),
+                        kind: "text".into(),
+                        font_family: "LORA".into(),
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "text-serif".into(),
+                        kind: "text".into(),
+                        font_family: "serif".into(),
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "text-invalid".into(),
+                        kind: "text".into(),
+                        font_family: "comic-sans".into(),
+                        ..Default::default()
+                    },
+                ],
+            }],
+        };
+        let sanitized = layout.sanitize();
+        let page = &sanitized.pages[1];
+        assert_eq!(page.elements[0].font_family, "lora");
+        assert_eq!(page.elements[1].font_family, "serif");
+        assert_eq!(page.elements[2].font_family, "sans");
     }
 
     #[test]
