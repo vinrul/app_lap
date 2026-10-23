@@ -67,6 +67,7 @@ export interface LayoutElement {
   src?: string
   alt?: string
   object_fit?: 'contain' | 'cover' | 'fill'
+  shape?: string
   fill?: string
   border_color?: string
   border_width?: number

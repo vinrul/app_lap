@@ -23,7 +23,7 @@
     Redo2,
     Save,
     Shapes,
-    Square,
+    Star,
     Table2,
     Trash2,
     Type,
@@ -43,6 +43,7 @@
   } from '../../types'
   import { iconByName, iconCatalog, type IconDefinition } from '../../icons/catalog'
   import { fontOptions, fontStack } from '../../fonts/catalog'
+  import { shapeCatalog, shapeDefinition, shapeLabel, type ShapeDefinition } from '../../shapes/catalog'
   import { emptyContent } from '../../utils/constants'
   import { formatDateTime } from '../../utils/format'
   import { toast } from '../../stores/toast.svelte'
@@ -131,6 +132,7 @@
   let selectedTemplateId = $state('')
   let templateBusy = $state(false)
   let iconPickerOpen = $state(false)
+  let shapePickerOpen = $state(false)
   let iconPickerTarget = $state<'new' | 'replace'>('new')
   let iconSearch = $state('')
   let iconCategory = $state('Semua')
@@ -326,7 +328,7 @@
       element.type === 'text'
         ? 'Teks'
         : element.type === 'rect'
-          ? 'Kotak'
+          ? shapeLabel(element.shape)
           : element.type === 'table'
             ? 'Tabel'
             : element.type === 'chart'
@@ -518,6 +520,7 @@
       src: '',
       alt: '',
       object_fit: 'contain',
+      shape: 'rect',
       fill: type === 'card' ? '#f6f8f5' : '#ffffff',
       border_color: '#143d30',
       border_width: type === 'card' ? 2 : 0.5,
@@ -629,6 +632,7 @@
       .editor-block-selected { outline: 2px dashed #b8894b !important; outline-offset: 2px; }
       .layout-element { cursor: move; }
       .layout-element:hover { outline: 1px dashed rgba(184,137,75,.7); }
+      .layout-shape-svg { display: block; width: 100%; height: 100%; overflow: visible; }
       .editor-selection { position: absolute; border: 1.5px solid #b8894b; z-index: 9999; pointer-events: none; box-sizing: border-box; }
       .editor-handle { position: absolute; width: 10px; height: 10px; background: #fff; border: 1.5px solid #b8894b; border-radius: 2px; pointer-events: auto; box-sizing: border-box; }
       .editor-dragging * { cursor: grabbing !important; }
@@ -721,6 +725,35 @@
     return node
   }
 
+  function createShapeSvg(doc: Document, element: LayoutElement): SVGElement {
+    const shape = shapeDefinition(element.shape)
+    const svg = svgNode(doc, 'svg', {
+      viewBox: '0 0 100 100',
+      preserveAspectRatio: 'none',
+      width: '100%',
+      height: '100%',
+      'aria-hidden': 'true',
+    })
+    const fill = isTransparentColor(element.fill) ? 'none' : (element.fill ?? '#ffffff')
+    const attributes: Record<string, string | number> = { fill }
+    const borderWidth = element.border_width ?? 0.5
+    const borderColor = element.border_color ?? '#143d30'
+    if (borderWidth > 0 && !isTransparentColor(borderColor)) {
+      attributes.stroke = borderColor
+      attributes['stroke-width'] = `${borderWidth}pt`
+      attributes['vector-effect'] = 'non-scaling-stroke'
+      attributes['stroke-linejoin'] = 'round'
+    }
+    if (shape.ellipse) {
+      svg.appendChild(svgNode(doc, 'ellipse', { cx: 50, cy: 50, rx: 50, ry: 50, ...attributes }))
+    } else if (shape.path) {
+      svg.appendChild(svgNode(doc, 'path', { d: shape.path, ...attributes }))
+    } else {
+      svg.appendChild(svgNode(doc, 'polygon', { points: shape.points ?? '', ...attributes }))
+    }
+    return svg
+  }
+
   function createElementNode(doc: Document, element: LayoutElement): HTMLElement {
     let node: HTMLElement
     if (element.type === 'image') {
@@ -731,15 +764,23 @@
       image.style.objectFit = element.object_fit ?? 'contain'
       node = image
     } else if (element.type === 'rect') {
-      const rect = doc.createElement('div')
-      const fill = element.fill ?? '#ffffff'
-      const borderWidth = element.border_width ?? 0.5
-      const borderColor = element.border_color ?? '#143d30'
-      rect.style.background = isTransparentColor(fill) ? 'transparent' : fill
-      rect.style.border =
-        borderWidth > 0 && !isTransparentColor(borderColor) ? `${borderWidth}pt solid ${borderColor}` : 'none'
-      rect.style.borderRadius = `${element.radius ?? 1}mm`
-      node = rect
+      const shape = shapeDefinition(element.shape)
+      if (shape.kind !== 'rect') {
+        const wrapper = doc.createElement('div')
+        wrapper.dataset.shape = shape.kind
+        wrapper.appendChild(createShapeSvg(doc, element))
+        node = wrapper
+      } else {
+        const rect = doc.createElement('div')
+        const fill = element.fill ?? '#ffffff'
+        const borderWidth = element.border_width ?? 0.5
+        const borderColor = element.border_color ?? '#143d30'
+        rect.style.background = isTransparentColor(fill) ? 'transparent' : fill
+        rect.style.border =
+          borderWidth > 0 && !isTransparentColor(borderColor) ? `${borderWidth}pt solid ${borderColor}` : 'none'
+        rect.style.borderRadius = `${element.radius ?? 1}mm`
+        node = rect
+      }
     } else if (element.type === 'table') {
       const source = sourceFor(element.binding)
       const rows = element.binding ? (source?.table_rows ?? []) : (element.table_rows ?? [])
@@ -898,6 +939,9 @@
     }
 
     node.classList.add('layout-element', `layout-${element.type}`)
+    if (element.type === 'rect' && shapeDefinition(element.shape).kind !== 'rect') {
+      node.classList.add('layout-shape')
+    }
     node.dataset.elementId = element.id
     node.style.position = 'absolute'
     node.style.left = `${element.x}mm`
@@ -1805,9 +1849,19 @@
     void tick().then(() => textAreaEl?.focus())
   }
 
-  function addRect() {
+  function openShapePicker() {
+    shapePickerOpen = true
+  }
+
+  function chooseShape(shape: ShapeDefinition) {
     const element = baseElement('rect')
+    element.shape = shape.kind
+    if (shape.kind !== 'rect') {
+      element.width = 36
+      element.height = 30
+    }
     addElement(element)
+    shapePickerOpen = false
   }
 
   function addTable() {
@@ -2551,7 +2605,7 @@
     <section class="card overflow-hidden">
       <div class="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2.5">
         <Button variant="secondary" size="sm" onclick={addText}><Type size={14} /> Teks</Button>
-        <Button variant="secondary" size="sm" onclick={addRect}><Square size={14} /> Kotak</Button>
+        <Button variant="secondary" size="sm" onclick={openShapePicker}><Star size={14} /> Bentuk</Button>
         <Button variant="secondary" size="sm" loading={uploading} onclick={pickImage}><ImagePlus size={14} /> Gambar</Button>
         <Button variant="secondary" size="sm" onclick={addImageUrl}><Link2 size={14} /> URL</Button>
         <Button variant="secondary" size="sm" onclick={addTable}><Table2 size={14} /> Tabel</Button>
@@ -2626,7 +2680,7 @@
             <div>
               <span class="eyebrow">ELEMEN TERPILIH</span>
               <h2 class="panel-title mt-1">
-                {activeElement.type === 'text' ? 'Teks' : activeElement.type === 'rect' ? 'Kotak' : activeElement.type === 'table' ? 'Tabel' : activeElement.type === 'chart' ? 'Grafik' : activeElement.type === 'card' ? 'Kartu' : activeElement.type === 'icon' ? 'Ikon' : 'Gambar'}
+                {activeElement.type === 'text' ? 'Teks' : activeElement.type === 'rect' ? shapeLabel(activeElement.shape) : activeElement.type === 'table' ? 'Tabel' : activeElement.type === 'chart' ? 'Grafik' : activeElement.type === 'card' ? 'Kartu' : activeElement.type === 'icon' ? 'Ikon' : 'Gambar'}
               </h2>
             </div>
             <div class="flex flex-col items-end gap-1">
@@ -2754,6 +2808,31 @@
                   onchange={(event) => updateElement({ background: (event.currentTarget as HTMLInputElement).value }, true)} />
               </label>
             {:else if activeElement.type === 'rect'}
+              <div>
+                <span class="label">Bentuk</span>
+                <div class="mt-1 grid grid-cols-4 gap-1.5">
+                  {#each shapeCatalog as shape (shape.kind)}
+                    <button type="button"
+                      class="flex min-w-0 flex-col items-center gap-1 rounded-lg border px-1 py-1.5 hover:border-gold-300 hover:bg-gold-50 {shapeDefinition(activeElement.shape).kind === shape.kind ? 'border-gold-300 bg-gold-50 text-forest-800' : 'border-line text-ink-muted'}"
+                      title={shape.label} data-shape-choice={shape.kind}
+                      onclick={() => updateElement({ shape: shape.kind }, true)}>
+                      <svg class="h-4 w-4" viewBox="0 0 100 100" fill="none" stroke="currentColor"
+                        stroke-width="6" stroke-linejoin="round" aria-hidden="true">
+                        {#if shape.kind === 'rect'}
+                          <rect x="4" y="16" width="92" height="68" rx="5" />
+                        {:else if shape.ellipse}
+                          <ellipse cx="50" cy="50" rx="46" ry="46" />
+                        {:else if shape.path}
+                          <path d={shape.path} />
+                        {:else}
+                          <polygon points={shape.points} />
+                        {/if}
+                      </svg>
+                      <span class="w-full truncate text-center text-[8px] leading-tight">{shape.label}</span>
+                    </button>
+                  {/each}
+                </div>
+              </div>
               <div class="grid grid-cols-2 gap-3">
                 <label class="flex items-center gap-2 text-xs font-medium text-ink">
                   <input type="checkbox" checked={rectNoFill} data-rect-no-fill
@@ -2790,12 +2869,14 @@
                     onfocus={pushHistory}
                     oninput={(event) => updateElement({ border_width: numberValue((event.currentTarget as HTMLInputElement).value) })} />
                 </label>
-                <label class="block">
-                  <span class="label">Sudut (mm)</span>
-                  <input class="input py-1.5 text-xs" type="number" min="0" step="0.5" value={activeElement.radius ?? 1}
-                    onfocus={pushHistory}
-                    oninput={(event) => updateElement({ radius: numberValue((event.currentTarget as HTMLInputElement).value) })} />
-                </label>
+                {#if shapeDefinition(activeElement.shape).kind === 'rect'}
+                  <label class="block">
+                    <span class="label">Sudut (mm)</span>
+                    <input class="input py-1.5 text-xs" type="number" min="0" step="0.5" value={activeElement.radius ?? 1}
+                      onfocus={pushHistory}
+                      oninput={(event) => updateElement({ radius: numberValue((event.currentTarget as HTMLInputElement).value) })} />
+                  </label>
+                {/if}
               </div>
               <p class="text-[10px] leading-relaxed text-ink-muted">Tanpa isi membuat latar transparan. Tanpa garis menyembunyikan garis tepi tanpa menghapus warna dan tebalnya.</p>
             {:else if activeElement.type === 'icon'}
@@ -3339,6 +3420,33 @@
       {/if}
     </aside>
   </div>
+
+  {#if shapePickerOpen}
+    <div use:portal>
+      <Modal open={true} title="Pilih bentuk" description="Klik bentuk untuk memasukkannya ke halaman aktif. Isi, garis, dan ukuran dapat diubah setelah ditambahkan." onclose={() => (shapePickerOpen = false)} width="max-w-2xl">
+        <div class="grid grid-cols-3 gap-2 sm:grid-cols-4">
+          {#each shapeCatalog as shape (shape.kind)}
+            <button type="button" class="flex min-w-0 flex-col items-center gap-2 rounded-xl border border-line px-2 py-3 text-ink hover:border-gold-300 hover:bg-gold-50"
+              title={shape.label} data-shape-option={shape.kind} onclick={() => chooseShape(shape)}>
+              <svg class="h-9 w-9 text-forest-800" viewBox="0 0 100 100" fill="none" stroke="currentColor"
+                stroke-width="5" stroke-linejoin="round" aria-hidden="true">
+                {#if shape.kind === 'rect'}
+                  <rect x="4" y="16" width="92" height="68" rx="5" />
+                {:else if shape.ellipse}
+                  <ellipse cx="50" cy="50" rx="46" ry="46" />
+                {:else if shape.path}
+                  <path d={shape.path} />
+                {:else}
+                  <polygon points={shape.points} />
+                {/if}
+              </svg>
+              <span class="w-full truncate text-center text-[10px] leading-tight text-ink-muted">{shape.label}</span>
+            </button>
+          {/each}
+        </div>
+      </Modal>
+    </div>
+  {/if}
 
   {#if iconPickerOpen}
     <div use:portal>

@@ -6,6 +6,7 @@ pub mod metrics;
 pub mod models;
 pub mod render;
 pub mod service;
+pub mod shapes;
 pub mod sources;
 
 use axum::{

@@ -9,6 +9,7 @@ use crate::{
         fonts, icons,
         layout::{DesignSource, LayoutElement, ReportLayout, image_id_from_src, valid_id},
         models::{GroupMetrics, ReportContent, ReportMetrics, RowSummary},
+        shapes::{self, Geometry},
         sources::design_sources,
     },
     shared::{escape_html, format_count, is_noise, paragraphs},
@@ -798,6 +799,38 @@ fn is_transparent_color(value: &str) -> bool {
         || value.eq_ignore_ascii_case("none")
 }
 
+fn render_shape_element(element: &LayoutElement, style: &str) -> String {
+    let fill = if is_transparent_color(&element.fill) {
+        "none".to_string()
+    } else {
+        escape_html(&element.fill)
+    };
+    let mut stroke = String::new();
+    if element.border_width > 0.0 && !is_transparent_color(&element.border_color) {
+        stroke = format!(
+            " stroke=\"{}\" stroke-width=\"{}pt\" vector-effect=\"non-scaling-stroke\" stroke-linejoin=\"round\"",
+            escape_html(&element.border_color),
+            element.border_width
+        );
+    }
+    let geometry = match shapes::geometry(&element.shape) {
+        Geometry::Ellipse => {
+            format!("<ellipse cx=\"50\" cy=\"50\" rx=\"50\" ry=\"50\" fill=\"{fill}\"{stroke}/>")
+        }
+        Geometry::Path(path) => format!("<path d=\"{path}\" fill=\"{fill}\"{stroke}/>"),
+        Geometry::Polygon(points) => {
+            format!("<polygon points=\"{points}\" fill=\"{fill}\"{stroke}/>")
+        }
+    };
+    format!(
+        "<div class=\"layout-element layout-rect layout-shape\" data-element-id=\"{}\" data-shape=\"{}\" style=\"{}\"><svg class=\"layout-shape-svg\" viewBox=\"0 0 100 100\" preserveAspectRatio=\"none\" xmlns=\"http://www.w3.org/2000/svg\">{}</svg></div>",
+        escape_html(&element.id),
+        escape_html(&element.shape),
+        style,
+        geometry
+    )
+}
+
 fn render_layout_element(element: &LayoutElement, ctx: &DesignContext) -> String {
     let mut style = format!(
         "left:{:.3}mm;top:{:.3}mm;width:{:.3}mm;height:{:.3}mm;opacity:{:.3};z-index:{};",
@@ -826,6 +859,9 @@ fn render_layout_element(element: &LayoutElement, ctx: &DesignContext) -> String
             )
         }
         "rect" => {
+            if !element.shape.is_empty() && element.shape != "rect" {
+                return render_shape_element(element, &style);
+            }
             if !is_transparent_color(&element.fill) {
                 style.push_str(&format!("background:{};", element.fill));
             }
@@ -1752,6 +1788,7 @@ h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; color: #143d30; mar
 .layout-layer > * { pointer-events: auto; }
 .layout-element { position: absolute; box-sizing: border-box; }
 .layout-image { display: block; width: 100%; height: 100%; }
+.layout-shape-svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .layout-text { display: flex; flex-direction: column; overflow: hidden; padding: .8mm; }
 .layout-text-inner { width: 100%; white-space: pre-wrap; }
 .layout-card-label { color: #46534b; font-weight: 600; }
@@ -2016,6 +2053,46 @@ mod tests {
         let html = render_layout_element(&element, &ctx);
         assert!(!html.contains("background:"));
         assert!(!html.contains("border:"));
+    }
+
+    #[test]
+    fn renders_svg_shapes() {
+        let layout = ReportLayout::default();
+        let images = HashMap::new();
+        let ctx = DesignContext {
+            layout: &layout,
+            images: &images,
+            sources: &[],
+        };
+        let mut element = LayoutElement {
+            id: "shape-star".into(),
+            kind: "rect".into(),
+            shape: "star".into(),
+            width: 40.0,
+            height: 30.0,
+            fill: "#b8894b".into(),
+            border_color: "#143d30".into(),
+            border_width: 1.0,
+            ..Default::default()
+        };
+
+        let html = render_layout_element(&element, &ctx);
+        assert!(html.contains("data-shape=\"star\""));
+        assert!(html.contains("<polygon points=\"50,0"));
+        assert!(html.contains("fill=\"#b8894b\""));
+        assert!(html.contains("stroke=\"#143d30\""));
+        assert!(html.contains("stroke-width=\"1pt\""));
+        assert!(html.contains("vector-effect=\"non-scaling-stroke\""));
+        assert!(!html.contains("background:"));
+
+        element.shape = "ellipse".into();
+        element.fill = "transparent".into();
+        element.border_width = 0.0;
+        let html = render_layout_element(&element, &ctx);
+        assert!(html.contains("data-shape=\"ellipse\""));
+        assert!(html.contains("<ellipse"));
+        assert!(html.contains("fill=\"none\""));
+        assert!(!html.contains("stroke="));
     }
 
     #[test]

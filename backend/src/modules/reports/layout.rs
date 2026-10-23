@@ -58,6 +58,7 @@ pub struct LayoutElement {
     pub src: String,
     pub alt: String,
     pub object_fit: String,
+    pub shape: String,
     pub fill: String,
     pub border_color: String,
     pub border_width: f64,
@@ -132,6 +133,7 @@ impl Default for LayoutElement {
             src: String::new(),
             alt: String::new(),
             object_fit: String::new(),
+            shape: String::new(),
             fill: String::new(),
             border_color: String::new(),
             border_width: 0.0,
@@ -287,6 +289,9 @@ impl LayoutElement {
         ) {
             return None;
         }
+        if self.kind != "rect" {
+            self.shape.clear();
+        }
 
         if !valid_id(&self.id) || !used_ids.insert(self.id.clone()) {
             self.id = Uuid::new_v4().to_string();
@@ -334,6 +339,7 @@ impl LayoutElement {
             "rect" => {
                 self.src.clear();
                 self.alt.clear();
+                self.shape = super::shapes::normalize(&self.shape);
                 self.fill = normalize_transparent(safe_color(&self.fill, "#ffffff"));
                 self.border_color =
                     normalize_transparent(safe_color(&self.border_color, "#143d30"));
@@ -781,6 +787,43 @@ mod tests {
         assert_eq!(page.elements[1].fill, "transparent");
         assert_eq!(page.elements[1].border_color, "transparent");
         assert_eq!(page.elements[1].border_width, 2.0);
+    }
+
+    #[test]
+    fn normalizes_rect_shapes() {
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![PageLayout {
+                page: 2,
+                blocks: BTreeMap::new(),
+                elements: vec![
+                    LayoutElement {
+                        id: "shape-star".into(),
+                        kind: "rect".into(),
+                        shape: "Star".into(),
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "shape-unknown".into(),
+                        kind: "rect".into(),
+                        shape: "blob".into(),
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "shape-text".into(),
+                        kind: "text".into(),
+                        shape: "heart".into(),
+                        ..Default::default()
+                    },
+                ],
+            }],
+        };
+
+        let sanitized = layout.sanitize();
+        let page = &sanitized.pages[1];
+        assert_eq!(page.elements[0].shape, "star");
+        assert_eq!(page.elements[1].shape, "rect");
+        assert!(page.elements[2].shape.is_empty());
     }
 
     #[test]
