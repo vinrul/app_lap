@@ -1,0 +1,25 @@
+[Unit]
+Description=Laporan Mingguan PBM (backend + SPA)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=laporan
+Group=laporan
+WorkingDirectory=/opt/laporan
+EnvironmentFile=/etc/laporan/laporan.env
+ExecStart=/opt/laporan/laporan_mingguan serve
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+
+# Hardening. Sengaja tanpa NoNewPrivileges agar sandbox Chrome
+# (user namespace) tetap dapat berjalan saat membuat PDF.
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/laporan
+
+[Install]
+WantedBy=multi-user.target

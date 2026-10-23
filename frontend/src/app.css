@@ -1,0 +1,268 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-display: Georgia, 'Times New Roman', serif;
+
+  --color-ink: #1d2a24;
+  --color-ink-soft: #56635c;
+  --color-ink-muted: #7a867f;
+
+  --color-forest-50: #f2f6f3;
+  --color-forest-100: #e3ece6;
+  --color-forest-200: #c6d9cd;
+  --color-forest-300: #9dbda9;
+  --color-forest-400: #6d9a7d;
+  --color-forest-500: #4a7d5d;
+  --color-forest-600: #356349;
+  --color-forest-700: #274f3a;
+  --color-forest-800: #1c3f2e;
+  --color-forest-900: #143024;
+  --color-forest-950: #0d2119;
+
+  --color-gold-100: #f8f1e4;
+  --color-gold-200: #efdfc2;
+  --color-gold-300: #e2c696;
+  --color-gold-400: #d0a868;
+  --color-gold-500: #b98a47;
+  --color-gold-600: #9c7036;
+  --color-gold-700: #7b562a;
+
+  --color-paper: #fbfaf7;
+  --color-canvas: #f2f4f0;
+  --color-line: #e1e6df;
+
+  --shadow-card: 0 1px 2px rgba(20, 48, 36, 0.05), 0 8px 24px -18px rgba(20, 48, 36, 0.35);
+  --shadow-lift: 0 18px 40px -24px rgba(20, 48, 36, 0.4);
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: var(--font-sans);
+    color: var(--color-ink);
+    background: var(--color-canvas);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    margin: 0;
+    min-width: 320px;
+    min-height: 100vh;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+
+  button {
+    color: inherit;
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid var(--color-forest-500);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--color-forest-200);
+    color: var(--color-forest-900);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #cfd6cf;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-line bg-white shadow-card;
+  }
+
+  .card-flat {
+    @apply rounded-2xl border border-line bg-white;
+  }
+
+  .btn {
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-55;
+  }
+
+  .btn-primary {
+    @apply bg-forest-800 text-white hover:bg-forest-700;
+  }
+
+  .btn-secondary {
+    @apply border border-stone-300 bg-white text-ink hover:border-forest-300 hover:bg-forest-50;
+  }
+
+  .btn-ghost {
+    @apply text-forest-800 hover:bg-forest-50;
+  }
+
+  .btn-danger {
+    @apply border border-red-200 bg-white text-red-700 hover:bg-red-50;
+  }
+
+  .btn-sm {
+    @apply px-3 py-2 text-xs;
+  }
+
+  .btn-icon {
+    @apply inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-stone-100 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-stone-300 bg-white px-3.5 py-2.5 text-sm text-ink placeholder:text-stone-400 transition focus:border-forest-500 focus:ring-4 focus:ring-forest-500/10 focus:outline-none disabled:bg-stone-50;
+  }
+
+  .textarea {
+    @apply w-full rounded-xl border border-stone-300 bg-white px-3.5 py-2.5 text-sm leading-relaxed text-ink placeholder:text-stone-400 transition focus:border-forest-500 focus:ring-4 focus:ring-forest-500/10 focus:outline-none;
+    min-height: 6rem;
+    resize: vertical;
+  }
+
+  .label {
+    @apply mb-1.5 block text-[11px] font-bold tracking-[0.12em] text-ink-muted uppercase;
+  }
+
+  .hint {
+    @apply text-xs leading-relaxed text-ink-muted;
+  }
+
+  .eyebrow {
+    @apply text-[10.5px] font-bold tracking-[0.2em] text-gold-600 uppercase;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold whitespace-nowrap;
+  }
+
+  .badge-neutral {
+    @apply border-stone-200 bg-stone-50 text-ink-soft;
+  }
+
+  .badge-progress {
+    @apply border-gold-200 bg-gold-100 text-gold-700;
+  }
+
+  .badge-success {
+    @apply border-forest-200 bg-forest-50 text-forest-700;
+  }
+
+  .badge-danger {
+    @apply border-red-200 bg-red-50 text-red-700;
+  }
+
+  .nav-item {
+    @apply flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-forest-100/75 transition-colors hover:bg-white/8 hover:text-white;
+  }
+
+  .nav-item-active {
+    @apply bg-white/10 text-white shadow-[inset_3px_0_0_var(--color-gold-400)];
+  }
+
+  .table {
+    @apply w-full border-collapse text-left text-sm;
+  }
+
+  .table th {
+    @apply border-b border-line px-3 py-3 text-[10.5px] font-bold tracking-[0.12em] whitespace-nowrap text-ink-muted uppercase;
+  }
+
+  .table td {
+    @apply border-b border-stone-100 px-3 py-3 align-top;
+  }
+
+  .table tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .table tbody tr {
+    @apply transition-colors hover:bg-forest-50/45;
+  }
+
+  .table-link {
+    @apply cursor-pointer text-left font-semibold text-forest-800 underline-offset-4 hover:underline;
+  }
+
+  .panel-heading {
+    @apply flex flex-wrap items-start justify-between gap-3 border-b border-line px-5 py-4;
+  }
+
+  .panel-title {
+    @apply font-display text-lg font-semibold text-forest-900;
+  }
+
+  .stat-tile {
+    @apply relative overflow-hidden rounded-2xl border border-line bg-white p-5 shadow-card;
+  }
+
+  .stat-value {
+    @apply font-display text-4xl leading-none font-semibold text-forest-900;
+  }
+
+  .skeleton {
+    @apply animate-pulse rounded-lg bg-stone-200/70;
+  }
+
+  .divider {
+    @apply h-px w-full bg-line;
+  }
+
+  .field-error {
+    @apply mt-1.5 text-xs font-medium text-red-700;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .animate-fade-up {
+    animation: fade-up 0.35s ease both;
+  }
+
+  .animate-fade-in {
+    animation: fade-in 0.2s ease both;
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
