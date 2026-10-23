@@ -518,6 +518,7 @@
       bold: false,
       italic: false,
       align: 'left',
+      valign: 'top',
       background: 'transparent',
       source_block: '',
       binding: '',
@@ -857,7 +858,17 @@
       node = wrapper
     } else {
       const text = doc.createElement('div')
-      text.textContent = element.text ?? ''
+      const inner = doc.createElement('span')
+      inner.className = 'layout-text-inner'
+      inner.textContent = element.text ?? ''
+      inner.style.display = 'block'
+      inner.style.width = '100%'
+      inner.style.whiteSpace = 'pre-wrap'
+      text.appendChild(inner)
+      text.style.display = 'flex'
+      text.style.flexDirection = 'column'
+      text.style.justifyContent =
+        element.valign === 'middle' ? 'center' : element.valign === 'bottom' ? 'flex-end' : 'flex-start'
       text.style.fontFamily =
         element.font_family === 'serif'
           ? "Georgia, 'Times New Roman', serif"
@@ -868,7 +879,6 @@
       text.style.fontStyle = element.italic ? 'italic' : 'normal'
       text.style.textAlign = element.align ?? 'left'
       text.style.background = element.background ?? 'transparent'
-      text.style.whiteSpace = 'pre-wrap'
       text.style.padding = '.8mm'
       text.style.overflow = 'hidden'
       text.style.boxSizing = 'border-box'
@@ -2646,12 +2656,23 @@
                     oninput={(event) => updateElement({ color: (event.currentTarget as HTMLInputElement).value })} />
                 </label>
                 <label class="block">
-                  <span class="label">Perataan</span>
+                  <span class="label">Rata horizontal</span>
                   <select class="input py-1.5 text-xs" value={activeElement.align ?? 'left'}
+                    data-text-align
                     onchange={(event) => updateElement({ align: (event.currentTarget as HTMLSelectElement).value as 'left' | 'center' | 'right' }, true)}>
                     <option value="left">Kiri</option>
                     <option value="center">Tengah</option>
                     <option value="right">Kanan</option>
+                  </select>
+                </label>
+                <label class="block">
+                  <span class="label">Rata vertikal</span>
+                  <select class="input py-1.5 text-xs" value={activeElement.valign ?? 'top'}
+                    data-text-valign
+                    onchange={(event) => updateElement({ valign: (event.currentTarget as HTMLSelectElement).value as 'top' | 'middle' | 'bottom' }, true)}>
+                    <option value="top">Atas</option>
+                    <option value="middle">Tengah</option>
+                    <option value="bottom">Bawah</option>
                   </select>
                 </label>
               </div>

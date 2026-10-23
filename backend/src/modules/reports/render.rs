@@ -834,18 +834,24 @@ fn render_layout_element(element: &LayoutElement, ctx: &DesignContext) -> String
             } else {
                 "'Segoe UI', Arial, sans-serif"
             };
+            let justify = match element.valign.as_str() {
+                "middle" => "center",
+                "bottom" => "flex-end",
+                _ => "flex-start",
+            };
             style.push_str(&format!(
-                "font-family:{};font-size:{}pt;color:{};font-weight:{};font-style:{};text-align:{};background:{};",
+                "font-family:{};font-size:{}pt;color:{};font-weight:{};font-style:{};text-align:{};background:{};display:flex;flex-direction:column;justify-content:{};",
                 font_family,
                 element.font_size,
                 element.color,
                 if element.bold { 700 } else { 400 },
                 if element.italic { "italic" } else { "normal" },
                 element.align,
-                element.background
+                element.background,
+                justify
             ));
             format!(
-                "<div class=\"layout-element layout-text\" data-element-id=\"{}\" style=\"{}\">{}</div>",
+                "<div class=\"layout-element layout-text\" data-element-id=\"{}\" style=\"{}\"><span class=\"layout-text-inner\">{}</span></div>",
                 escape_html(&element.id),
                 style,
                 escape_html(&element.text)
@@ -1736,7 +1742,8 @@ h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; color: #143d30; mar
 .layout-layer > * { pointer-events: auto; }
 .layout-element { position: absolute; box-sizing: border-box; }
 .layout-image { display: block; width: 100%; height: 100%; }
-.layout-text { white-space: pre-wrap; overflow: hidden; padding: .8mm; }
+.layout-text { display: flex; flex-direction: column; overflow: hidden; padding: .8mm; }
+.layout-text-inner { width: 100%; white-space: pre-wrap; }
 .layout-card-label { color: #46534b; font-weight: 600; }
 .layout-card-value { font-family: Georgia, serif; font-weight: 500; line-height: 1.05; margin-top: auto; }
 .layout-card-unit { color: #5b6861; }
@@ -1924,6 +1931,42 @@ mod tests {
         assert!(html.contains(">999<"));
         assert!(html.contains(">pohon<"));
         assert!(!html.contains("Bibit ditanam"));
+    }
+
+    #[test]
+    fn renders_text_vertical_alignment() {
+        let metrics = ReportMetrics::default();
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![crate::modules::reports::layout::PageLayout {
+                page: 2,
+                blocks: std::collections::BTreeMap::new(),
+                elements: vec![LayoutElement {
+                    id: "text-1".into(),
+                    kind: "text".into(),
+                    x: 10.0,
+                    y: 10.0,
+                    width: 80.0,
+                    height: 30.0,
+                    text: "Teks tengah".into(),
+                    align: "center".into(),
+                    valign: "middle".into(),
+                    ..Default::default()
+                }],
+            }],
+        };
+
+        let html = render_with_layout(
+            &metrics,
+            &ReportContent::default(),
+            &Config::test_config(),
+            &layout,
+            &HashMap::new(),
+        );
+        assert!(html.contains("layout-text-inner"));
+        assert!(html.contains("justify-content:center"));
+        assert!(html.contains("text-align:center"));
+        assert!(html.contains("Teks tengah"));
     }
 
     #[test]

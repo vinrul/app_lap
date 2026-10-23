@@ -69,6 +69,7 @@ pub struct LayoutElement {
     pub bold: bool,
     pub italic: bool,
     pub align: String,
+    pub valign: String,
     pub background: String,
     pub source_block: String,
     pub binding: String,
@@ -142,6 +143,7 @@ impl Default for LayoutElement {
             bold: false,
             italic: false,
             align: String::new(),
+            valign: String::new(),
             background: String::new(),
             source_block: String::new(),
             binding: String::new(),
@@ -353,6 +355,11 @@ impl LayoutElement {
                     "center" => "center".to_string(),
                     "right" => "right".to_string(),
                     _ => "left".to_string(),
+                };
+                self.valign = match self.valign.trim().to_ascii_lowercase().as_str() {
+                    "middle" | "center" => "middle".to_string(),
+                    "bottom" => "bottom".to_string(),
+                    _ => "top".to_string(),
                 };
                 self.clear_table_chart();
             }
@@ -811,6 +818,42 @@ mod tests {
         assert_eq!(card.border_width, 10.0);
         assert_eq!(card.radius, 20.0);
         assert_eq!(card.font_size, 24.0);
+    }
+
+    #[test]
+    fn sanitizes_text_vertical_alignment() {
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![PageLayout {
+                page: 2,
+                blocks: BTreeMap::new(),
+                elements: vec![
+                    LayoutElement {
+                        id: "text-bottom".into(),
+                        kind: "text".into(),
+                        valign: "BOTTOM".into(),
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "text-center".into(),
+                        kind: "text".into(),
+                        valign: "center".into(),
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "text-default".into(),
+                        kind: "text".into(),
+                        valign: "weird".into(),
+                        ..Default::default()
+                    },
+                ],
+            }],
+        };
+        let sanitized = layout.sanitize();
+        let page = &sanitized.pages[1];
+        assert_eq!(page.elements[0].valign, "bottom");
+        assert_eq!(page.elements[1].valign, "middle");
+        assert_eq!(page.elements[2].valign, "top");
     }
 
     #[test]

@@ -78,6 +78,7 @@ export interface LayoutElement {
   bold?: boolean
   italic?: boolean
   align?: 'left' | 'center' | 'right'
+  valign?: 'top' | 'middle' | 'bottom'
   background?: string
   source_block?: string
   binding?: string
