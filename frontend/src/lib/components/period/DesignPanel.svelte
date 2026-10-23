@@ -17,6 +17,9 @@
     ImagePlus,
     Layers,
     Link2,
+    Maximize2,
+    Minus,
+    Plus,
     Redo2,
     Save,
     Square,
@@ -79,6 +82,8 @@
   const PAGE_HEIGHT = 297
   const PAGE_WIDTH_PX = 793.7
   const PAGE_HEIGHT_PX = 1122.5
+  const MIN_ZOOM = 0.25
+  const MAX_ZOOM = 2
   const MAX_HISTORY = 40
 
   let {
@@ -95,6 +100,8 @@
   let canvasWidth = $state(PAGE_WIDTH_PX)
   let canvasHeight = $state(PAGE_HEIGHT_PX)
   let canvasZoom = $state(1)
+  let fitZoom = $state(1)
+  let zoomOverride = $state<number | null>(null)
   let fileInput = $state<HTMLInputElement | null>(null)
   let textAreaEl = $state<HTMLTextAreaElement | null>(null)
 
@@ -128,6 +135,10 @@
   const hasImport = $derived(Boolean(selectedImportId))
   const dirty = $derived(JSON.stringify(layout) !== savedJson)
   const pageNumbers = Array.from({ length: 9 }, (_, index) => index + 1)
+  const zoomPercent = $derived(Math.round((zoomOverride ?? fitZoom) * 100))
+  const atFitZoom = $derived(zoomOverride === null)
+  const canZoomOut = $derived((zoomOverride ?? fitZoom) > MIN_ZOOM + 0.001)
+  const canZoomIn = $derived((zoomOverride ?? fitZoom) < MAX_ZOOM - 0.001)
   const activeElement = $derived.by(() => {
     if (!selected || selected.kind !== 'element') return null
     return getElement(selected.page, selected.id)
@@ -526,6 +537,7 @@
     sources = []
     checkedIds = []
     selectedTemplateId = ''
+    zoomOverride = null
     if (!selectedImportId) {
       content = { ...emptyContent }
       layout = emptyLayout()
@@ -629,10 +641,41 @@
       availableHeight / PAGE_HEIGHT_PX,
       1,
     ) * 0.998
-    canvasZoom = Math.max(0.05, scale)
+    fitZoom = Math.max(0.05, scale)
+    applyZoom()
+  }
+
+  function applyZoom(): void {
+    canvasZoom = zoomOverride === null ? fitZoom : clamp(zoomOverride, MIN_ZOOM, MAX_ZOOM)
     canvasWidth = Math.ceil(PAGE_WIDTH_PX * canvasZoom) + 3
     canvasHeight = Math.ceil(PAGE_HEIGHT_PX * canvasZoom) + 3
     applyPageVisibility()
+  }
+
+  function setZoom(value: number): void {
+    const next = Math.round(clamp(value, MIN_ZOOM, MAX_ZOOM) * 100) / 100
+    zoomOverride = Math.abs(next - fitZoom) < 0.005 ? null : next
+    applyZoom()
+    centerCanvas()
+  }
+
+  function zoomBy(delta: number): void {
+    setZoom((zoomOverride ?? fitZoom) + delta)
+  }
+
+  function resetZoom(): void {
+    zoomOverride = null
+    applyZoom()
+    centerCanvas()
+  }
+
+  function centerCanvas(): void {
+    const area = canvasAreaEl
+    if (!area) return
+    requestAnimationFrame(() => {
+      area.scrollLeft = Math.max(0, (area.scrollWidth - area.clientWidth) / 2)
+      area.scrollTop = Math.max(0, (area.scrollHeight - area.clientHeight) / 2)
+    })
   }
 
   function sourceMessage(doc: Document, message: string): HTMLElement {
@@ -1670,6 +1713,7 @@
     currentPage = page
     applyPageVisibility()
     renderSelection()
+    centerCanvas()
   }
 
   function addElement(element: LayoutElement) {
@@ -2265,6 +2309,21 @@
       else undo()
       return
     }
+    if (mod && (event.key === '+' || event.key === '=')) {
+      event.preventDefault()
+      zoomBy(0.1)
+      return
+    }
+    if (mod && event.key === '-') {
+      event.preventDefault()
+      zoomBy(-0.1)
+      return
+    }
+    if (mod && event.key === '0') {
+      event.preventDefault()
+      resetZoom()
+      return
+    }
     if (event.key === 'Delete' || event.key === 'Backspace') {
       if (selected) {
         event.preventDefault()
@@ -2365,40 +2424,57 @@
         <input bind:this={fileInput} class="hidden" type="file" accept="image/png,image/jpeg" onchange={handleFile} />
       </div>
 
-      <div class="flex flex-wrap items-center justify-center gap-2 border-b border-line bg-stone-50/60 px-3 py-2">
-        <Button variant="ghost" size="sm" disabled={currentPage <= 1} onclick={() => goToPage(currentPage - 1)}>
-          <ChevronLeft size={14} /> Sebelumnya
-        </Button>
-        <select class="input max-w-[150px] py-1.5 text-xs" value={currentPage}
-          data-page-selector
-          onchange={(event) => goToPage(Number((event.currentTarget as HTMLSelectElement).value))}>
-          {#each pageNumbers as page}
-            <option value={page}>Halaman {page} / {pageNumbers.length}</option>
-          {/each}
-        </select>
-        <Button variant="ghost" size="sm" disabled={currentPage >= pageNumbers.length} onclick={() => goToPage(currentPage + 1)}>
-          Berikutnya <ChevronRight size={14} />
-        </Button>
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-stone-50/60 px-3 py-2">
+        <div class="flex shrink-0 items-center gap-2" data-page-nav>
+          <Button variant="ghost" size="sm" disabled={currentPage <= 1} onclick={() => goToPage(currentPage - 1)}>
+            <ChevronLeft size={14} /> Sebelumnya
+          </Button>
+          <select class="input max-w-[150px] py-1.5 text-xs" value={currentPage}
+            data-page-selector
+            onchange={(event) => goToPage(Number((event.currentTarget as HTMLSelectElement).value))}>
+            {#each pageNumbers as page}
+              <option value={page}>Halaman {page} / {pageNumbers.length}</option>
+            {/each}
+          </select>
+          <Button variant="ghost" size="sm" disabled={currentPage >= pageNumbers.length} onclick={() => goToPage(currentPage + 1)}>
+            Berikutnya <ChevronRight size={14} />
+          </Button>
+        </div>
+        <div class="flex shrink-0 items-center gap-1" data-zoom-controls>
+          <span class="ml-1 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Zoom</span>
+          <Button variant="ghost" size="sm" disabled={!canZoomOut} onclick={() => zoomBy(-0.1)}>
+            <span data-zoom-action="out"><Minus size={14} /></span>
+          </Button>
+          <span class="min-w-[44px] text-center text-[11px] font-semibold text-ink-muted" data-zoom-label>{zoomPercent}%</span>
+          <Button variant="ghost" size="sm" disabled={!canZoomIn} onclick={() => zoomBy(0.1)}>
+            <span data-zoom-action="in"><Plus size={14} /></span>
+          </Button>
+          <Button variant="ghost" size="sm" disabled={atFitZoom} onclick={resetZoom}>
+            <span data-zoom-action="fit"><Maximize2 size={14} /> Pas</span>
+          </Button>
+        </div>
       </div>
 
-      <div bind:this={canvasAreaEl} class="flex h-[calc(100vh-230px)] min-h-[480px] items-center justify-center overflow-hidden bg-stone-100 p-3">
-        {#if loading}
-          <div class="flex h-full w-full items-center justify-center text-sm text-ink-muted">Menyiapkan kanvas laporan…</div>
-        {:else}
-          <iframe
-            bind:this={iframeEl}
-            title="Editor tata letak laporan"
-            class="block rounded-lg border border-line bg-white"
-            style={`width:${canvasWidth}px;height:${canvasHeight}px`}
-            srcdoc={iframeHtml}
-            onload={handleIframeLoad}
-          ></iframe>
-        {/if}
+      <div bind:this={canvasAreaEl} data-canvas-area class="h-[calc(100vh-230px)] min-h-[480px] overflow-auto bg-stone-100">
+        <div class="flex min-h-full w-max min-w-full items-center justify-center p-3">
+          {#if loading}
+            <div class="text-sm text-ink-muted">Menyiapkan kanvas laporan…</div>
+          {:else}
+            <iframe
+              bind:this={iframeEl}
+              title="Editor tata letak laporan"
+              class="block rounded-lg border border-line bg-white"
+              style={`width:${canvasWidth}px;height:${canvasHeight}px`}
+              srcdoc={iframeHtml}
+              onload={handleIframeLoad}
+            ></iframe>
+          {/if}
+        </div>
       </div>
 
       <div class="border-t border-line bg-stone-50/60 px-4 py-2.5 text-[10px] leading-relaxed text-ink-muted">
         Satu halaman ditampilkan pada satu waktu. Gunakan Sebelumnya/Berikutnya atau Page Up/Page Down untuk berpindah halaman.
-        Tarik blok atau elemen untuk menggeser; gunakan sudut seleksi untuk mengubah ukuran. Perubahan baru masuk ke PDF setelah disimpan.
+        Tombol −/+ atau Ctrl +/− untuk zoom, dan Pas untuk kembali menampilkan satu halaman penuh. Perubahan baru masuk ke PDF setelah disimpan.
       </div>
     </section>
 
