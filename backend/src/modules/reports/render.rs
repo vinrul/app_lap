@@ -808,8 +808,360 @@ fn render_layout_element(element: &LayoutElement, ctx: &DesignContext) -> String
                 escape_html(&element.text)
             )
         }
+        "table" => render_table_element(element, &style),
+        "chart" => render_chart_element(element, &style),
         _ => String::new(),
     }
+}
+
+fn render_table_element(element: &LayoutElement, style: &str) -> String {
+    let mut rows = element.table_rows.clone();
+    if rows.is_empty() {
+        return String::new();
+    }
+    let header = if element.table_header {
+        Some(rows.remove(0))
+    } else {
+        None
+    };
+    let border = format!("{}pt solid {}", element.border_width, element.border_color);
+    let mut html = format!(
+        "<div class=\"layout-element layout-table\" data-element-id=\"{}\" style=\"{}background:{};overflow:hidden;\"><table class=\"design-table\" style=\"font-size:{}pt;color:{};--table-border:{};\">",
+        escape_html(&element.id),
+        style,
+        element.fill,
+        element.font_size,
+        element.color,
+        border
+    );
+
+    if let Some(header_row) = header {
+        html.push_str("<thead><tr>");
+        for cell in header_row {
+            html.push_str(&format!(
+                "<th style=\"background:{};color:{};\">{}</th>",
+                element.table_header_bg,
+                element.table_header_color,
+                escape_html(&cell)
+            ));
+        }
+        html.push_str("</tr></thead>");
+    }
+
+    html.push_str("<tbody>");
+    for (row_index, row) in rows.iter().enumerate() {
+        html.push_str("<tr>");
+        for cell in row {
+            let align = if is_numeric_cell(cell) {
+                "text-align:right;"
+            } else {
+                ""
+            };
+            let stripe = if row_index % 2 == 1 && !element.table_stripe.is_empty() {
+                format!("background:{};", element.table_stripe)
+            } else {
+                String::new()
+            };
+            html.push_str(&format!(
+                "<td style=\"{}{}\">{}</td>",
+                stripe,
+                align,
+                escape_html(cell)
+            ));
+        }
+        html.push_str("</tr>");
+    }
+    html.push_str("</tbody></table></div>");
+    html
+}
+
+fn render_chart_element(element: &LayoutElement, style: &str) -> String {
+    let base = (element.font_size * 1.6).clamp(10.0, 22.0);
+    let top = if element.chart_title.trim().is_empty() {
+        18.0
+    } else {
+        50.0
+    };
+    let mut body = String::new();
+    if !element.fill.is_empty() {
+        body.push_str(&format!(
+            "<rect x=\"0\" y=\"0\" width=\"600\" height=\"360\" fill=\"{}\"/>",
+            element.fill
+        ));
+    }
+    if !element.chart_title.trim().is_empty() {
+        body.push_str(&format!(
+            "<text x=\"300\" y=\"30\" text-anchor=\"middle\" font-size=\"{:.1}\" font-weight=\"700\" fill=\"{}\">{}</text>",
+            base + 4.0,
+            element.color,
+            escape_html(&element.chart_title)
+        ));
+    }
+
+    let chart_svg = match element.chart_type.as_str() {
+        "line" => render_line_chart(element, top, base),
+        "pie" | "donut" => render_pie_chart(element, top, base, element.chart_type == "donut"),
+        _ => render_bar_chart(element, top, base),
+    };
+    body.push_str(&chart_svg);
+
+    format!(
+        "<svg class=\"layout-element layout-chart\" data-element-id=\"{}\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 600 360\" preserveAspectRatio=\"xMidYMid meet\" font-family=\"Segoe UI, Arial, sans-serif\" style=\"{}display:block;overflow:hidden;\">{}</svg>",
+        escape_html(&element.id),
+        style,
+        body
+    )
+}
+
+fn chart_color(element: &LayoutElement, index: usize) -> String {
+    element
+        .chart_colors
+        .get(index)
+        .cloned()
+        .unwrap_or_else(|| chart_fallback_color(index).to_string())
+}
+
+fn chart_fallback_color(index: usize) -> &'static str {
+    const COLORS: [&str; 8] = [
+        "#143d30", "#b8894b", "#3f765d", "#5b8fa8", "#a4743d", "#d9b87e", "#7a857f", "#2f5d7c",
+    ];
+    COLORS[index % COLORS.len()]
+}
+
+fn chart_value_text(value: f64) -> String {
+    if (value.fract()).abs() < 0.05 {
+        format_count(value.round() as i64)
+    } else {
+        format!("{value:.1}")
+    }
+}
+
+fn render_bar_chart(element: &LayoutElement, top: f64, base: f64) -> String {
+    let left = 55.0;
+    let right = 575.0;
+    let bottom = 316.0;
+    let plot_height = (bottom - top).max(40.0);
+    let count = element.chart_values.len().max(1);
+    let step = (right - left) / count as f64;
+    let bar_width = (step * 0.64).max(3.0);
+    let max = element
+        .chart_values
+        .iter()
+        .cloned()
+        .fold(0.0_f64, f64::max)
+        .max(1.0);
+    let mut svg = format!(
+        "<line x1=\"{left}\" y1=\"{bottom}\" x2=\"{right}\" y2=\"{bottom}\" stroke=\"{}\" stroke-width=\"1.2\"/>",
+        element.chart_axis_color
+    );
+    svg.push_str(&format!(
+        "<text x=\"{}\" y=\"{}\" text-anchor=\"end\" font-size=\"{:.1}\" fill=\"{}\">{}</text>",
+        left - 8.0,
+        top + base,
+        base - 2.0,
+        element.chart_axis_color,
+        chart_value_text(max)
+    ));
+
+    for (index, value) in element.chart_values.iter().enumerate() {
+        let height = (value / max) * plot_height;
+        let x = left + step * index as f64 + (step - bar_width) / 2.0;
+        let y = bottom - height;
+        let color = chart_color(element, index);
+        svg.push_str(&format!(
+            "<rect x=\"{x:.2}\" y=\"{y:.2}\" width=\"{bar_width:.2}\" height=\"{height:.2}\" rx=\"2\" fill=\"{color}\"/>"
+        ));
+        if element.chart_show_values {
+            svg.push_str(&format!(
+                "<text x=\"{:.2}\" y=\"{:.2}\" text-anchor=\"middle\" font-size=\"{:.1}\" fill=\"{}\">{}</text>",
+                x + bar_width / 2.0,
+                (y - 4.0).max(top + base),
+                base - 2.0,
+                element.color,
+                chart_value_text(*value)
+            ));
+        }
+        if let Some(label) = element.chart_labels.get(index) {
+            svg.push_str(&format!(
+                "<text x=\"{:.2}\" y=\"{:.2}\" text-anchor=\"middle\" font-size=\"{:.1}\" fill=\"{}\">{}</text>",
+                x + bar_width / 2.0,
+                bottom + base + 8.0,
+                base - 2.0,
+                element.chart_axis_color,
+                escape_html(&shorten(label, 14))
+            ));
+        }
+    }
+    svg
+}
+
+fn render_line_chart(element: &LayoutElement, top: f64, base: f64) -> String {
+    let left = 55.0;
+    let right = 575.0;
+    let bottom = 316.0;
+    let plot_height = (bottom - top).max(40.0);
+    let count = element.chart_values.len().max(1);
+    let step = if count > 1 {
+        (right - left) / (count - 1) as f64
+    } else {
+        0.0
+    };
+    let max = element
+        .chart_values
+        .iter()
+        .cloned()
+        .fold(0.0_f64, f64::max)
+        .max(1.0);
+    let color = chart_color(element, 0);
+    let mut points = String::new();
+    let mut svg = format!(
+        "<line x1=\"{left}\" y1=\"{bottom}\" x2=\"{right}\" y2=\"{bottom}\" stroke=\"{}\" stroke-width=\"1.2\"/>",
+        element.chart_axis_color
+    );
+
+    let mut coordinates = Vec::new();
+    for (index, value) in element.chart_values.iter().enumerate() {
+        let x = if count > 1 {
+            left + step * index as f64
+        } else {
+            (left + right) / 2.0
+        };
+        let y = bottom - (value / max) * plot_height;
+        coordinates.push((x, y, *value));
+        if index > 0 {
+            points.push(' ');
+        }
+        points.push_str(&format!("{x:.2},{y:.2}"));
+    }
+
+    svg.push_str(&format!(
+        "<polyline points=\"{points}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"3\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>"
+    ));
+    for (index, (x, y, value)) in coordinates.iter().enumerate() {
+        svg.push_str(&format!(
+            "<circle cx=\"{x:.2}\" cy=\"{y:.2}\" r=\"4.5\" fill=\"{color}\"/>"
+        ));
+        if element.chart_show_values {
+            svg.push_str(&format!(
+                "<text x=\"{:.2}\" y=\"{:.2}\" text-anchor=\"middle\" font-size=\"{:.1}\" fill=\"{}\">{}</text>",
+                x,
+                (y - 8.0).max(top + base),
+                base - 2.0,
+                element.color,
+                chart_value_text(*value)
+            ));
+        }
+        if let Some(label) = element.chart_labels.get(index) {
+            svg.push_str(&format!(
+                "<text x=\"{x:.2}\" y=\"{:.2}\" text-anchor=\"middle\" font-size=\"{:.1}\" fill=\"{}\">{}</text>",
+                bottom + base + 8.0,
+                base - 2.0,
+                element.chart_axis_color,
+                escape_html(&shorten(label, 14))
+            ));
+        }
+    }
+    svg
+}
+
+fn render_pie_chart(element: &LayoutElement, top: f64, base: f64, donut: bool) -> String {
+    let values = &element.chart_values;
+    let total: f64 = values.iter().sum();
+    if total <= 0.0 {
+        return format!(
+            "<text x=\"300\" y=\"180\" text-anchor=\"middle\" font-size=\"{:.1}\" fill=\"{}\">Belum ada data</text>",
+            base + 2.0,
+            element.chart_axis_color
+        );
+    }
+
+    let show_legend = element.chart_show_legend;
+    let cx = if show_legend { 205.0 } else { 300.0 };
+    let cy = top + (316.0 - top) / 2.0;
+    let outer = ((316.0 - top) / 2.0 - 12.0).clamp(40.0, 125.0);
+    let inner = if donut { outer * 0.55 } else { 0.0 };
+    let mut svg = String::new();
+    let mut angle = -std::f64::consts::FRAC_PI_2;
+
+    for (index, value) in values.iter().enumerate() {
+        if *value <= 0.0 {
+            continue;
+        }
+        let sweep = (*value / total) * std::f64::consts::TAU;
+        let end = angle + sweep;
+        let color = chart_color(element, index);
+        let x1 = cx + outer * angle.cos();
+        let y1 = cy + outer * angle.sin();
+        let x2 = cx + outer * end.cos();
+        let y2 = cy + outer * end.sin();
+        let large = if sweep > std::f64::consts::PI { 1 } else { 0 };
+
+        if values.iter().filter(|item| **item > 0.0).count() == 1 {
+            svg.push_str(&format!(
+                "<circle cx=\"{cx}\" cy=\"{cy}\" r=\"{outer}\" fill=\"{color}\"/>"
+            ));
+        } else if donut {
+            let ix1 = cx + inner * angle.cos();
+            let iy1 = cy + inner * angle.sin();
+            let ix2 = cx + inner * end.cos();
+            let iy2 = cy + inner * end.sin();
+            svg.push_str(&format!(
+                "<path d=\"M {x1:.2} {y1:.2} A {outer:.2} {outer:.2} 0 {large} 1 {x2:.2} {y2:.2} L {ix2:.2} {iy2:.2} A {inner:.2} {inner:.2} 0 {large} 0 {ix1:.2} {iy1:.2} Z\" fill=\"{color}\"/>"
+            ));
+        } else {
+            svg.push_str(&format!(
+                "<path d=\"M {cx} {cy} L {x1:.2} {y1:.2} A {outer:.2} {outer:.2} 0 {large} 1 {x2:.2} {y2:.2} Z\" fill=\"{color}\"/>"
+            ));
+        }
+
+        if element.chart_show_values && sweep > 0.35 {
+            let mid = angle + sweep / 2.0;
+            let radius = if donut {
+                (outer + inner) / 2.0
+            } else {
+                outer * 0.62
+            };
+            let tx = cx + radius * mid.cos();
+            let ty = cy + radius * mid.sin() + base * 0.35;
+            svg.push_str(&format!(
+                "<text x=\"{tx:.2}\" y=\"{ty:.2}\" text-anchor=\"middle\" font-size=\"{:.1}\" font-weight=\"700\" fill=\"#ffffff\">{:.0}%</text>",
+                base - 2.0,
+                sweep / std::f64::consts::TAU * 100.0
+            ));
+        }
+        angle = end;
+    }
+
+    if donut {
+        svg.push_str(&format!(
+            "<circle cx=\"{cx}\" cy=\"{cy}\" r=\"{inner}\" fill=\"{}\"/>",
+            element.fill
+        ));
+    }
+
+    if show_legend {
+        let mut y = top + base;
+        for (index, label) in element.chart_labels.iter().take(12).enumerate() {
+            let color = chart_color(element, index);
+            svg.push_str(&format!(
+                "<rect x=\"355\" y=\"{:.2}\" width=\"12\" height=\"12\" rx=\"2\" fill=\"{color}\"/>",
+                y - 10.0
+            ));
+            svg.push_str(&format!(
+                "<text x=\"374\" y=\"{y:.2}\" font-size=\"{:.1}\" fill=\"{}\">{}</text>",
+                base - 3.0,
+                element.color,
+                escape_html(&shorten(label, 20))
+            ));
+            y += base + 7.0;
+        }
+    }
+    svg
+}
+
+fn is_numeric_cell(value: &str) -> bool {
+    let normalized = value.trim().replace('.', "").replace(',', ".");
+    !normalized.is_empty() && normalized.parse::<f64>().is_ok()
 }
 
 fn block_css(layout: &ReportLayout) -> String {
@@ -1148,6 +1500,10 @@ h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; color: #143d30; mar
 .layout-element { position: absolute; box-sizing: border-box; }
 .layout-image { display: block; width: 100%; height: 100%; }
 .layout-text { white-space: pre-wrap; overflow: hidden; padding: .8mm; }
+.layout-table table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.layout-table th, .layout-table td { border: var(--table-border, .5pt solid #d7ddd6); padding: 1.2mm 1.5mm; vertical-align: top; word-break: break-word; }
+.layout-table th { font-weight: 700; }
+.layout-chart { background: transparent; }
 h3 { font-size: 11pt; margin-bottom: 2.5mm; font-weight: 600; }
 p { margin: 0 0 2.5mm; }
 .muted { color: #7a857f; font-style: italic; }

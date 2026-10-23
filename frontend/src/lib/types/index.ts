@@ -54,7 +54,7 @@ export interface LayoutBlockOffset {
 
 export interface LayoutElement {
   id: string
-  type: 'image' | 'rect' | 'text'
+  type: 'image' | 'rect' | 'text' | 'table' | 'chart'
   x: number
   y: number
   width: number
@@ -78,6 +78,19 @@ export interface LayoutElement {
   italic?: boolean
   align?: 'left' | 'center' | 'right'
   background?: string
+  table_rows?: string[][]
+  table_header?: boolean
+  table_header_bg?: string
+  table_header_color?: string
+  table_stripe?: string
+  chart_type?: 'bar' | 'line' | 'pie' | 'donut'
+  chart_title?: string
+  chart_labels?: string[]
+  chart_values?: number[]
+  chart_colors?: string[]
+  chart_show_values?: boolean
+  chart_show_legend?: boolean
+  chart_axis_color?: string
 }
 
 export interface LayoutPage {

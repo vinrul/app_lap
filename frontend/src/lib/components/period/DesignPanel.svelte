@@ -2,6 +2,7 @@
   import { tick, untrack } from 'svelte'
   import {
     AlertCircle,
+    BarChart3,
     Check,
     Copy,
     Eye,
@@ -11,6 +12,7 @@
     Redo2,
     Save,
     Square,
+    Table2,
     Trash2,
     Type,
     Undo2,
@@ -212,6 +214,23 @@
       italic: false,
       align: 'left',
       background: 'transparent',
+      table_rows: [
+        ['Kolom 1', 'Kolom 2', 'Kolom 3'],
+        ['', '', ''],
+        ['', '', ''],
+      ],
+      table_header: true,
+      table_header_bg: '#143d30',
+      table_header_color: '#ffffff',
+      table_stripe: '#f6f8f5',
+      chart_type: 'bar',
+      chart_title: '',
+      chart_labels: ['A', 'B', 'C', 'D'],
+      chart_values: [10, 20, 15, 25],
+      chart_colors: ['#143d30', '#b8894b', '#3f765d', '#5b8fa8'],
+      chart_show_values: true,
+      chart_show_legend: true,
+      chart_axis_color: '#6d7872',
     }
   }
 
@@ -274,6 +293,9 @@
       .editor-selection { position: absolute; border: 1.5px solid #b8894b; z-index: 9999; pointer-events: none; box-sizing: border-box; }
       .editor-handle { position: absolute; width: 10px; height: 10px; background: #fff; border: 1.5px solid #b8894b; border-radius: 2px; pointer-events: auto; box-sizing: border-box; }
       .editor-dragging * { cursor: grabbing !important; }
+      .layout-table table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      .layout-table th, .layout-table td { border: var(--table-border, .5pt solid #d7ddd6); padding: 1.2mm 1.5mm; vertical-align: top; word-break: break-word; }
+      .layout-table th { font-weight: 700; }
     `
     doc.head.appendChild(style)
   }
@@ -307,6 +329,59 @@
       rect.style.border = `${element.border_width ?? 0.5}pt solid ${element.border_color ?? '#143d30'}`
       rect.style.borderRadius = `${element.radius ?? 1}mm`
       node = rect
+    } else if (element.type === 'table') {
+      const wrapper = doc.createElement('div')
+      wrapper.style.background = element.fill ?? '#ffffff'
+      const table = doc.createElement('table')
+      table.style.fontSize = `${element.font_size ?? 9}pt`
+      table.style.color = element.color ?? '#143d30'
+      table.style.setProperty(
+        '--table-border',
+        `${element.border_width ?? 0.5}pt solid ${element.border_color ?? '#d7ddd6'}`,
+      )
+      const rows = element.table_rows ?? []
+      const hasHeader = element.table_header !== false && rows.length > 1
+      const headerRow = hasHeader ? rows[0] : null
+      const bodyRows = hasHeader ? rows.slice(1) : rows
+      if (headerRow) {
+        const thead = doc.createElement('thead')
+        const tr = doc.createElement('tr')
+        for (const cell of headerRow) {
+          const th = doc.createElement('th')
+          th.textContent = cell
+          th.style.background = element.table_header_bg ?? '#143d30'
+          th.style.color = element.table_header_color ?? '#ffffff'
+          th.style.textAlign = isNumericCell(cell) ? 'right' : 'left'
+          tr.appendChild(th)
+        }
+        thead.appendChild(tr)
+        table.appendChild(thead)
+      }
+      const tbody = doc.createElement('tbody')
+      bodyRows.forEach((row, rowIndex) => {
+        const tr = doc.createElement('tr')
+        for (const cell of row) {
+          const td = doc.createElement('td')
+          td.textContent = cell
+          if (
+            rowIndex % 2 === 1 &&
+            element.table_stripe &&
+            element.table_stripe !== 'transparent'
+          ) {
+            td.style.background = element.table_stripe
+          }
+          td.style.textAlign = isNumericCell(cell) ? 'right' : 'left'
+          tr.appendChild(td)
+        }
+        tbody.appendChild(tr)
+      })
+      table.appendChild(tbody)
+      wrapper.appendChild(table)
+      node = wrapper
+    } else if (element.type === 'chart') {
+      const wrapper = doc.createElement('div')
+      wrapper.appendChild(createChartSvg(doc, element))
+      node = wrapper
     } else {
       const text = doc.createElement('div')
       text.textContent = element.text ?? ''
@@ -336,8 +411,234 @@
     node.style.height = `${element.height}mm`
     node.style.opacity = String(element.opacity ?? 1)
     node.style.zIndex = String(element.z ?? 0)
+    if (element.type === 'table' || element.type === 'chart') {
+      node.style.overflow = 'hidden'
+    }
     if (element.rotation) node.style.transform = `rotate(${element.rotation}deg)`
     return node
+  }
+
+  const SVG_NS = 'http://www.w3.org/2000/svg'
+  const CHART_PALETTE = ['#143d30', '#b8894b', '#3f765d', '#5b8fa8', '#a4743d', '#d9b87e', '#7a857f', '#2f5d7c']
+
+  function chartColor(element: LayoutElement, index: number): string {
+    return element.chart_colors?.[index] ?? CHART_PALETTE[index % CHART_PALETTE.length]
+  }
+
+  function chartValueText(value: number): string {
+    return Number.isInteger(value)
+      ? new Intl.NumberFormat('id-ID').format(value)
+      : value.toFixed(1)
+  }
+
+  function isNumericCell(value: string): boolean {
+    const normalized = value.trim().replace(/\./g, '').replace(',', '.')
+    return normalized !== '' && Number.isFinite(Number(normalized))
+  }
+
+  function svgNode(
+    doc: Document,
+    name: string,
+    attributes: Record<string, string | number> = {},
+  ): SVGElement {
+    const node = doc.createElementNS(SVG_NS, name) as SVGElement
+    for (const [key, value] of Object.entries(attributes)) {
+      node.setAttribute(key, String(value))
+    }
+    return node
+  }
+
+  function svgText(
+    doc: Document,
+    svg: SVGElement,
+    x: number,
+    y: number,
+    text: string,
+    options: { fill?: string; size?: number; anchor?: string; weight?: number } = {},
+  ): void {
+    const node = svgNode(doc, 'text', {
+      x,
+      y,
+      fill: options.fill ?? '#143d30',
+      'font-size': options.size ?? 14,
+      'text-anchor': options.anchor ?? 'start',
+      'font-weight': options.weight ?? 400,
+    })
+    node.textContent = text
+    svg.appendChild(node)
+  }
+
+  function createChartSvg(doc: Document, element: LayoutElement): SVGElement {
+    const svg = svgNode(doc, 'svg', {
+      viewBox: '0 0 600 360',
+      preserveAspectRatio: 'xMidYMid meet',
+      width: '100%',
+      height: '100%',
+      'font-family': 'Segoe UI, Arial, sans-serif',
+    })
+    const fill = element.fill ?? '#ffffff'
+    svg.appendChild(svgNode(doc, 'rect', { x: 0, y: 0, width: 600, height: 360, fill }))
+    const base = Math.min(22, Math.max(10, (element.font_size ?? 9) * 1.6))
+    const top = element.chart_title?.trim() ? 50 : 18
+    if (element.chart_title?.trim()) {
+      svgText(doc, svg, 300, 30, element.chart_title, {
+        fill: element.color ?? '#143d30',
+        size: base + 4,
+        anchor: 'middle',
+        weight: 700,
+      })
+    }
+    if (element.chart_type === 'line') {
+      appendLineChart(doc, svg, element, top, base)
+    } else if (element.chart_type === 'pie' || element.chart_type === 'donut') {
+      appendPieChart(doc, svg, element, top, base, element.chart_type === 'donut')
+    } else {
+      appendBarChart(doc, svg, element, top, base)
+    }
+    return svg
+  }
+
+  function appendBarChart(
+    doc: Document,
+    svg: SVGElement,
+    element: LayoutElement,
+    top: number,
+    base: number,
+  ): void {
+    const left = 55
+    const right = 575
+    const bottom = 316
+    const plotHeight = Math.max(40, bottom - top)
+    const values = element.chart_values ?? []
+    const count = Math.max(1, values.length)
+    const step = (right - left) / count
+    const barWidth = Math.max(3, step * 0.64)
+    const max = Math.max(1, ...values)
+    svg.appendChild(svgNode(doc, 'line', { x1: left, y1: bottom, x2: right, y2: bottom, stroke: element.chart_axis_color ?? '#6d7872', 'stroke-width': 1.2 }))
+    svgText(doc, svg, left - 8, top + base, chartValueText(max), { fill: element.chart_axis_color ?? '#6d7872', size: base - 2, anchor: 'end' })
+    values.forEach((value, index) => {
+      const height = (value / max) * plotHeight
+      const x = left + step * index + (step - barWidth) / 2
+      const y = bottom - height
+      const color = chartColor(element, index)
+      svg.appendChild(svgNode(doc, 'rect', { x, y, width: barWidth, height, rx: 2, fill: color }))
+      if (element.chart_show_values !== false) {
+        svgText(doc, svg, x + barWidth / 2, Math.max(top + base, y - 4), chartValueText(value), { fill: element.color ?? '#143d30', size: base - 2, anchor: 'middle' })
+      }
+      const label = element.chart_labels?.[index]
+      if (label) {
+        svgText(doc, svg, x + barWidth / 2, bottom + base + 8, truncateText(label, 14), { fill: element.chart_axis_color ?? '#6d7872', size: base - 2, anchor: 'middle' })
+      }
+    })
+  }
+
+  function appendLineChart(
+    doc: Document,
+    svg: SVGElement,
+    element: LayoutElement,
+    top: number,
+    base: number,
+  ): void {
+    const left = 55
+    const right = 575
+    const bottom = 316
+    const plotHeight = Math.max(40, bottom - top)
+    const values = element.chart_values ?? []
+    const count = Math.max(1, values.length)
+    const step = count > 1 ? (right - left) / (count - 1) : 0
+    const max = Math.max(1, ...values)
+    const color = chartColor(element, 0)
+    svg.appendChild(svgNode(doc, 'line', { x1: left, y1: bottom, x2: right, y2: bottom, stroke: element.chart_axis_color ?? '#6d7872', 'stroke-width': 1.2 }))
+    const coordinates = values.map((value, index) => {
+      const x = count > 1 ? left + step * index : (left + right) / 2
+      const y = bottom - (value / max) * plotHeight
+      return { x, y, value }
+    })
+    const polyline = svgNode(doc, 'polyline', {
+      points: coordinates.map((point) => `${point.x},${point.y}`).join(' '),
+      fill: 'none',
+      stroke: color,
+      'stroke-width': 3,
+      'stroke-linejoin': 'round',
+      'stroke-linecap': 'round',
+    })
+    svg.appendChild(polyline)
+    coordinates.forEach((point, index) => {
+      svg.appendChild(svgNode(doc, 'circle', { cx: point.x, cy: point.y, r: 4.5, fill: color }))
+      if (element.chart_show_values !== false) {
+        svgText(doc, svg, point.x, Math.max(top + base, point.y - 8), chartValueText(point.value), { fill: element.color ?? '#143d30', size: base - 2, anchor: 'middle' })
+      }
+      const label = element.chart_labels?.[index]
+      if (label) {
+        svgText(doc, svg, point.x, bottom + base + 8, truncateText(label, 14), { fill: element.chart_axis_color ?? '#6d7872', size: base - 2, anchor: 'middle' })
+      }
+    })
+  }
+
+  function appendPieChart(
+    doc: Document,
+    svg: SVGElement,
+    element: LayoutElement,
+    top: number,
+    base: number,
+    donut: boolean,
+  ): void {
+    const values = element.chart_values ?? []
+    const total = values.reduce((sum, value) => sum + value, 0)
+    if (total <= 0) {
+      svgText(doc, svg, 300, 180, 'Belum ada data', { fill: element.chart_axis_color ?? '#6d7872', size: base + 2, anchor: 'middle' })
+      return
+    }
+    const showLegend = element.chart_show_legend !== false
+    const cx = showLegend ? 205 : 300
+    const cy = top + (316 - top) / 2
+    const outer = Math.min(125, Math.max(40, (316 - top) / 2 - 12))
+    const inner = donut ? outer * 0.55 : 0
+    const positives = values.filter((value) => value > 0).length
+    let angle = -Math.PI / 2
+    values.forEach((value, index) => {
+      if (value <= 0) return
+      const sweep = (value / total) * Math.PI * 2
+      const end = angle + sweep
+      const color = chartColor(element, index)
+      const x1 = cx + outer * Math.cos(angle)
+      const y1 = cy + outer * Math.sin(angle)
+      const x2 = cx + outer * Math.cos(end)
+      const y2 = cy + outer * Math.sin(end)
+      const large = sweep > Math.PI ? 1 : 0
+      if (positives === 1) {
+        svg.appendChild(svgNode(doc, 'circle', { cx, cy, r: outer, fill: color }))
+      } else if (donut) {
+        const ix1 = cx + inner * Math.cos(angle)
+        const iy1 = cy + inner * Math.sin(angle)
+        const ix2 = cx + inner * Math.cos(end)
+        const iy2 = cy + inner * Math.sin(end)
+        svg.appendChild(svgNode(doc, 'path', { d: `M ${x1} ${y1} A ${outer} ${outer} 0 ${large} 1 ${x2} ${y2} L ${ix2} ${iy2} A ${inner} ${inner} 0 ${large} 0 ${ix1} ${iy1} Z`, fill: color }))
+      } else {
+        svg.appendChild(svgNode(doc, 'path', { d: `M ${cx} ${cy} L ${x1} ${y1} A ${outer} ${outer} 0 ${large} 1 ${x2} ${y2} Z`, fill: color }))
+      }
+      if (element.chart_show_values !== false && sweep > 0.35) {
+        const mid = angle + sweep / 2
+        const radius = donut ? (outer + inner) / 2 : outer * 0.62
+        svgText(doc, svg, cx + radius * Math.cos(mid), cy + radius * Math.sin(mid) + base * 0.35, `${Math.round((sweep / (Math.PI * 2)) * 100)}%`, { fill: '#ffffff', size: base - 2, anchor: 'middle', weight: 700 })
+      }
+      angle = end
+    })
+    if (donut) {
+      svg.appendChild(svgNode(doc, 'circle', { cx, cy, r: inner, fill: element.fill ?? '#ffffff' }))
+    }
+    if (showLegend) {
+      let y = top + base
+      element.chart_labels?.slice(0, 12).forEach((label, index) => {
+        svg.appendChild(svgNode(doc, 'rect', { x: 355, y: y - 10, width: 12, height: 12, rx: 2, fill: chartColor(element, index) }))
+        svgText(doc, svg, 374, y, truncateText(label, 20), { fill: element.color ?? '#143d30', size: base - 3 })
+        y += base + 7
+      })
+    }
+  }
+
+  function truncateText(value: string, max: number): string {
+    return value.length <= max ? value : `${value.slice(0, max - 1)}…`
   }
 
   function applyLayoutToDom() {
@@ -859,6 +1160,120 @@
     addElement(element)
   }
 
+  function addTable() {
+    const element = baseElement('table')
+    element.width = 120
+    element.height = 60
+    element.font_size = 9
+    addElement(element)
+  }
+
+  function addChart() {
+    const element = baseElement('chart')
+    element.width = 120
+    element.height = 80
+    element.font_size = 9
+    element.chart_title = 'Grafik baru'
+    element.chart_type = 'bar'
+    element.chart_labels = ['A', 'B', 'C', 'D']
+    element.chart_values = [10, 20, 15, 25]
+    element.chart_colors = ['#143d30', '#b8894b', '#3f765d', '#5b8fa8']
+    addElement(element)
+  }
+
+  function updateTableCell(rowIndex: number, columnIndex: number, value: string) {
+    if (!activeElement || activeElement.type !== 'table') return
+    const rows = activeElement.table_rows
+    if (!rows?.[rowIndex]) return
+    rows[rowIndex][columnIndex] = value
+    activeElement.table_rows = rows
+    applyLayoutToDom()
+  }
+
+  function addTableRow() {
+    if (!activeElement || activeElement.type !== 'table') return
+    pushHistory()
+    const rows = activeElement.table_rows ?? []
+    const columns = Math.max(1, ...rows.map((row) => row.length))
+    activeElement.table_rows = [...rows, Array.from({ length: columns }, () => '')]
+    applyLayoutToDom()
+  }
+
+  function removeTableRow() {
+    if (!activeElement || activeElement.type !== 'table') return
+    const rows = activeElement.table_rows ?? []
+    if (rows.length <= 1) return
+    pushHistory()
+    activeElement.table_rows = rows.slice(0, -1)
+    applyLayoutToDom()
+  }
+
+  function addTableColumn() {
+    if (!activeElement || activeElement.type !== 'table') return
+    pushHistory()
+    const rows = (activeElement.table_rows ?? []).map((row) => [...row, ''])
+    activeElement.table_rows = rows
+    applyLayoutToDom()
+  }
+
+  function removeTableColumn() {
+    if (!activeElement || activeElement.type !== 'table') return
+    const rows = activeElement.table_rows ?? []
+    const columns = Math.max(1, ...rows.map((row) => row.length))
+    if (columns <= 1) return
+    pushHistory()
+    activeElement.table_rows = rows.map((row) => row.slice(0, -1))
+    applyLayoutToDom()
+  }
+
+  function parseLabelList(value: string): string[] {
+    return value
+      .split(/[\n,]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  }
+
+  function parseNumberList(value: string): number[] {
+    return value
+      .split(/[\n,;]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => {
+        const normalized = item.replace(/\./g, '').replace(',', '.')
+        const number = Number(normalized)
+        return Number.isFinite(number) ? number : 0
+      })
+  }
+
+  function normalizeChart(labels: string[], values: number[]) {
+    if (!activeElement || activeElement.type !== 'chart') return
+    const nextLabels = labels.length ? labels : ['A', 'B', 'C']
+    const nextValues = nextLabels.map((_, index) => values[index] ?? 0)
+    const colors = activeElement.chart_colors ?? []
+    activeElement.chart_labels = nextLabels
+    activeElement.chart_values = nextValues
+    activeElement.chart_colors = nextLabels.map(
+      (_, index) => colors[index] ?? CHART_PALETTE[index % CHART_PALETTE.length],
+    )
+    applyLayoutToDom()
+  }
+
+  function updateChartLabels(value: string) {
+    if (!activeElement || activeElement.type !== 'chart') return
+    normalizeChart(parseLabelList(value), activeElement.chart_values ?? [])
+  }
+
+  function updateChartValues(value: string) {
+    if (!activeElement || activeElement.type !== 'chart') return
+    normalizeChart(activeElement.chart_labels ?? [], parseNumberList(value))
+  }
+
+  function updateChartColors(value: string) {
+    if (!activeElement || activeElement.type !== 'chart') return
+    activeElement.chart_colors = parseLabelList(value)
+    applyLayoutToDom()
+  }
+
   function pickImage() {
     fileInput?.click()
   }
@@ -1199,6 +1614,8 @@
         <Button variant="secondary" size="sm" onclick={addRect}><Square size={14} /> Kotak</Button>
         <Button variant="secondary" size="sm" loading={uploading} onclick={pickImage}><ImagePlus size={14} /> Gambar</Button>
         <Button variant="secondary" size="sm" onclick={addImageUrl}><Link2 size={14} /> URL</Button>
+        <Button variant="secondary" size="sm" onclick={addTable}><Table2 size={14} /> Tabel</Button>
+        <Button variant="secondary" size="sm" onclick={addChart}><BarChart3 size={14} /> Grafik</Button>
         <span class="mx-1 h-6 w-px bg-line"></span>
         <Button variant="ghost" size="sm" disabled={!history.length} onclick={undo}><Undo2 size={14} /> Undo</Button>
         <Button variant="ghost" size="sm" disabled={!redoStack.length} onclick={redo}><Redo2 size={14} /> Redo</Button>
@@ -1362,6 +1779,152 @@
                     oninput={(event) => updateElement({ radius: numberValue((event.currentTarget as HTMLInputElement).value) })} />
                 </label>
               </div>
+            {:else if activeElement.type === 'table'}
+              <label class="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={activeElement.table_header !== false}
+                  onchange={(event) => updateElement({ table_header: (event.currentTarget as HTMLInputElement).checked }, true)} />
+                Baris pertama sebagai header
+              </label>
+              <div class="flex flex-wrap gap-2">
+                <Button variant="secondary" size="sm" onclick={addTableRow}>+ Baris</Button>
+                <Button variant="secondary" size="sm" onclick={removeTableRow}>− Baris</Button>
+                <Button variant="secondary" size="sm" onclick={addTableColumn}>+ Kolom</Button>
+                <Button variant="secondary" size="sm" onclick={removeTableColumn}>− Kolom</Button>
+              </div>
+              <div class="max-h-64 overflow-auto rounded-lg border border-line">
+                <div class="min-w-max">
+                  {#each activeElement.table_rows ?? [] as row, rowIndex}
+                    <div class="flex">
+                      {#each row as cell, columnIndex}
+                        <input class="input w-28 rounded-none border-0 border-b border-r border-line px-2 py-1 text-[11px]" value={cell}
+                          data-table-cell={`${rowIndex}-${columnIndex}`}
+                          onfocus={pushHistory}
+                          oninput={(event) => updateTableCell(rowIndex, columnIndex, (event.currentTarget as HTMLInputElement).value)} />
+                      {/each}
+                    </div>
+                  {/each}
+                </div>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <label class="block">
+                  <span class="label">Ukuran teks (pt)</span>
+                  <input class="input py-1.5 text-xs" type="number" min="6" step="0.5" value={activeElement.font_size ?? 9}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ font_size: numberValue((event.currentTarget as HTMLInputElement).value) })} />
+                </label>
+                <label class="block">
+                  <span class="label">Latar tabel</span>
+                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.fill)}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ fill: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+                <label class="block">
+                  <span class="label">Warna teks</span>
+                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.color)}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ color: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+                <label class="block">
+                  <span class="label">Warna border</span>
+                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.border_color)}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ border_color: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+                <label class="block">
+                  <span class="label">Tebal border (pt)</span>
+                  <input class="input py-1.5 text-xs" type="number" min="0" step="0.25" value={activeElement.border_width ?? 0.5}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ border_width: numberValue((event.currentTarget as HTMLInputElement).value) })} />
+                </label>
+                <label class="block">
+                  <span class="label">Latar header</span>
+                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.table_header_bg)}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ table_header_bg: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+                <label class="block">
+                  <span class="label">Teks header</span>
+                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.table_header_color)}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ table_header_color: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+                <label class="block">
+                  <span class="label">Baris ganjil</span>
+                  <input class="input py-1.5 text-xs" value={activeElement.table_stripe ?? '#f6f8f5'}
+                    onfocus={pushHistory}
+                    onchange={(event) => updateElement({ table_stripe: (event.currentTarget as HTMLInputElement).value }, true)} />
+                </label>
+              </div>
+            {:else if activeElement.type === 'chart'}
+              <div class="grid grid-cols-2 gap-3">
+                <label class="block">
+                  <span class="label">Jenis</span>
+                  <select class="input py-1.5 text-xs" value={activeElement.chart_type ?? 'bar'}
+                    data-chart-field="type"
+                    onchange={(event) => updateElement({ chart_type: (event.currentTarget as HTMLSelectElement).value as 'bar' | 'line' | 'pie' | 'donut' }, true)}>
+                    <option value="bar">Bar</option>
+                    <option value="line">Line</option>
+                    <option value="pie">Pie</option>
+                    <option value="donut">Donut</option>
+                  </select>
+                </label>
+                <label class="block">
+                  <span class="label">Ukuran teks (pt)</span>
+                  <input class="input py-1.5 text-xs" type="number" min="6" step="0.5" value={activeElement.font_size ?? 9}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ font_size: numberValue((event.currentTarget as HTMLInputElement).value) })} />
+                </label>
+              </div>
+              <label class="block">
+                <span class="label">Judul grafik</span>
+                <input class="input py-1.5 text-xs" value={activeElement.chart_title ?? ''}
+                  data-chart-field="title"
+                  onfocus={pushHistory}
+                  onchange={(event) => updateElement({ chart_title: (event.currentTarget as HTMLInputElement).value }, true)} />
+              </label>
+              <label class="block">
+                <span class="label">Label (satu per baris)</span>
+                <textarea class="textarea text-xs" rows="4" value={(activeElement.chart_labels ?? []).join('\n')}
+                  data-chart-field="labels"
+                  onfocus={pushHistory}
+                  onchange={(event) => updateChartLabels((event.currentTarget as HTMLTextAreaElement).value)}
+                ></textarea>
+              </label>
+              <label class="block">
+                <span class="label">Nilai (satu per baris)</span>
+                <textarea class="textarea text-xs" rows="4" value={(activeElement.chart_values ?? []).join('\n')}
+                  data-chart-field="values"
+                  onfocus={pushHistory}
+                  onchange={(event) => updateChartValues((event.currentTarget as HTMLTextAreaElement).value)}
+                ></textarea>
+              </label>
+              <label class="block">
+                <span class="label">Warna (pisahkan koma)</span>
+                <input class="input py-1.5 text-xs" value={(activeElement.chart_colors ?? []).join(', ')}
+                  data-chart-field="colors"
+                  onfocus={pushHistory}
+                  onchange={(event) => updateChartColors((event.currentTarget as HTMLInputElement).value)} />
+              </label>
+              <div class="flex flex-wrap items-center gap-4 text-xs">
+                <label class="flex items-center gap-2"><input type="checkbox" checked={activeElement.chart_show_values !== false}
+                  onchange={(event) => updateElement({ chart_show_values: (event.currentTarget as HTMLInputElement).checked }, true)} /> Tampilkan nilai</label>
+                <label class="flex items-center gap-2"><input type="checkbox" checked={activeElement.chart_show_legend !== false}
+                  onchange={(event) => updateElement({ chart_show_legend: (event.currentTarget as HTMLInputElement).checked }, true)} /> Legend</label>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <label class="block">
+                  <span class="label">Warna sumbu</span>
+                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.chart_axis_color)}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ chart_axis_color: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+                <label class="block">
+                  <span class="label">Latar grafik</span>
+                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.fill)}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ fill: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+              </div>
             {:else}
               <label class="block">
                 <span class="label">Sumber gambar</span>
@@ -1477,7 +2040,7 @@
           <span class="eyebrow">CARA PAKAI</span>
           <ul class="mt-3 space-y-2 text-[11px] leading-relaxed text-ink-muted">
             <li>1. Klik halaman yang ingin ditata.</li>
-            <li>2. Tambah teks, kotak, gambar, atau URL.</li>
+            <li>2. Tambah teks, kotak, gambar, URL, tabel, atau grafik.</li>
             <li>3. Tarik elemen untuk menggeser; tarik sudut untuk mengubah ukuran.</li>
             <li>4. Klik blok laporan untuk geser; tarik sudut kanan bawah untuk resize.</li>
             <li>5. Klik dua kali teks blok untuk mengeditnya.</li>
