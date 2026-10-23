@@ -4,6 +4,7 @@ pub mod metrics;
 pub mod models;
 pub mod render;
 pub mod service;
+pub mod sources;
 
 use axum::{
     Router,
@@ -31,6 +32,10 @@ pub fn period_routes() -> Router<AppState> {
         .route(
             "/periods/{period_id}/layout",
             get(handlers::get_layout).put(handlers::save_layout),
+        )
+        .route(
+            "/periods/{period_id}/design/sources",
+            get(handlers::design_sources),
         )
         .route(
             "/periods/{period_id}/layout/images",

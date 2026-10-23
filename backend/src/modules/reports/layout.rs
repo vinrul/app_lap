@@ -71,6 +71,7 @@ pub struct LayoutElement {
     pub align: String,
     pub background: String,
     pub source_block: String,
+    pub binding: String,
     pub table_rows: Vec<Vec<String>>,
     pub table_header: bool,
     pub table_header_bg: String,
@@ -134,6 +135,7 @@ impl Default for LayoutElement {
             align: String::new(),
             background: String::new(),
             source_block: String::new(),
+            binding: String::new(),
             table_rows: Vec::new(),
             table_header: true,
             table_header_bg: String::new(),
@@ -273,6 +275,9 @@ impl LayoutElement {
         if !valid_id(&self.source_block) {
             self.source_block.clear();
         }
+        if !valid_binding(&self.binding) {
+            self.binding.clear();
+        }
 
         let (default_width, default_height) = match self.kind.as_str() {
             "image" => (60.0, 45.0),
@@ -405,6 +410,27 @@ pub fn valid_id(value: &str) -> bool {
 
 pub fn default_opacity() -> f64 {
     1.0
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DesignSource {
+    pub key: String,
+    pub label: String,
+    pub category: String,
+    pub table_columns: Vec<String>,
+    pub table_rows: Vec<Vec<String>>,
+    pub chart_labels: Vec<String>,
+    pub chart_values: Vec<f64>,
+    pub chart_title: String,
+    pub can_chart: bool,
+}
+
+pub fn valid_binding(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 100
+        && value.chars().all(|ch| {
+            ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '.' | '_' | '-')
+        })
 }
 
 pub fn image_id_from_src(src: &str) -> Option<&str> {
@@ -605,6 +631,39 @@ mod tests {
             .unwrap();
         assert_eq!(rect.fill, "#ffffff");
         assert!(!page.elements.iter().any(|item| item.kind == "video"));
+    }
+
+    #[test]
+    fn sanitizes_data_binding_keys() {
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![PageLayout {
+                page: 2,
+                blocks: BTreeMap::new(),
+                elements: vec![
+                    LayoutElement {
+                        id: "table-ok".into(),
+                        kind: "table".into(),
+                        binding: "narkoba.by_polres".into(),
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "table-bad".into(),
+                        kind: "table".into(),
+                        binding: "Quick Wins!".into(),
+                        ..Default::default()
+                    },
+                ],
+            }],
+        };
+
+        let sanitized = layout.sanitize();
+        let page = &sanitized.pages[1];
+        assert_eq!(page.elements[0].binding, "narkoba.by_polres");
+        assert!(page.elements[1].binding.is_empty());
+        assert!(valid_binding("media.by_channel"));
+        assert!(!valid_binding("media by channel"));
+        assert!(!valid_binding(&"a".repeat(101)));
     }
 
     #[test]

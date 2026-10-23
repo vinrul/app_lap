@@ -80,6 +80,7 @@ export interface LayoutElement {
   align?: 'left' | 'center' | 'right'
   background?: string
   source_block?: string
+  binding?: string
   table_rows?: string[][]
   table_header?: boolean
   table_header_bg?: string
@@ -115,6 +116,18 @@ export interface LayoutView {
 export interface UploadedDesignImage {
   id: string
   url: string
+}
+
+export interface DesignSource {
+  key: string
+  label: string
+  category: string
+  table_columns: string[]
+  table_rows: string[][]
+  chart_labels: string[]
+  chart_values: number[]
+  chart_title: string
+  can_chart: boolean
 }
 
 export interface ReportView {

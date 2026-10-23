@@ -20,6 +20,7 @@
   import { designApi, reportsApi } from '../../api'
   import { errorMessage } from '../../api/client'
   import type {
+    DesignSource,
     LayoutBlockOffset,
     LayoutElement,
     LayoutPage,
@@ -83,6 +84,7 @@
 
   let content = $state<ReportContent>({ ...emptyContent })
   let layout = $state<ReportLayout>(emptyLayout())
+  let sources = $state<DesignSource[]>([])
   let savedJson = $state('')
   let updatedAt = $state<string | null>(null)
   let updatedBy = $state<string | null>(null)
@@ -130,6 +132,8 @@
     if (blockEl.querySelector('.bar-row')) return 'chart'
     return ''
   })
+  const tableSourceGroups = $derived(groupSources(sources))
+  const chartSourceGroups = $derived(groupSources(sources.filter((source) => source.can_chart)))
 
   $effect(() => {
     const key = `${periodId}:${selectedImportId}`
@@ -173,6 +177,70 @@
 
   function getElement(page: number, id: string): LayoutElement | undefined {
     return getPage(page)?.elements.find((element) => element.id === id)
+  }
+
+  function sourceFor(key: string | undefined | null): DesignSource | undefined {
+    if (!key) return undefined
+    return sources.find((source) => source.key === key)
+  }
+
+  function groupSources(list: DesignSource[]): { category: string; items: DesignSource[] }[] {
+    const groups: { category: string; items: DesignSource[] }[] = []
+    for (const source of list) {
+      let group = groups.find((item) => item.category === source.category)
+      if (!group) {
+        group = { category: source.category, items: [] }
+        groups.push(group)
+      }
+      group.items.push(source)
+    }
+    return groups
+  }
+
+  function applySourceSnapshot(element: LayoutElement, source: DesignSource): void {
+    if (element.type === 'table') {
+      element.table_rows = source.table_rows.map((row) => [...row])
+      return
+    }
+    if (element.type === 'chart') {
+      element.chart_labels = [...source.chart_labels]
+      element.chart_values = [...source.chart_values]
+      const colors = element.chart_colors ?? []
+      element.chart_colors = source.chart_labels.map(
+        (_, index) => colors[index] ?? CHART_PALETTE[index % CHART_PALETTE.length],
+      )
+      if (!element.chart_title?.trim()) element.chart_title = source.chart_title
+    }
+  }
+
+  function bindSource(key: string): void {
+    if (!activeElement) return
+    const current = activeElement.binding ?? ''
+    if (current === key) return
+    const source = key ? sourceFor(key) : undefined
+    if (key && !source) return
+    pushHistory()
+    if (!source) {
+      const previous = sourceFor(current)
+      if (previous) applySourceSnapshot(activeElement, previous)
+      activeElement.binding = ''
+      applyLayoutToDom()
+      return
+    }
+    activeElement.binding = source.key
+    applySourceSnapshot(activeElement, source)
+    applyLayoutToDom()
+  }
+
+  async function refreshSources(): Promise<void> {
+    if (!selectedImportId) return
+    try {
+      sources = await designApi.sources(periodId, selectedImportId)
+      applyLayoutToDom()
+      toast.success('Sumber data dimuat ulang.')
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    }
   }
 
   function newId(): string {
@@ -225,6 +293,7 @@
       align: 'left',
       background: 'transparent',
       source_block: '',
+      binding: '',
       table_rows: [
         ['Kolom 1', 'Kolom 2', 'Kolom 3'],
         ['', '', ''],
@@ -253,6 +322,7 @@
     currentPage = 1
     history = []
     redoStack = []
+    sources = []
     if (!selectedImportId) {
       content = { ...emptyContent }
       layout = emptyLayout()
@@ -264,12 +334,14 @@
       return
     }
     try {
-      const [draft, layoutView] = await Promise.all([
+      const [draft, layoutView, sourceList] = await Promise.all([
         reportsApi.getDraft(periodId, selectedImportId),
         designApi.getLayout(periodId, selectedImportId),
+        designApi.sources(periodId, selectedImportId),
       ])
       content = { ...emptyContent, ...draft.content }
       layout = normalizeLayout(layoutView.layout)
+      sources = sourceList
       savedJson = JSON.stringify(layout)
       updatedAt = layoutView.updated_at
       updatedBy = layoutView.updated_by
@@ -307,6 +379,7 @@
       .layout-table table { width: 100%; border-collapse: collapse; table-layout: fixed; }
       .layout-table th, .layout-table td { border: var(--table-border, .5pt solid #d7ddd6); padding: 1.2mm 1.5mm; vertical-align: top; word-break: break-word; }
       .layout-table th { font-weight: 700; }
+      .layout-source-empty { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; box-sizing: border-box; padding: 2mm; text-align: center; font-size: 8pt; color: #6d7872; background: #f6f8f5; border: .5pt dashed #d7ddd6; }
     `
     doc.head.appendChild(style)
   }
@@ -325,6 +398,13 @@
     applyLayoutToDom()
   }
 
+  function sourceMessage(doc: Document, message: string): HTMLElement {
+    const node = doc.createElement('div')
+    node.className = 'layout-source-empty'
+    node.textContent = message
+    return node
+  }
+
   function createElementNode(doc: Document, element: LayoutElement): HTMLElement {
     let node: HTMLElement
     if (element.type === 'image') {
@@ -341,57 +421,82 @@
       rect.style.borderRadius = `${element.radius ?? 1}mm`
       node = rect
     } else if (element.type === 'table') {
-      const wrapper = doc.createElement('div')
-      wrapper.style.background = element.fill ?? '#ffffff'
-      const table = doc.createElement('table')
-      table.style.fontSize = `${element.font_size ?? 9}pt`
-      table.style.color = element.color ?? '#143d30'
-      table.style.setProperty(
-        '--table-border',
-        `${element.border_width ?? 0.5}pt solid ${element.border_color ?? '#d7ddd6'}`,
-      )
-      const rows = element.table_rows ?? []
-      const hasHeader = element.table_header !== false && rows.length > 1
-      const headerRow = hasHeader ? rows[0] : null
-      const bodyRows = hasHeader ? rows.slice(1) : rows
-      if (headerRow) {
-        const thead = doc.createElement('thead')
-        const tr = doc.createElement('tr')
-        for (const cell of headerRow) {
-          const th = doc.createElement('th')
-          th.textContent = cell
-          th.style.background = element.table_header_bg ?? '#143d30'
-          th.style.color = element.table_header_color ?? '#ffffff'
-          th.style.textAlign = isNumericCell(cell) ? 'right' : 'left'
-          tr.appendChild(th)
-        }
-        thead.appendChild(tr)
-        table.appendChild(thead)
-      }
-      const tbody = doc.createElement('tbody')
-      bodyRows.forEach((row, rowIndex) => {
-        const tr = doc.createElement('tr')
-        for (const cell of row) {
-          const td = doc.createElement('td')
-          td.textContent = cell
-          if (
-            rowIndex % 2 === 1 &&
-            element.table_stripe &&
-            element.table_stripe !== 'transparent'
-          ) {
-            td.style.background = element.table_stripe
+      const source = sourceFor(element.binding)
+      const rows = element.binding ? (source?.table_rows ?? []) : (element.table_rows ?? [])
+      if (element.binding && !source) {
+        node = sourceMessage(doc, 'Sumber data tidak tersedia.')
+      } else if (!rows.length) {
+        node = sourceMessage(doc, source ? 'Sumber data kosong.' : 'Belum ada baris tabel.')
+      } else {
+        const wrapper = doc.createElement('div')
+        wrapper.style.background = element.fill ?? '#ffffff'
+        const table = doc.createElement('table')
+        table.style.fontSize = `${element.font_size ?? 9}pt`
+        table.style.color = element.color ?? '#143d30'
+        table.style.setProperty(
+          '--table-border',
+          `${element.border_width ?? 0.5}pt solid ${element.border_color ?? '#d7ddd6'}`,
+        )
+        const hasHeader = element.table_header !== false && rows.length > 1
+        const headerRow = hasHeader ? rows[0] : null
+        const bodyRows = hasHeader ? rows.slice(1) : rows
+        if (headerRow) {
+          const thead = doc.createElement('thead')
+          const tr = doc.createElement('tr')
+          for (const cell of headerRow) {
+            const th = doc.createElement('th')
+            th.textContent = cell
+            th.style.background = element.table_header_bg ?? '#143d30'
+            th.style.color = element.table_header_color ?? '#ffffff'
+            th.style.textAlign = isNumericCell(cell) ? 'right' : 'left'
+            tr.appendChild(th)
           }
-          td.style.textAlign = isNumericCell(cell) ? 'right' : 'left'
-          tr.appendChild(td)
+          thead.appendChild(tr)
+          table.appendChild(thead)
         }
-        tbody.appendChild(tr)
-      })
-      table.appendChild(tbody)
-      wrapper.appendChild(table)
-      node = wrapper
+        const tbody = doc.createElement('tbody')
+        bodyRows.forEach((row, rowIndex) => {
+          const tr = doc.createElement('tr')
+          for (const cell of row) {
+            const td = doc.createElement('td')
+            td.textContent = cell
+            if (
+              rowIndex % 2 === 1 &&
+              element.table_stripe &&
+              element.table_stripe !== 'transparent'
+            ) {
+              td.style.background = element.table_stripe
+            }
+            td.style.textAlign = isNumericCell(cell) ? 'right' : 'left'
+            tr.appendChild(td)
+          }
+          tbody.appendChild(tr)
+        })
+        table.appendChild(tbody)
+        wrapper.appendChild(table)
+        node = wrapper
+      }
     } else if (element.type === 'chart') {
+      const source = sourceFor(element.binding)
       const wrapper = doc.createElement('div')
-      wrapper.appendChild(createChartSvg(doc, element))
+      if (element.binding && (!source || !source.can_chart || !source.chart_labels.length)) {
+        wrapper.appendChild(
+          sourceMessage(
+            doc,
+            source ? 'Sumber data tidak memiliki seri grafik.' : 'Sumber data tidak tersedia.',
+          ),
+        )
+      } else {
+        const chartElement = source
+          ? {
+              ...element,
+              chart_labels: source.chart_labels,
+              chart_values: source.chart_values,
+              chart_title: element.chart_title?.trim() ? element.chart_title : source.chart_title,
+            }
+          : element
+        wrapper.appendChild(createChartSvg(doc, chartElement))
+      }
       node = wrapper
     } else {
       const text = doc.createElement('div')
@@ -1194,7 +1299,7 @@
   }
 
   function updateTableCell(rowIndex: number, columnIndex: number, value: string) {
-    if (!activeElement || activeElement.type !== 'table') return
+    if (!activeElement || activeElement.type !== 'table' || activeElement.binding) return
     const rows = activeElement.table_rows
     if (!rows?.[rowIndex]) return
     rows[rowIndex][columnIndex] = value
@@ -1203,7 +1308,7 @@
   }
 
   function addTableRow() {
-    if (!activeElement || activeElement.type !== 'table') return
+    if (!activeElement || activeElement.type !== 'table' || activeElement.binding) return
     pushHistory()
     const rows = activeElement.table_rows ?? []
     const columns = Math.max(1, ...rows.map((row) => row.length))
@@ -1212,7 +1317,7 @@
   }
 
   function removeTableRow() {
-    if (!activeElement || activeElement.type !== 'table') return
+    if (!activeElement || activeElement.type !== 'table' || activeElement.binding) return
     const rows = activeElement.table_rows ?? []
     if (rows.length <= 1) return
     pushHistory()
@@ -1221,7 +1326,7 @@
   }
 
   function addTableColumn() {
-    if (!activeElement || activeElement.type !== 'table') return
+    if (!activeElement || activeElement.type !== 'table' || activeElement.binding) return
     pushHistory()
     const rows = (activeElement.table_rows ?? []).map((row) => [...row, ''])
     activeElement.table_rows = rows
@@ -1229,7 +1334,7 @@
   }
 
   function removeTableColumn() {
-    if (!activeElement || activeElement.type !== 'table') return
+    if (!activeElement || activeElement.type !== 'table' || activeElement.binding) return
     const rows = activeElement.table_rows ?? []
     const columns = Math.max(1, ...rows.map((row) => row.length))
     if (columns <= 1) return
@@ -1258,7 +1363,7 @@
   }
 
   function normalizeChart(labels: string[], values: number[]) {
-    if (!activeElement || activeElement.type !== 'chart') return
+    if (!activeElement || activeElement.type !== 'chart' || activeElement.binding) return
     const nextLabels = labels.length ? labels : ['A', 'B', 'C']
     const nextValues = nextLabels.map((_, index) => values[index] ?? 0)
     const colors = activeElement.chart_colors ?? []
@@ -1271,12 +1376,12 @@
   }
 
   function updateChartLabels(value: string) {
-    if (!activeElement || activeElement.type !== 'chart') return
+    if (!activeElement || activeElement.type !== 'chart' || activeElement.binding) return
     normalizeChart(parseLabelList(value), activeElement.chart_values ?? [])
   }
 
   function updateChartValues(value: string) {
-    if (!activeElement || activeElement.type !== 'chart') return
+    if (!activeElement || activeElement.type !== 'chart' || activeElement.binding) return
     normalizeChart(activeElement.chart_labels ?? [], parseNumberList(value))
   }
 
@@ -1797,6 +1902,7 @@
             </div>
             <div class="flex flex-col items-end gap-1">
               <span class="badge badge-neutral">Halaman {selected?.page}</span>
+              {#if activeElement.binding}<span class="badge badge-success">Data</span>{/if}
               {#if activeElement.source_block}<span class="badge badge-progress">Hasil detach</span>{/if}
             </div>
           </div>
@@ -1920,31 +2026,59 @@
                 </label>
               </div>
             {:else if activeElement.type === 'table'}
-              <label class="flex items-center gap-2 text-xs">
-                <input type="checkbox" checked={activeElement.table_header !== false}
-                  onchange={(event) => updateElement({ table_header: (event.currentTarget as HTMLInputElement).checked }, true)} />
-                Baris pertama sebagai header
-              </label>
-              <div class="flex flex-wrap gap-2">
-                <Button variant="secondary" size="sm" onclick={addTableRow}>+ Baris</Button>
-                <Button variant="secondary" size="sm" onclick={removeTableRow}>− Baris</Button>
-                <Button variant="secondary" size="sm" onclick={addTableColumn}>+ Kolom</Button>
-                <Button variant="secondary" size="sm" onclick={removeTableColumn}>− Kolom</Button>
-              </div>
-              <div class="max-h-64 overflow-auto rounded-lg border border-line">
-                <div class="min-w-max">
-                  {#each activeElement.table_rows ?? [] as row, rowIndex}
-                    <div class="flex">
-                      {#each row as cell, columnIndex}
-                        <input class="input w-28 rounded-none border-0 border-b border-r border-line px-2 py-1 text-[11px]" value={cell}
-                          data-table-cell={`${rowIndex}-${columnIndex}`}
-                          onfocus={pushHistory}
-                          oninput={(event) => updateTableCell(rowIndex, columnIndex, (event.currentTarget as HTMLInputElement).value)} />
+              <label class="block">
+                <span class="label">Sumber data</span>
+                <select class="input py-1.5 text-xs" value={activeElement.binding ?? ''}
+                  data-source-field="binding"
+                  onchange={(event) => bindSource((event.currentTarget as HTMLSelectElement).value)}>
+                  <option value="">Manual — tidak terhubung</option>
+                  {#each tableSourceGroups as group}
+                    <optgroup label={group.category}>
+                      {#each group.items as source}
+                        <option value={source.key}>{source.label}</option>
                       {/each}
-                    </div>
+                    </optgroup>
                   {/each}
+                </select>
+              </label>
+              {#if activeElement.binding}
+                <div class="rounded-xl border border-forest-200 bg-forest-50 p-3.5 text-[11px] leading-relaxed text-forest-800">
+                  <p>
+                    Terhubung ke <strong>{sourceFor(activeElement.binding)?.label ?? activeElement.binding}</strong>.
+                    Isi tabel mengikuti data terbaru dan tidak bisa diedit manual.
+                  </p>
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <Button variant="secondary" size="sm" onclick={() => bindSource('')}>Lepas ikatan</Button>
+                    <Button variant="ghost" size="sm" onclick={() => void refreshSources()}>Muat ulang data</Button>
+                  </div>
                 </div>
-              </div>
+              {:else}
+                <label class="flex items-center gap-2 text-xs">
+                  <input type="checkbox" checked={activeElement.table_header !== false}
+                    onchange={(event) => updateElement({ table_header: (event.currentTarget as HTMLInputElement).checked }, true)} />
+                  Baris pertama sebagai header
+                </label>
+                <div class="flex flex-wrap gap-2">
+                  <Button variant="secondary" size="sm" onclick={addTableRow}>+ Baris</Button>
+                  <Button variant="secondary" size="sm" onclick={removeTableRow}>− Baris</Button>
+                  <Button variant="secondary" size="sm" onclick={addTableColumn}>+ Kolom</Button>
+                  <Button variant="secondary" size="sm" onclick={removeTableColumn}>− Kolom</Button>
+                </div>
+                <div class="max-h-64 overflow-auto rounded-lg border border-line">
+                  <div class="min-w-max">
+                    {#each activeElement.table_rows ?? [] as row, rowIndex}
+                      <div class="flex">
+                        {#each row as cell, columnIndex}
+                          <input class="input w-28 rounded-none border-0 border-b border-r border-line px-2 py-1 text-[11px]" value={cell}
+                            data-table-cell={`${rowIndex}-${columnIndex}`}
+                            onfocus={pushHistory}
+                            oninput={(event) => updateTableCell(rowIndex, columnIndex, (event.currentTarget as HTMLInputElement).value)} />
+                        {/each}
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
               <div class="grid grid-cols-2 gap-3">
                 <label class="block">
                   <span class="label">Ukuran teks (pt)</span>
@@ -1996,6 +2130,33 @@
                 </label>
               </div>
             {:else if activeElement.type === 'chart'}
+              <label class="block">
+                <span class="label">Sumber data</span>
+                <select class="input py-1.5 text-xs" value={activeElement.binding ?? ''}
+                  data-source-field="binding"
+                  onchange={(event) => bindSource((event.currentTarget as HTMLSelectElement).value)}>
+                  <option value="">Manual — tidak terhubung</option>
+                  {#each chartSourceGroups as group}
+                    <optgroup label={group.category}>
+                      {#each group.items as source}
+                        <option value={source.key}>{source.label}</option>
+                      {/each}
+                    </optgroup>
+                  {/each}
+                </select>
+              </label>
+              {#if activeElement.binding}
+                <div class="rounded-xl border border-forest-200 bg-forest-50 p-3.5 text-[11px] leading-relaxed text-forest-800">
+                  <p>
+                    Terhubung ke <strong>{sourceFor(activeElement.binding)?.label ?? activeElement.binding}</strong>.
+                    Label dan nilai mengikuti data terbaru; ubah jenis, judul, dan warna tetap bisa dilakukan.
+                  </p>
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <Button variant="secondary" size="sm" onclick={() => bindSource('')}>Lepas ikatan</Button>
+                    <Button variant="ghost" size="sm" onclick={() => void refreshSources()}>Muat ulang data</Button>
+                  </div>
+                </div>
+              {/if}
               <div class="grid grid-cols-2 gap-3">
                 <label class="block">
                   <span class="label">Jenis</span>
@@ -2022,22 +2183,24 @@
                   onfocus={pushHistory}
                   onchange={(event) => updateElement({ chart_title: (event.currentTarget as HTMLInputElement).value }, true)} />
               </label>
-              <label class="block">
-                <span class="label">Label (satu per baris)</span>
-                <textarea class="textarea text-xs" rows="4" value={(activeElement.chart_labels ?? []).join('\n')}
-                  data-chart-field="labels"
-                  onfocus={pushHistory}
-                  onchange={(event) => updateChartLabels((event.currentTarget as HTMLTextAreaElement).value)}
-                ></textarea>
-              </label>
-              <label class="block">
-                <span class="label">Nilai (satu per baris)</span>
-                <textarea class="textarea text-xs" rows="4" value={(activeElement.chart_values ?? []).join('\n')}
-                  data-chart-field="values"
-                  onfocus={pushHistory}
-                  onchange={(event) => updateChartValues((event.currentTarget as HTMLTextAreaElement).value)}
-                ></textarea>
-              </label>
+              {#if !activeElement.binding}
+                <label class="block">
+                  <span class="label">Label (satu per baris)</span>
+                  <textarea class="textarea text-xs" rows="4" value={(activeElement.chart_labels ?? []).join('\n')}
+                    data-chart-field="labels"
+                    onfocus={pushHistory}
+                    onchange={(event) => updateChartLabels((event.currentTarget as HTMLTextAreaElement).value)}
+                  ></textarea>
+                </label>
+                <label class="block">
+                  <span class="label">Nilai (satu per baris)</span>
+                  <textarea class="textarea text-xs" rows="4" value={(activeElement.chart_values ?? []).join('\n')}
+                    data-chart-field="values"
+                    onfocus={pushHistory}
+                    onchange={(event) => updateChartValues((event.currentTarget as HTMLTextAreaElement).value)}
+                  ></textarea>
+                </label>
+              {/if}
               <label class="block">
                 <span class="label">Warna (pisahkan koma)</span>
                 <input class="input py-1.5 text-xs" value={(activeElement.chart_colors ?? []).join(', ')}

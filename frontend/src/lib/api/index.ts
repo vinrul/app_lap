@@ -1,6 +1,7 @@
 import type {
   AdminUser,
   Dashboard,
+  DesignSource,
   DraftView,
   ImportPreview,
   ImportView,
@@ -129,6 +130,10 @@ export const designApi = {
   },
   imageUrl: (periodId: string, imageId: string) =>
     `/api/periods/${periodId}/layout/images/${imageId}`,
+  sources: (periodId: string, importId: string) =>
+    request<DesignSource[]>(
+      `/periods/${periodId}/design/sources${queryString({ import_id: importId })}`,
+    ),
 }
 
 export const usersApi = {

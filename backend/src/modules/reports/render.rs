@@ -6,8 +6,9 @@ use chrono::{Datelike, NaiveDate};
 use crate::{
     config::Config,
     modules::reports::{
-        layout::{LayoutElement, ReportLayout, image_id_from_src, valid_id},
+        layout::{DesignSource, LayoutElement, ReportLayout, image_id_from_src, valid_id},
         models::{GroupMetrics, ReportContent, ReportMetrics, RowSummary},
+        sources::design_sources,
     },
     shared::{escape_html, format_count, is_noise, paragraphs},
 };
@@ -15,6 +16,7 @@ use crate::{
 struct DesignContext<'a> {
     layout: &'a ReportLayout,
     images: &'a HashMap<String, String>,
+    sources: &'a [DesignSource],
 }
 
 const MONTHS: [&str; 12] = [
@@ -54,7 +56,12 @@ pub fn render_with_layout(
     layout: &ReportLayout,
     images: &HashMap<String, String>,
 ) -> String {
-    let ctx = DesignContext { layout, images };
+    let sources = design_sources(metrics);
+    let ctx = DesignContext {
+        layout,
+        images,
+        sources: &sources,
+    };
     let cover = render_cover(metrics, content, &ctx);
 
     let narkoba = page(
@@ -808,16 +815,43 @@ fn render_layout_element(element: &LayoutElement, ctx: &DesignContext) -> String
                 escape_html(&element.text)
             )
         }
-        "table" => render_table_element(element, &style),
-        "chart" => render_chart_element(element, &style),
+        "table" => render_table_element(element, ctx, &style),
+        "chart" => render_chart_element(element, ctx, &style),
         _ => String::new(),
     }
 }
 
-fn render_table_element(element: &LayoutElement, style: &str) -> String {
-    let mut rows = element.table_rows.clone();
+fn bound_source<'a>(element: &LayoutElement, ctx: &'a DesignContext) -> Option<&'a DesignSource> {
+    if element.binding.is_empty() {
+        return None;
+    }
+    ctx.sources
+        .iter()
+        .find(|source| source.key == element.binding)
+}
+
+fn render_missing_source(element: &LayoutElement, style: &str, message: &str) -> String {
+    format!(
+        "<div class=\"layout-element layout-table\" data-element-id=\"{}\" style=\"{}display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:2mm;background:#f6f8f5;border:.5pt dashed #d7ddd6;color:#6d7872;font-size:8pt;text-align:center;\">{}</div>",
+        escape_html(&element.id),
+        style,
+        escape_html(message)
+    )
+}
+
+fn render_table_element(element: &LayoutElement, ctx: &DesignContext, style: &str) -> String {
+    let mut rows = if element.binding.is_empty() {
+        element.table_rows.clone()
+    } else {
+        match bound_source(element, ctx) {
+            Some(source) => source.table_rows.clone(),
+            None => {
+                return render_missing_source(element, style, "Sumber data tidak tersedia.");
+            }
+        }
+    };
     if rows.is_empty() {
-        return String::new();
+        return render_missing_source(element, style, "Belum ada data pada sumber ini.");
     }
     let header = if element.table_header {
         Some(rows.remove(0))
@@ -875,7 +909,31 @@ fn render_table_element(element: &LayoutElement, style: &str) -> String {
     html
 }
 
-fn render_chart_element(element: &LayoutElement, style: &str) -> String {
+fn render_chart_element(element: &LayoutElement, ctx: &DesignContext, style: &str) -> String {
+    let bound;
+    let element = match bound_source(element, ctx) {
+        Some(source) => {
+            if !source.can_chart || source.chart_labels.is_empty() {
+                return render_missing_source(
+                    element,
+                    style,
+                    "Sumber data ini tidak memiliki seri grafik.",
+                );
+            }
+            let mut copy = element.clone();
+            copy.chart_labels = source.chart_labels.clone();
+            copy.chart_values = source.chart_values.clone();
+            if copy.chart_title.trim().is_empty() {
+                copy.chart_title = source.chart_title.clone();
+            }
+            bound = copy;
+            &bound
+        }
+        None if !element.binding.is_empty() => {
+            return render_missing_source(element, style, "Sumber data tidak tersedia.");
+        }
+        None => element,
+    };
     let base = (element.font_size * 1.6).clamp(10.0, 22.0);
     let top = if element.chart_title.trim().is_empty() {
         18.0
@@ -1627,6 +1685,73 @@ table.data.compact td { padding: 1.3mm 1.5mm; }
 mod tests {
     use super::*;
     use crate::modules::reports::models::{MetricCard, ReportMetrics};
+
+    #[test]
+    fn renders_data_bound_table_and_chart() {
+        let mut metrics = ReportMetrics::default();
+        metrics.period_label = "16–18 Oktober 2026".into();
+        metrics.polda_name = "POLDA BALI".into();
+        metrics.source_filename = "report.xlsx".into();
+        metrics.quick_wins = vec![
+            crate::shared::LabeledCount::new("Gelar perkara", 12),
+            crate::shared::LabeledCount::new("Patroli", 8),
+        ];
+
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![crate::modules::reports::layout::PageLayout {
+                page: 2,
+                blocks: std::collections::BTreeMap::new(),
+                elements: vec![
+                    LayoutElement {
+                        id: "table-bound".into(),
+                        kind: "table".into(),
+                        x: 10.0,
+                        y: 10.0,
+                        width: 100.0,
+                        height: 50.0,
+                        binding: "quick_wins".into(),
+                        table_rows: vec![vec!["Manual".into(), "1".into()]],
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "chart-bound".into(),
+                        kind: "chart".into(),
+                        x: 10.0,
+                        y: 70.0,
+                        width: 100.0,
+                        height: 60.0,
+                        binding: "quick_wins".into(),
+                        chart_labels: vec!["Manual".into()],
+                        chart_values: vec![99.0],
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "table-stale".into(),
+                        kind: "table".into(),
+                        x: 10.0,
+                        y: 140.0,
+                        width: 100.0,
+                        height: 40.0,
+                        binding: "tidak.ada".into(),
+                        ..Default::default()
+                    },
+                ],
+            }],
+        };
+
+        let html = render_with_layout(
+            &metrics,
+            &ReportContent::default(),
+            &Config::test_config(),
+            &layout,
+            &HashMap::new(),
+        );
+        assert!(html.contains("Gelar perkara"));
+        assert!(html.contains("Patroli"));
+        assert!(!html.contains("Manual"));
+        assert!(html.contains("Sumber data tidak tersedia."));
+    }
 
     #[test]
     fn renders_nine_pages_and_escapes_editorial_content() {

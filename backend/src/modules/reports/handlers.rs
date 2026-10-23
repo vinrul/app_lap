@@ -13,12 +13,12 @@ use crate::{
     modules::{
         auth::AuthUser,
         reports::{
-            layout::{LayoutView, SaveLayoutRequest, UploadedImage},
+            layout::{DesignSource, LayoutView, SaveLayoutRequest, UploadedImage},
             models::{
                 DraftView, GenerateReportRequest, PreviewReportRequest, PreviewResponse,
                 ReportContent, ReportMetrics, ReportView,
             },
-            service,
+            service, sources,
         },
     },
     state::AppState,
@@ -114,6 +114,21 @@ pub async fn save_layout(
         )
         .await?,
     ))
+}
+
+pub async fn design_sources(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(period_id): Path<String>,
+    Query(query): Query<LayoutQuery>,
+) -> ApiResult<Json<Vec<DesignSource>>> {
+    let import_id = query
+        .import_id
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ApiError::bad_request("Versi impor wajib dipilih."))?;
+    let metrics =
+        service::metrics_for(&state.db, &state.config, &period_id, Some(&import_id)).await?;
+    Ok(Json(sources::design_sources(&metrics)))
 }
 
 pub async fn upload_layout_image(
