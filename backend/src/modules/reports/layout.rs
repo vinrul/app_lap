@@ -358,6 +358,7 @@ impl LayoutElement {
                 self.clear_table();
                 self.chart_type = match self.chart_type.trim().to_ascii_lowercase().as_str() {
                     "line" => "line".to_string(),
+                    "hbar" => "hbar".to_string(),
                     "pie" => "pie".to_string(),
                     "donut" => "donut".to_string(),
                     _ => "bar".to_string(),
@@ -703,6 +704,25 @@ mod tests {
         assert!(valid_binding("media.by_channel"));
         assert!(!valid_binding("media by channel"));
         assert!(!valid_binding(&"a".repeat(101)));
+    }
+
+    #[test]
+    fn accepts_horizontal_bar_chart_type() {
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![PageLayout {
+                page: 2,
+                blocks: BTreeMap::new(),
+                elements: vec![LayoutElement {
+                    id: "chart-hbar".into(),
+                    kind: "chart".into(),
+                    chart_type: "HBAR".into(),
+                    ..Default::default()
+                }],
+            }],
+        };
+        let sanitized = layout.sanitize();
+        assert_eq!(sanitized.pages[1].elements[0].chart_type, "hbar");
     }
 
     #[test]

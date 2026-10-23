@@ -2,6 +2,7 @@
   import { tick, untrack } from 'svelte'
   import {
     AlertCircle,
+    AlignLeft,
     ArrowDown,
     ArrowUp,
     BarChart3,
@@ -771,8 +772,9 @@
     const fill = element.fill ?? '#ffffff'
     svg.appendChild(svgNode(doc, 'rect', { x: 0, y: 0, width: 600, height: 360, fill }))
     const base = Math.min(22, Math.max(10, (element.font_size ?? 9) * 1.6))
-    const top = element.chart_title?.trim() ? 50 : 18
-    if (element.chart_title?.trim()) {
+    const isHbar = element.chart_type === 'hbar'
+    const top = isHbar ? (element.chart_title?.trim() ? 58 : 20) : element.chart_title?.trim() ? 50 : 18
+    if (element.chart_title?.trim() && !isHbar) {
       svgText(doc, svg, 300, 30, element.chart_title, {
         fill: element.color ?? '#143d30',
         size: base + 4,
@@ -782,6 +784,8 @@
     }
     if (element.chart_type === 'line') {
       appendLineChart(doc, svg, element, top, base)
+    } else if (element.chart_type === 'hbar') {
+      appendHorizontalBarChart(doc, svg, element, top, base)
     } else if (element.chart_type === 'pie' || element.chart_type === 'donut') {
       appendPieChart(doc, svg, element, top, base, element.chart_type === 'donut')
     } else {
@@ -820,6 +824,96 @@
       const label = element.chart_labels?.[index]
       if (label) {
         svgText(doc, svg, x + barWidth / 2, bottom + base + 8, truncateText(label, 14), { fill: element.chart_axis_color ?? '#6d7872', size: base - 2, anchor: 'middle' })
+      }
+    })
+  }
+
+  function appendHorizontalBarChart(
+    doc: Document,
+    svg: SVGElement,
+    element: LayoutElement,
+    top: number,
+    base: number,
+  ): void {
+    const left = 24
+    const right = 576
+    const bottom = 336
+    const gap = 12
+    const valueWidth = element.chart_show_values === false ? 0 : 46
+    const labelWidth = (right - left) * 0.38
+    const trackLeft = left + labelWidth + gap
+    const trackWidth = Math.max(40, right - valueWidth - gap - trackLeft)
+    const values = element.chart_values ?? []
+    const labels = element.chart_labels ?? []
+    const count = Math.max(1, values.length)
+    const rowHeight = Math.min(44, Math.max(12, (bottom - top) / count))
+    const barHeight = Math.min(16, Math.max(6, rowHeight * 0.36))
+    const barRadius = barHeight / 2
+    const labelSize = count > 12 ? Math.max(7, base - 4) : Math.max(8, base - 3)
+    const valueSize = Math.max(8, base - 2)
+    const max = Math.max(1, ...values)
+    const barColor = chartColor(element, 0)
+
+    svg.appendChild(
+      svgNode(doc, 'rect', {
+        x: 1,
+        y: 1,
+        width: 598,
+        height: 358,
+        rx: 5,
+        fill: 'none',
+        stroke: '#d7ddd6',
+        'stroke-width': 1.4,
+      }),
+    )
+    if (element.chart_title?.trim()) {
+      svgText(doc, svg, left, 32, element.chart_title, {
+        fill: element.color ?? '#143d30',
+        size: Math.max(13, base + 4),
+        weight: 700,
+      })
+    }
+    values.forEach((value, index) => {
+      const center = top + rowHeight * (index + 0.5)
+      const baseline = center + labelSize * 0.34
+      const label = labels[index]
+      if (label) {
+        svgText(doc, svg, left, baseline, truncateText(label, 26), {
+          fill: '#46534b',
+          size: labelSize,
+        })
+      }
+      const y = center - barHeight / 2
+      svg.appendChild(
+        svgNode(doc, 'rect', {
+          x: trackLeft,
+          y,
+          width: trackWidth,
+          height: barHeight,
+          rx: barRadius,
+          fill: '#eef1ec',
+        }),
+      )
+      const width = trackWidth * Math.min(1, Math.max(0, value / max))
+      if (width > 0.5) {
+        svg.appendChild(
+          svgNode(doc, 'rect', {
+            x: trackLeft,
+            y,
+            width: Math.max(width, barHeight),
+            height: barHeight,
+            rx: barRadius,
+            fill: barColor,
+          }),
+        )
+      }
+      if (element.chart_show_values !== false) {
+        svgText(doc, svg, right, baseline, chartValueText(value), {
+          fill: element.color ?? '#143d30',
+          size: valueSize,
+          anchor: 'end',
+          weight: 700,
+        })
       }
     })
   }
@@ -1512,6 +1606,19 @@
     addElement(element)
   }
 
+  function addHBarChart() {
+    const element = baseElement('chart')
+    element.width = 110
+    element.height = 70
+    element.font_size = 9
+    element.chart_title = 'Jenis kegiatan'
+    element.chart_type = 'hbar'
+    element.chart_labels = ['QW2.1', 'QW2.3', 'QW2.4', 'QW2.2']
+    element.chart_values = [17, 2, 2, 1]
+    element.chart_colors = ['#3f765d', '#3f765d', '#3f765d', '#3f765d']
+    addElement(element)
+  }
+
   function updateTableCell(rowIndex: number, columnIndex: number, value: string) {
     if (!activeElement || activeElement.type !== 'table' || activeElement.binding) return
     const rows = activeElement.table_rows
@@ -1818,13 +1925,11 @@
         parseFormattedNumber(row.querySelector('.bar-value')?.textContent ?? ''),
       )
       const chart = baseElement('chart')
-      chart.chart_type = 'bar'
+      chart.chart_type = 'hbar'
       chart.chart_title = blockEl.querySelector('h3')?.textContent?.trim() ?? ''
       chart.chart_labels = labels
       chart.chart_values = values
-      chart.chart_colors = labels.map(
-        (_, index) => CHART_PALETTE[index % CHART_PALETTE.length],
-      )
+      chart.chart_colors = labels.map(() => '#3f765d')
       chart.chart_show_values = true
       chart.chart_show_legend = false
       chart.chart_axis_color = '#6d7872'
@@ -2088,6 +2193,7 @@
         <Button variant="secondary" size="sm" onclick={addImageUrl}><Link2 size={14} /> URL</Button>
         <Button variant="secondary" size="sm" onclick={addTable}><Table2 size={14} /> Tabel</Button>
         <Button variant="secondary" size="sm" onclick={addChart}><BarChart3 size={14} /> Grafik</Button>
+        <Button variant="secondary" size="sm" onclick={addHBarChart}><AlignLeft size={14} /> Bar Samping</Button>
         <span class="mx-1 h-6 w-px bg-line"></span>
         <Button variant="ghost" size="sm" disabled={!history.length} onclick={undo}><Undo2 size={14} /> Undo</Button>
         <Button variant="ghost" size="sm" disabled={!redoStack.length} onclick={redo}><Redo2 size={14} /> Redo</Button>
@@ -2393,8 +2499,9 @@
                   <span class="label">Jenis</span>
                   <select class="input py-1.5 text-xs" value={activeElement.chart_type ?? 'bar'}
                     data-chart-field="type"
-                    onchange={(event) => updateElement({ chart_type: (event.currentTarget as HTMLSelectElement).value as 'bar' | 'line' | 'pie' | 'donut' }, true)}>
+                    onchange={(event) => updateElement({ chart_type: (event.currentTarget as HTMLSelectElement).value as 'bar' | 'line' | 'pie' | 'donut' | 'hbar' }, true)}>
                     <option value="bar">Bar</option>
+                    <option value="hbar">Bar ke samping</option>
                     <option value="line">Line</option>
                     <option value="pie">Pie</option>
                     <option value="donut">Donut</option>

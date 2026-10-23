@@ -87,7 +87,7 @@ export interface LayoutElement {
   table_header_bg?: string
   table_header_color?: string
   table_stripe?: string
-  chart_type?: 'bar' | 'line' | 'pie' | 'donut'
+  chart_type?: 'bar' | 'line' | 'pie' | 'donut' | 'hbar'
   chart_title?: string
   chart_labels?: string[]
   chart_values?: number[]

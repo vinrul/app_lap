@@ -14,7 +14,7 @@ Aplikasi lokal untuk mengubah export Excel **Quick Wins / Qins Polri** menjadi l
   - Aspirasi masyarakat dan bentuk tindak lanjut
   - Amplifikasi media (publikasi, dokumentasi, kanal, kegiatan)
 - Penyuntingan narasi laporan per bagian serta blok penandatangan.
-- Editor desain visual per laporan: tambah teks, kotak, gambar (unggah atau URL), tabel manual, dan grafik bar/line/pie/donut; tabel/grafik dapat diikat ke sumber data metrik; geser/resize/style blok laporan; edit teks blok langsung di kanvas; detach tabel/grafik lama menjadi objek manual dengan tombol Reset ke data; panel layer untuk sembunyikan dan urutkan objek; gabungkan objek agar bergerak bersama; simpan dan terapkan template desain lintas periode (gambar ikut disalin); lalu terapkan layout ke pratinjau dan PDF.
+- Editor desain visual per laporan: tambah teks, kotak, gambar (unggah atau URL), tabel manual, dan grafik bar, bar horizontal, line, pie, atau donut; tabel/grafik dapat diikat ke sumber data metrik; geser/resize/style blok laporan; edit teks blok langsung di kanvas; detach tabel/grafik lama menjadi objek manual dengan tombol Reset ke data; panel layer untuk sembunyikan dan urutkan objek; gabungkan objek agar bergerak bersama; simpan dan terapkan template desain lintas periode (gambar ikut disalin); lalu terapkan layout ke pratinjau dan PDF.
 - Pratinjau HTML sebelum penerbitan.
 - Pembuatan PDF 9 halaman dengan format laporan resmi, penomoran halaman, tabel sebaran wilayah, dan grafik batang.
 - Arsip PDF dengan snapshot metrik dan konten editorial.

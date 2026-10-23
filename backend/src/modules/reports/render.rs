@@ -935,8 +935,11 @@ fn render_chart_element(element: &LayoutElement, ctx: &DesignContext, style: &st
         None => element,
     };
     let base = (element.font_size * 1.6).clamp(10.0, 22.0);
+    let is_hbar = element.chart_type == "hbar";
     let top = if element.chart_title.trim().is_empty() {
-        18.0
+        if is_hbar { 20.0 } else { 18.0 }
+    } else if is_hbar {
+        58.0
     } else {
         50.0
     };
@@ -947,7 +950,7 @@ fn render_chart_element(element: &LayoutElement, ctx: &DesignContext, style: &st
             element.fill
         ));
     }
-    if !element.chart_title.trim().is_empty() {
+    if !is_hbar && !element.chart_title.trim().is_empty() {
         body.push_str(&format!(
             "<text x=\"300\" y=\"30\" text-anchor=\"middle\" font-size=\"{:.1}\" font-weight=\"700\" fill=\"{}\">{}</text>",
             base + 4.0,
@@ -958,6 +961,7 @@ fn render_chart_element(element: &LayoutElement, ctx: &DesignContext, style: &st
 
     let chart_svg = match element.chart_type.as_str() {
         "line" => render_line_chart(element, top, base),
+        "hbar" => render_hbar_chart(element, top, base),
         "pie" | "donut" => render_pie_chart(element, top, base, element.chart_type == "donut"),
         _ => render_bar_chart(element, top, base),
     };
@@ -1047,6 +1051,76 @@ fn render_bar_chart(element: &LayoutElement, top: f64, base: f64) -> String {
                 base - 2.0,
                 element.chart_axis_color,
                 escape_html(&shorten(label, 14))
+            ));
+        }
+    }
+    svg
+}
+
+fn render_hbar_chart(element: &LayoutElement, top: f64, base: f64) -> String {
+    let left = 24.0;
+    let right = 576.0;
+    let bottom = 336.0;
+    let gap = 12.0;
+    let value_width: f64 = if element.chart_show_values { 46.0 } else { 0.0 };
+    let label_width = (right - left) * 0.38;
+    let track_left = left + label_width + gap;
+    let track_width = (right - value_width - gap - track_left).max(40.0);
+    let count = element.chart_values.len().max(1);
+    let row_height = ((bottom - top) / count as f64).clamp(12.0, 44.0);
+    let bar_height = (row_height * 0.36).clamp(6.0, 16.0);
+    let bar_radius = bar_height / 2.0;
+    let label_size = if count > 12 {
+        (base - 4.0).max(7.0)
+    } else {
+        (base - 3.0).max(8.0)
+    };
+    let value_size = (base - 2.0).max(8.0);
+    let max = element
+        .chart_values
+        .iter()
+        .cloned()
+        .fold(0.0_f64, f64::max)
+        .max(1.0);
+    let bar_color = chart_color(element, 0);
+
+    let mut svg = String::from(
+        "<rect x=\"1\" y=\"1\" width=\"598\" height=\"358\" rx=\"5\" fill=\"none\" stroke=\"#d7ddd6\" stroke-width=\"1.4\"/>",
+    );
+    if !element.chart_title.trim().is_empty() {
+        svg.push_str(&format!(
+            "<text x=\"{left}\" y=\"32\" font-size=\"{:.1}\" font-weight=\"700\" fill=\"{}\">{}</text>",
+            (base + 4.0).max(13.0),
+            element.color,
+            escape_html(&element.chart_title)
+        ));
+    }
+
+    for (index, value) in element.chart_values.iter().enumerate() {
+        let center = top + row_height * (index as f64 + 0.5);
+        let baseline = center + label_size * 0.34;
+        if let Some(label) = element.chart_labels.get(index) {
+            svg.push_str(&format!(
+                "<text x=\"{left}\" y=\"{baseline:.2}\" font-size=\"{label_size:.1}\" fill=\"#46534b\">{}</text>",
+                escape_html(&shorten(label, 26))
+            ));
+        }
+        let y = center - bar_height / 2.0;
+        svg.push_str(&format!(
+            "<rect x=\"{track_left:.2}\" y=\"{y:.2}\" width=\"{track_width:.2}\" height=\"{bar_height:.2}\" rx=\"{bar_radius:.2}\" fill=\"#eef1ec\"/>"
+        ));
+        let width = track_width * (value / max).clamp(0.0, 1.0);
+        if width > 0.5 {
+            svg.push_str(&format!(
+                "<rect x=\"{track_left:.2}\" y=\"{y:.2}\" width=\"{:.2}\" height=\"{bar_height:.2}\" rx=\"{bar_radius:.2}\" fill=\"{bar_color}\"/>",
+                width.max(bar_height)
+            ));
+        }
+        if element.chart_show_values {
+            svg.push_str(&format!(
+                "<text x=\"{right:.2}\" y=\"{baseline:.2}\" text-anchor=\"end\" font-size=\"{value_size:.1}\" font-weight=\"700\" fill=\"{}\">{}</text>",
+                element.color,
+                chart_value_text(*value)
             ));
         }
     }
@@ -1685,6 +1759,54 @@ table.data.compact td { padding: 1.3mm 1.5mm; }
 mod tests {
     use super::*;
     use crate::modules::reports::models::{MetricCard, ReportMetrics};
+
+    #[test]
+    fn renders_horizontal_bar_chart() {
+        let metrics = ReportMetrics::default();
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![crate::modules::reports::layout::PageLayout {
+                page: 2,
+                blocks: std::collections::BTreeMap::new(),
+                elements: vec![LayoutElement {
+                    id: "chart-hbar".into(),
+                    kind: "chart".into(),
+                    x: 10.0,
+                    y: 10.0,
+                    width: 120.0,
+                    height: 80.0,
+                    chart_type: "hbar".into(),
+                    chart_title: "Jenis kegiatan".into(),
+                    chart_labels: vec![
+                        "QW2.1".into(),
+                        "QW2.3".into(),
+                        "QW2.4".into(),
+                        "QW2.2".into(),
+                    ],
+                    chart_values: vec![17.0, 2.0, 2.0, 1.0],
+                    chart_colors: (0..4).map(|_| "#3f765d".to_string()).collect(),
+                    chart_show_values: true,
+                    fill: "#ffffff".into(),
+                    color: "#143d30".into(),
+                    font_size: 9.0,
+                    ..Default::default()
+                }],
+            }],
+        };
+
+        let html = render_with_layout(
+            &metrics,
+            &ReportContent::default(),
+            &Config::test_config(),
+            &layout,
+            &HashMap::new(),
+        );
+        assert!(html.contains("Jenis kegiatan"));
+        assert!(html.contains("#eef1ec"));
+        assert!(html.contains("#3f765d"));
+        assert!(html.contains(">QW2.1<"));
+        assert!(html.contains(">17<"));
+    }
 
     #[test]
     fn renders_data_bound_table_and_chart() {
