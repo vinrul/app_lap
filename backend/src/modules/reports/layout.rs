@@ -91,6 +91,9 @@ pub struct LayoutElement {
     pub card_unit: String,
     pub card_detail: String,
     pub card_accent: String,
+    pub icon_name: String,
+    pub icon_color: String,
+    pub icon_stroke: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -161,6 +164,9 @@ impl Default for LayoutElement {
             card_unit: String::new(),
             card_detail: String::new(),
             card_accent: String::new(),
+            icon_name: String::new(),
+            icon_color: String::new(),
+            icon_stroke: 2.0,
         }
     }
 }
@@ -275,7 +281,7 @@ impl LayoutElement {
         self.kind = self.kind.trim().to_ascii_lowercase();
         if !matches!(
             self.kind.as_str(),
-            "image" | "rect" | "text" | "table" | "chart" | "card"
+            "image" | "rect" | "text" | "table" | "chart" | "card" | "icon"
         ) {
             return None;
         }
@@ -300,6 +306,7 @@ impl LayoutElement {
             "table" => (120.0, 60.0),
             "chart" => (120.0, 80.0),
             "card" => (48.0, 33.0),
+            "icon" => (14.0, 14.0),
             _ => (60.0, 15.0),
         };
         self.width = clamp_num(self.width, 5.0, PAGE_WIDTH_MM, default_width);
@@ -393,6 +400,24 @@ impl LayoutElement {
                 self.border_width = clamp_num(self.border_width, 0.0, 10.0, 2.0);
                 self.radius = clamp_num(self.radius, 0.0, 20.0, 1.5);
                 self.font_size = clamp_num(self.font_size, 6.0, 24.0, 9.0);
+            }
+            "icon" => {
+                self.src.clear();
+                self.alt.clear();
+                self.clear_table_chart();
+                let name = self.icon_name.trim().to_ascii_lowercase();
+                if name.len() <= 40
+                    && name
+                        .chars()
+                        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+                    && super::icons::find(&name).is_some()
+                {
+                    self.icon_name = name;
+                } else {
+                    self.icon_name.clear();
+                }
+                self.icon_color = safe_color(&self.icon_color, "#143d30");
+                self.icon_stroke = clamp_num(self.icon_stroke, 1.0, 4.0, 2.0);
             }
             "chart" => {
                 self.src.clear();
@@ -786,6 +811,40 @@ mod tests {
         assert_eq!(card.border_width, 10.0);
         assert_eq!(card.radius, 20.0);
         assert_eq!(card.font_size, 24.0);
+    }
+
+    #[test]
+    fn sanitizes_icon_elements() {
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![PageLayout {
+                page: 2,
+                blocks: BTreeMap::new(),
+                elements: vec![
+                    LayoutElement {
+                        id: "icon-ok".into(),
+                        kind: "icon".into(),
+                        icon_name: "SHIELD-CHECK".into(),
+                        icon_color: "not-a-color".into(),
+                        icon_stroke: 9.0,
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "icon-bad".into(),
+                        kind: "icon".into(),
+                        icon_name: "not-an-icon".into(),
+                        ..Default::default()
+                    },
+                ],
+            }],
+        };
+
+        let sanitized = layout.sanitize();
+        let page = &sanitized.pages[1];
+        assert_eq!(page.elements[0].icon_name, "shield-check");
+        assert_eq!(page.elements[0].icon_color, "#143d30");
+        assert_eq!(page.elements[0].icon_stroke, 4.0);
+        assert!(page.elements[1].icon_name.is_empty());
     }
 
     #[test]

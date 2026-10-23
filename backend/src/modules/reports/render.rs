@@ -6,6 +6,7 @@ use chrono::{Datelike, NaiveDate};
 use crate::{
     config::Config,
     modules::reports::{
+        icons,
         layout::{DesignSource, LayoutElement, ReportLayout, image_id_from_src, valid_id},
         models::{GroupMetrics, ReportContent, ReportMetrics, RowSummary},
         sources::design_sources,
@@ -853,6 +854,7 @@ fn render_layout_element(element: &LayoutElement, ctx: &DesignContext) -> String
         "table" => render_table_element(element, ctx, &style),
         "chart" => render_chart_element(element, ctx, &style),
         "card" => render_card_element(element, &style),
+        "icon" => render_icon_element(element, &style),
         _ => String::new(),
     }
 }
@@ -905,6 +907,23 @@ fn render_card_element(element: &LayoutElement, style: &str) -> String {
         element.font_size * 0.82,
         escape_html(&element.card_unit),
         detail
+    )
+}
+
+fn render_icon_element(element: &LayoutElement, style: &str) -> String {
+    let Some(icon) = icons::find(&element.icon_name) else {
+        return String::new();
+    };
+    format!(
+        "<svg class=\"layout-element layout-icon\" data-element-id=\"{}\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" preserveAspectRatio=\"xMidYMid meet\" style=\"{}display:block;color:{};\" role=\"img\" aria-label=\"{}\" data-icon-category=\"{}\">{}</svg>",
+        escape_html(&element.id),
+        element.icon_color,
+        element.icon_stroke,
+        style,
+        element.icon_color,
+        escape_html(&icon.label),
+        escape_html(icon.category),
+        icon.svg
     )
 }
 
@@ -1722,6 +1741,7 @@ h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; color: #143d30; mar
 .layout-card-value { font-family: Georgia, serif; font-weight: 500; line-height: 1.05; margin-top: auto; }
 .layout-card-unit { color: #5b6861; }
 .layout-card-detail { color: #7a857f; margin-top: 1mm; line-height: 1.3; }
+.layout-icon { overflow: visible; }
 .layout-table table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .layout-table th, .layout-table td { border: var(--table-border, .5pt solid #d7ddd6); padding: 1.2mm 1.5mm; vertical-align: top; word-break: break-word; }
 .layout-table th { font-weight: 700; }
@@ -1904,6 +1924,44 @@ mod tests {
         assert!(html.contains(">999<"));
         assert!(html.contains(">pohon<"));
         assert!(!html.contains("Bibit ditanam"));
+    }
+
+    #[test]
+    fn renders_icon_elements() {
+        let metrics = ReportMetrics::default();
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![crate::modules::reports::layout::PageLayout {
+                page: 2,
+                blocks: std::collections::BTreeMap::new(),
+                elements: vec![LayoutElement {
+                    id: "icon-1".into(),
+                    kind: "icon".into(),
+                    x: 10.0,
+                    y: 10.0,
+                    width: 14.0,
+                    height: 14.0,
+                    icon_name: "shield-check".into(),
+                    icon_color: "#b8894b".into(),
+                    icon_stroke: 1.5,
+                    ..Default::default()
+                }],
+            }],
+        };
+
+        let html = render_with_layout(
+            &metrics,
+            &ReportContent::default(),
+            &Config::test_config(),
+            &layout,
+            &HashMap::new(),
+        );
+        assert!(html.contains("layout-icon"));
+        assert!(html.contains("data-element-id=\"icon-1\""));
+        assert!(html.contains("stroke=\"#b8894b\""));
+        assert!(html.contains("stroke-width=\"1.5\""));
+        assert!(html.contains("<path"));
+        assert!(html.contains("Perisai terverifikasi"));
     }
 
     #[test]

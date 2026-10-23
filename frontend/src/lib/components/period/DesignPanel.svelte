@@ -22,6 +22,7 @@
     Plus,
     Redo2,
     Save,
+    Shapes,
     Square,
     Table2,
     Trash2,
@@ -40,11 +41,13 @@
     ReportContent,
     ReportLayout,
   } from '../../types'
+  import { iconByName, iconCatalog, type IconDefinition } from '../../icons/catalog'
   import { emptyContent } from '../../utils/constants'
   import { formatDateTime } from '../../utils/format'
   import { toast } from '../../stores/toast.svelte'
   import Button from '../ui/Button.svelte'
   import EmptyState from '../ui/EmptyState.svelte'
+  import Modal from '../ui/Modal.svelte'
 
   type Props = {
     periodId: string
@@ -126,6 +129,10 @@
   let templateName = $state('')
   let selectedTemplateId = $state('')
   let templateBusy = $state(false)
+  let iconPickerOpen = $state(false)
+  let iconPickerTarget = $state<'new' | 'replace'>('new')
+  let iconSearch = $state('')
+  let iconCategory = $state('Semua')
 
   let loadedKey = ''
   let boundDoc: Document | null = null
@@ -139,6 +146,16 @@
   const atFitZoom = $derived(zoomOverride === null)
   const canZoomOut = $derived((zoomOverride ?? fitZoom) > MIN_ZOOM + 0.001)
   const canZoomIn = $derived((zoomOverride ?? fitZoom) < MAX_ZOOM - 0.001)
+  const iconCategories = ['Semua', ...new Set(iconCatalog.map((icon) => icon.category))]
+  const iconPickerTitle = $derived(iconPickerTarget === 'replace' ? 'Ganti ikon' : 'Tambah ikon')
+  const filteredIcons = $derived.by(() => {
+    const query = iconSearch.trim().toLowerCase()
+    return iconCatalog.filter((icon) => {
+      if (iconCategory !== 'Semua' && icon.category !== iconCategory) return false
+      if (!query) return true
+      return icon.label.toLowerCase().includes(query) || icon.name.includes(query)
+    })
+  })
   const activeElement = $derived.by(() => {
     if (!selected || selected.kind !== 'element') return null
     return getElement(selected.page, selected.id)
@@ -305,7 +322,9 @@
               ? 'Grafik'
               : element.type === 'card'
                 ? 'Kartu'
-                : 'Gambar'
+                : element.type === 'icon'
+                  ? 'Ikon'
+                  : 'Gambar'
   const detail =
     element.type === 'text'
       ? (element.text ?? '').replace(/\s+/g, ' ').trim()
@@ -315,7 +334,9 @@
           ? (element.chart_title ?? '').trim()
           : element.type === 'card'
             ? (element.card_label ?? '').trim()
-            : (element.alt ?? '').trim()
+            : element.type === 'icon'
+              ? (iconByName.get(element.icon_name ?? '')?.label ?? '')
+              : (element.alt ?? '').trim()
     const summary = detail.length > 32 ? `${detail.slice(0, 31)}…` : detail
     return summary ? `${type} — ${summary}` : type
   }
@@ -523,6 +544,9 @@
       card_unit: 'unit',
       card_detail: '',
       card_accent: '#b8894b',
+      icon_name: '',
+      icon_color: '#143d30',
+      icon_stroke: 2,
     }
   }
 
@@ -809,6 +833,28 @@
         card.appendChild(detail)
       }
       node = card
+    } else if (element.type === 'icon') {
+      const wrapper = doc.createElement('div')
+      wrapper.style.color = element.icon_color ?? '#143d30'
+      wrapper.style.display = 'block'
+      const icon = iconByName.get(element.icon_name ?? '')
+      if (!icon) {
+        wrapper.appendChild(sourceMessage(doc, 'Ikon tidak ditemukan.'))
+      } else {
+        const svg = doc.createElementNS(SVG_NS, 'svg')
+        svg.setAttribute('viewBox', '0 0 24 24')
+        svg.setAttribute('fill', 'none')
+        svg.setAttribute('stroke', 'currentColor')
+        svg.setAttribute('stroke-width', String(element.icon_stroke ?? 2))
+        svg.setAttribute('stroke-linecap', 'round')
+        svg.setAttribute('stroke-linejoin', 'round')
+        svg.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+        svg.setAttribute('width', '100%')
+        svg.setAttribute('height', '100%')
+        svg.innerHTML = icon.svg
+        wrapper.appendChild(svg)
+      }
+      node = wrapper
     } else {
       const text = doc.createElement('div')
       text.textContent = element.text ?? ''
@@ -1787,6 +1833,39 @@
     addElement(element)
   }
 
+  function openIconPickerForNew() {
+    iconPickerTarget = 'new'
+    iconSearch = ''
+    iconPickerOpen = true
+  }
+
+  function openIconPickerForReplace() {
+    if (!activeElement || activeElement.type !== 'icon') return
+    iconPickerTarget = 'replace'
+    iconPickerOpen = true
+  }
+
+  function chooseIcon(icon: IconDefinition) {
+    if (iconPickerTarget === 'replace' && activeElement?.type === 'icon') {
+      updateElement({ icon_name: icon.name }, true)
+    } else {
+      const element = baseElement('icon')
+      element.width = 14
+      element.height = 14
+      element.icon_name = icon.name
+      element.icon_color = '#143d30'
+      element.icon_stroke = 2
+      addElement(element)
+      toast.success(`Ikon ${icon.label} ditambahkan.`)
+    }
+    iconPickerOpen = false
+  }
+
+  function portal(node: HTMLElement): { destroy: () => void } {
+    document.body.appendChild(node)
+    return { destroy: () => node.remove() }
+  }
+
   function updateTableCell(rowIndex: number, columnIndex: number, value: string) {
     if (!activeElement || activeElement.type !== 'table' || activeElement.binding) return
     const rows = activeElement.table_rows
@@ -2418,6 +2497,7 @@
         <Button variant="secondary" size="sm" onclick={addChart}><BarChart3 size={14} /> Grafik</Button>
         <Button variant="secondary" size="sm" onclick={addHBarChart}><AlignLeft size={14} /> Bar Samping</Button>
         <Button variant="secondary" size="sm" onclick={addCard}><CreditCard size={14} /> Kartu</Button>
+        <Button variant="secondary" size="sm" onclick={openIconPickerForNew}><Shapes size={14} /> Ikon</Button>
         <span class="mx-1 h-6 w-px bg-line"></span>
         <Button variant="ghost" size="sm" disabled={!history.length} onclick={undo}><Undo2 size={14} /> Undo</Button>
         <Button variant="ghost" size="sm" disabled={!redoStack.length} onclick={redo}><Redo2 size={14} /> Redo</Button>
@@ -2485,7 +2565,7 @@
             <div>
               <span class="eyebrow">ELEMEN TERPILIH</span>
               <h2 class="panel-title mt-1">
-                {activeElement.type === 'text' ? 'Teks' : activeElement.type === 'rect' ? 'Kotak' : activeElement.type === 'table' ? 'Tabel' : activeElement.type === 'chart' ? 'Grafik' : activeElement.type === 'card' ? 'Kartu' : 'Gambar'}
+                {activeElement.type === 'text' ? 'Teks' : activeElement.type === 'rect' ? 'Kotak' : activeElement.type === 'table' ? 'Tabel' : activeElement.type === 'chart' ? 'Grafik' : activeElement.type === 'card' ? 'Kartu' : activeElement.type === 'icon' ? 'Ikon' : 'Gambar'}
               </h2>
             </div>
             <div class="flex flex-col items-end gap-1">
@@ -2614,6 +2694,37 @@
                     oninput={(event) => updateElement({ radius: numberValue((event.currentTarget as HTMLInputElement).value) })} />
                 </label>
               </div>
+            {:else if activeElement.type === 'icon'}
+              <div class="flex items-center gap-3 rounded-xl border border-line p-3">
+                <span class="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-forest-50 text-forest-800">
+                  <svg class="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width={activeElement.icon_stroke ?? 2} stroke-linecap="round" stroke-linejoin="round">
+                    {@html iconByName.get(activeElement.icon_name ?? '')?.svg ?? ''}
+                  </svg>
+                </span>
+                <div class="min-w-0 flex-1">
+                  <p class="truncate text-xs font-semibold text-ink">{iconByName.get(activeElement.icon_name ?? '')?.label ?? 'Ikon tidak dikenal'}</p>
+                  <p class="truncate text-[10px] text-ink-muted">{activeElement.icon_name ?? ''}</p>
+                </div>
+                <Button variant="secondary" size="sm" onclick={openIconPickerForReplace}>Ganti</Button>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <label class="block">
+                  <span class="label">Warna ikon</span>
+                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.icon_color)}
+                    data-icon-color
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ icon_color: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+                <label class="block">
+                  <span class="label">Ketebalan garis</span>
+                  <input class="input py-1.5 text-xs" type="number" min="1" max="4" step="0.25" value={activeElement.icon_stroke ?? 2}
+                    data-icon-stroke
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ icon_stroke: numberValue((event.currentTarget as HTMLInputElement).value) })} />
+                </label>
+              </div>
+              <p class="text-[10px] leading-relaxed text-ink-muted">Ukuran ikon mengikuti kotak elemen. Atur lebar/tinggi pada kolom di atas.</p>
             {:else if activeElement.type === 'card'}
               <label class="block">
                 <span class="label">Label</span>
@@ -3020,7 +3131,7 @@
           <span class="eyebrow">CARA PAKAI</span>
           <ul class="mt-3 space-y-2 text-[11px] leading-relaxed text-ink-muted">
             <li>1. Gunakan Sebelumnya/Berikutnya untuk berpindah halaman; kanvas hanya menampilkan satu halaman.</li>
-            <li>2. Tambah teks, kotak, gambar, URL, tabel, atau grafik.</li>
+            <li>2. Tambah teks, kotak, gambar, ikon, kartu, tabel, atau grafik.</li>
             <li>3. Tarik elemen untuk menggeser; tarik sudut untuk mengubah ukuran.</li>
             <li>4. Klik blok laporan untuk geser; tarik sudut kanan bawah untuk resize.</li>
             <li>5. Klik dua kali teks blok untuk mengeditnya.</li>
@@ -3124,4 +3235,36 @@
       {/if}
     </aside>
   </div>
+
+  {#if iconPickerOpen}
+    <div use:portal>
+      <Modal open={true} title={iconPickerTitle} description="Klik ikon untuk memasukkannya ke halaman aktif. Warna dapat diubah setelah ikon ditambahkan." onclose={() => (iconPickerOpen = false)} width="max-w-4xl">
+    <div class="flex flex-wrap gap-2">
+      <input class="input min-w-0 flex-1 py-2 text-sm" placeholder="Cari ikon…" data-icon-search bind:value={iconSearch} />
+      <select class="input max-w-[220px] py-2 text-sm" data-icon-category bind:value={iconCategory}>
+        {#each iconCategories as category}
+          <option value={category}>{category}</option>
+        {/each}
+      </select>
+    </div>
+    <div class="mt-4 max-h-[55vh] overflow-auto pr-1">
+      {#if filteredIcons.length}
+        <div class="grid grid-cols-4 gap-2 sm:grid-cols-6 md:grid-cols-8">
+          {#each filteredIcons as icon (icon.name)}
+            <button type="button" class="flex min-w-0 flex-col items-center gap-1.5 rounded-xl border border-line px-2 py-2.5 text-ink hover:border-gold-300 hover:bg-gold-50"
+              title={icon.label} data-icon-option={icon.name} onclick={() => chooseIcon(icon)}>
+              <svg class="h-6 w-6 text-forest-800" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{@html icon.svg}</svg>
+              <span class="w-full truncate text-center text-[9px] leading-tight text-ink-muted">{icon.label}</span>
+            </button>
+          {/each}
+        </div>
+      {:else}
+        <p class="py-8 text-center text-sm text-ink-muted">Tidak ada ikon yang cocok.</p>
+      {/if}
+    </div>
+    <p class="mt-3 text-[10px] text-ink-muted">{filteredIcons.length} ikon ditampilkan dari {iconCatalog.length} ikon Lucide.</p>
+      </Modal>
+    </div>
+  {/if}
 {/if}

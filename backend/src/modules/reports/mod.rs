@@ -1,4 +1,5 @@
 mod handlers;
+pub mod icons;
 pub mod layout;
 pub mod metrics;
 pub mod models;
