@@ -81,6 +81,7 @@ export interface LayoutElement {
   background?: string
   source_block?: string
   binding?: string
+  group?: string
   table_rows?: string[][]
   table_header?: boolean
   table_header_bg?: string
@@ -128,6 +129,14 @@ export interface DesignSource {
   chart_values: number[]
   chart_title: string
   can_chart: boolean
+}
+
+export interface DesignTemplateView {
+  id: string
+  name: string
+  layout: ReportLayout
+  created_at: string
+  created_by: string | null
 }
 
 export interface ReportView {

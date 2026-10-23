@@ -72,6 +72,7 @@ pub struct LayoutElement {
     pub background: String,
     pub source_block: String,
     pub binding: String,
+    pub group: String,
     pub table_rows: Vec<Vec<String>>,
     pub table_header: bool,
     pub table_header_bg: String,
@@ -136,6 +137,7 @@ impl Default for LayoutElement {
             background: String::new(),
             source_block: String::new(),
             binding: String::new(),
+            group: String::new(),
             table_rows: Vec::new(),
             table_header: true,
             table_header_bg: String::new(),
@@ -277,6 +279,9 @@ impl LayoutElement {
         }
         if !valid_binding(&self.binding) {
             self.binding.clear();
+        }
+        if !valid_id(&self.group) {
+            self.group.clear();
         }
 
         let (default_width, default_height) = match self.kind.as_str() {
@@ -423,6 +428,26 @@ pub struct DesignSource {
     pub chart_values: Vec<f64>,
     pub chart_title: String,
     pub can_chart: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DesignTemplateView {
+    pub id: String,
+    pub name: String,
+    pub layout: ReportLayout,
+    pub created_at: String,
+    pub created_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveTemplateRequest {
+    pub name: String,
+    pub layout: ReportLayout,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApplyTemplateRequest {
+    pub import_id: String,
 }
 
 pub fn valid_binding(value: &str) -> bool {
@@ -653,6 +678,18 @@ mod tests {
                         binding: "Quick Wins!".into(),
                         ..Default::default()
                     },
+                    LayoutElement {
+                        id: "table-group".into(),
+                        kind: "table".into(),
+                        group: "group-1".into(),
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "table-bad-group".into(),
+                        kind: "table".into(),
+                        group: "bad group".into(),
+                        ..Default::default()
+                    },
                 ],
             }],
         };
@@ -661,6 +698,8 @@ mod tests {
         let page = &sanitized.pages[1];
         assert_eq!(page.elements[0].binding, "narkoba.by_polres");
         assert!(page.elements[1].binding.is_empty());
+        assert_eq!(page.elements[2].group, "group-1");
+        assert!(page.elements[3].group.is_empty());
         assert!(valid_binding("media.by_channel"));
         assert!(!valid_binding("media by channel"));
         assert!(!valid_binding(&"a".repeat(101)));

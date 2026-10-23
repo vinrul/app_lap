@@ -2,12 +2,16 @@
   import { tick, untrack } from 'svelte'
   import {
     AlertCircle,
+    ArrowDown,
+    ArrowUp,
     BarChart3,
     Check,
     Copy,
     Eye,
+    EyeOff,
     FileDown,
     ImagePlus,
+    Layers,
     Link2,
     Redo2,
     Save,
@@ -21,6 +25,7 @@
   import { errorMessage } from '../../api/client'
   import type {
     DesignSource,
+    DesignTemplateView,
     LayoutBlockOffset,
     LayoutElement,
     LayoutPage,
@@ -63,6 +68,7 @@
     moved: boolean
     historyPushed: boolean
     before: ReportLayout
+    groupStarts?: { id: string; x: number; y: number }[]
   }
 
   const PAGE_WIDTH = 210
@@ -96,8 +102,13 @@
   let error = $state('')
   let currentPage = $state(1)
   let selected = $state<Selection>(null)
+  let checkedIds = $state<string[]>([])
   let history = $state<ReportLayout[]>([])
   let redoStack = $state<ReportLayout[]>([])
+  let templates = $state<DesignTemplateView[]>([])
+  let templateName = $state('')
+  let selectedTemplateId = $state('')
+  let templateBusy = $state(false)
 
   let loadedKey = ''
   let boundDoc: Document | null = null
@@ -134,6 +145,14 @@
   })
   const tableSourceGroups = $derived(groupSources(sources))
   const chartSourceGroups = $derived(groupSources(sources.filter((source) => source.can_chart)))
+  const pageElements = $derived.by(() => {
+    const page = getPage(currentPage)
+    if (!page) return []
+    return [...page.elements].sort((left, right) => right.z - left.z)
+  })
+  const checkedHasGroup = $derived.by(() =>
+    pageElements.some((element) => checkedIds.includes(element.id) && Boolean(element.group)),
+  )
 
   $effect(() => {
     const key = `${periodId}:${selectedImportId}`
@@ -243,6 +262,158 @@
     }
   }
 
+  function elementLabel(element: LayoutElement): string {
+    const type =
+      element.type === 'text'
+        ? 'Teks'
+        : element.type === 'rect'
+          ? 'Kotak'
+          : element.type === 'table'
+            ? 'Tabel'
+            : element.type === 'chart'
+              ? 'Grafik'
+              : 'Gambar'
+    const detail =
+      element.type === 'text'
+        ? (element.text ?? '').replace(/\s+/g, ' ').trim()
+        : element.type === 'table'
+          ? (element.table_rows?.[0] ?? []).join(' · ')
+          : element.type === 'chart'
+            ? (element.chart_title ?? '').trim()
+            : (element.alt ?? '').trim()
+    const summary = detail.length > 32 ? `${detail.slice(0, 31)}…` : detail
+    return summary ? `${type} — ${summary}` : type
+  }
+
+  function toggleChecked(id: string): void {
+    checkedIds = checkedIds.includes(id)
+      ? checkedIds.filter((item) => item !== id)
+      : [...checkedIds, id]
+  }
+
+  function selectLayer(id: string): void {
+    const element = getElement(currentPage, id)
+    if (!element) return
+    selected = { kind: 'element', page: currentPage, id }
+    renderSelection()
+  }
+
+  function toggleElementHidden(id: string): void {
+    const element = getElement(currentPage, id)
+    if (!element) return
+    pushHistory()
+    element.hidden = !element.hidden
+    applyLayoutToDom()
+  }
+
+  function toggleSelectedHidden(): void {
+    if (!selected || selected.kind !== 'element') return
+    toggleElementHidden(selected.id)
+  }
+
+  function moveLayerOf(id: string, delta: number): void {
+    const element = getElement(currentPage, id)
+    if (!element) return
+    pushHistory()
+    element.z = clamp(element.z + delta, -100, 1000)
+    applyLayoutToDom()
+  }
+
+  function groupChecked(): void {
+    const page = getPage(currentPage)
+    if (!page || checkedIds.length < 2) return
+    const group = newId()
+    pushHistory()
+    for (const element of page.elements) {
+      if (checkedIds.includes(element.id)) element.group = group
+    }
+    toast.success(`${checkedIds.length} objek digabungkan.`)
+    checkedIds = []
+    applyLayoutToDom()
+  }
+
+  function ungroupChecked(): void {
+    const page = getPage(currentPage)
+    if (!page) return
+    const groups = new Set(
+      page.elements
+        .filter((element) => checkedIds.includes(element.id) && element.group)
+        .map((element) => element.group as string),
+    )
+    if (!groups.size) return
+    pushHistory()
+    for (const element of page.elements) {
+      if (element.group && groups.has(element.group)) element.group = ''
+    }
+    checkedIds = []
+    applyLayoutToDom()
+  }
+
+  function groupMembers(page: LayoutPage, element: LayoutElement): LayoutElement[] {
+    if (!element.group) return [element]
+    const members = page.elements.filter((item) => item.group === element.group)
+    return members.length > 1 ? members : [element]
+  }
+
+  async function saveAsTemplate(): Promise<void> {
+    const name = templateName.trim()
+    if (!name) return
+    templateBusy = true
+    try {
+      const saved = await designApi.saveTemplate(name, layout)
+      templates = [saved, ...templates]
+      selectedTemplateId = saved.id
+      templateName = ''
+      toast.success('Template desain tersimpan.')
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    } finally {
+      templateBusy = false
+    }
+  }
+
+  async function applySelectedTemplate(): Promise<void> {
+    if (!selectedImportId || !selectedTemplateId) return
+    const template = templates.find((item) => item.id === selectedTemplateId)
+    const label = template?.name ?? 'ini'
+    if (!window.confirm(`Terapkan template "${label}"? Desain saat ini akan diganti.`)) return
+    templateBusy = true
+    const before = cloneLayout(layout)
+    try {
+      const view = await designApi.applyTemplate(periodId, selectedImportId, selectedTemplateId)
+      pushSnapshot(before)
+      layout = normalizeLayout(view.layout)
+      savedJson = JSON.stringify(layout)
+      updatedAt = view.updated_at
+      updatedBy = view.updated_by
+      selected = null
+      checkedIds = []
+      applyLayoutToDom()
+      toast.success('Template diterapkan ke versi impor ini.')
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    } finally {
+      templateBusy = false
+    }
+  }
+
+  async function deleteSelectedTemplate(): Promise<void> {
+    if (!selectedTemplateId) return
+    const template = templates.find((item) => item.id === selectedTemplateId)
+    if (!window.confirm(`Hapus template "${template?.name ?? 'ini'}"?`)) return
+    templateBusy = true
+    try {
+      await designApi.deleteTemplate(selectedTemplateId)
+      templates = templates.filter((item) => item.id !== selectedTemplateId)
+      selectedTemplateId = ''
+      toast.success('Template dihapus.')
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    } finally {
+      templateBusy = false
+    }
+  }
+
   function newId(): string {
     if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
       return crypto.randomUUID()
@@ -294,6 +465,7 @@
       background: 'transparent',
       source_block: '',
       binding: '',
+      group: '',
       table_rows: [
         ['Kolom 1', 'Kolom 2', 'Kolom 3'],
         ['', '', ''],
@@ -323,6 +495,8 @@
     history = []
     redoStack = []
     sources = []
+    checkedIds = []
+    selectedTemplateId = ''
     if (!selectedImportId) {
       content = { ...emptyContent }
       layout = emptyLayout()
@@ -334,14 +508,16 @@
       return
     }
     try {
-      const [draft, layoutView, sourceList] = await Promise.all([
+      const [draft, layoutView, sourceList, templateList] = await Promise.all([
         reportsApi.getDraft(periodId, selectedImportId),
         designApi.getLayout(periodId, selectedImportId),
         designApi.sources(periodId, selectedImportId),
+        designApi.templates(),
       ])
       content = { ...emptyContent, ...draft.content }
       layout = normalizeLayout(layoutView.layout)
       sources = sourceList
+      templates = templateList
       savedJson = JSON.stringify(layout)
       updatedAt = layoutView.updated_at
       updatedBy = layoutView.updated_by
@@ -997,6 +1173,7 @@
     if (!pageEl) return
     if (target.isContentEditable || target.closest('[contenteditable="true"]')) return
     const page = pageIndexOf(pageEl)
+    if (page !== currentPage) checkedIds = []
     currentPage = page
 
     const handleEl = target.closest<HTMLElement>('[data-handle]')
@@ -1056,6 +1233,13 @@
       if (!id) return
       const element = getElement(page, id)
       if (!element) return
+      const pageData = getPage(page)
+      const groupStarts =
+        element.group && pageData
+          ? pageData.elements
+              .filter((item) => item.group === element.group)
+              .map((item) => ({ id: item.id, x: item.x, y: item.y }))
+          : []
       selected = { kind: 'element', page, id }
       renderSelection()
       event.preventDefault()
@@ -1074,6 +1258,7 @@
         moved: false,
         historyPushed: false,
         before: cloneLayout(layout),
+        groupStarts,
       })
       return
     }
@@ -1161,11 +1346,37 @@
     const element = getElement(drag.page, drag.id)
     if (!element) return
     const node = pageEl.querySelector<HTMLElement>(`[data-element-id="${drag.id}"]`)
-    if (!node) return
+    const page = getPage(drag.page)
 
     if (drag.type === 'element') {
-      element.x = Math.round(clamp(drag.startElX + dx, 0, PAGE_WIDTH - element.width) * 1000) / 1000
-      element.y = Math.round(clamp(drag.startElY + dy, 0, PAGE_HEIGHT - element.height) * 1000) / 1000
+      const groupStarts = drag.groupStarts?.length ? drag.groupStarts : null
+      if (groupStarts && page) {
+        let deltaX = dx
+        let deltaY = dy
+        for (const start of groupStarts) {
+          const member = page.elements.find((item) => item.id === start.id)
+          if (!member) continue
+          deltaX = clamp(deltaX, -start.x, PAGE_WIDTH - member.width - start.x)
+          deltaY = clamp(deltaY, -start.y, PAGE_HEIGHT - member.height - start.y)
+        }
+        for (const start of groupStarts) {
+          const member = page.elements.find((item) => item.id === start.id)
+          if (!member) continue
+          member.x = Math.round((start.x + deltaX) * 1000) / 1000
+          member.y = Math.round((start.y + deltaY) * 1000) / 1000
+          const memberNode = pageEl.querySelector<HTMLElement>(
+            `[data-element-id="${member.id}"]`,
+          )
+          if (!memberNode) continue
+          memberNode.style.left = `${member.x}mm`
+          memberNode.style.top = `${member.y}mm`
+        }
+      } else {
+        element.x =
+          Math.round(clamp(drag.startElX + dx, 0, PAGE_WIDTH - element.width) * 1000) / 1000
+        element.y =
+          Math.round(clamp(drag.startElY + dy, 0, PAGE_HEIGHT - element.height) * 1000) / 1000
+      }
     } else {
       const handle = drag.handle ?? 'se'
       let x = drag.startElX
@@ -1192,10 +1403,12 @@
       element.height = Math.round(height * 1000) / 1000
     }
 
-    node.style.left = `${element.x}mm`
-    node.style.top = `${element.y}mm`
-    node.style.width = `${element.width}mm`
-    node.style.height = `${element.height}mm`
+    if (node) {
+      node.style.left = `${element.x}mm`
+      node.style.top = `${element.y}mm`
+      node.style.width = `${element.width}mm`
+      node.style.height = `${element.height}mm`
+    }
     const frame = pageEl.querySelector<HTMLElement>('.editor-selection')
     if (frame) {
       frame.style.left = `${element.x}mm`
@@ -1244,6 +1457,7 @@
   }
 
   function goToPage(page: number, scroll = true) {
+    if (page !== currentPage) checkedIds = []
     currentPage = page
     if (!scroll) return
     const doc = iframeEl?.contentDocument
@@ -1449,10 +1663,18 @@
       if (!page) return
       const element = getElement(selected.page, selected.id)
       const source = element?.source_block
+      const group = element?.group
       const elementId = selected.id
       pushHistory()
       page.elements = page.elements.filter((item) => item.id !== elementId)
       if (source) delete page.blocks[source]
+      if (group) {
+        const remaining = page.elements.filter((item) => item.group === group)
+        if (remaining.length <= 1) {
+          for (const item of remaining) item.group = ''
+        }
+      }
+      checkedIds = checkedIds.filter((id) => id !== elementId)
       selected = null
       applyLayoutToDom()
       return
@@ -1478,6 +1700,7 @@
       y: element.y + 8,
       z: element.z + 1,
       source_block: '',
+      group: '',
     }
     clampElement(copy)
     page.elements.push(copy)
@@ -1487,11 +1710,7 @@
 
   function moveLayer(delta: number) {
     if (!selected || selected.kind !== 'element') return
-    const element = getElement(selected.page, selected.id)
-    if (!element) return
-    pushHistory()
-    element.z = clamp(element.z + delta, -100, 1000)
-    applyLayoutToDom()
+    moveLayerOf(selected.id, delta)
   }
 
   function updateElement(patch: Partial<LayoutElement>, withHistory = false) {
@@ -1741,15 +1960,26 @@
 
   function nudge(dx: number, dy: number) {
     if (!selected) return
-    pushHistory()
     if (selected.kind === 'element') {
+      const page = getPage(selected.page)
       const element = getElement(selected.page, selected.id)
-      if (!element) return
-      element.x = clamp(element.x + dx, 0, PAGE_WIDTH - element.width)
-      element.y = clamp(element.y + dy, 0, PAGE_HEIGHT - element.height)
+      if (!page || !element) return
+      const members = groupMembers(page, element)
+      let deltaX = dx
+      let deltaY = dy
+      for (const member of members) {
+        deltaX = clamp(deltaX, -member.x, PAGE_WIDTH - member.width - member.x)
+        deltaY = clamp(deltaY, -member.y, PAGE_HEIGHT - member.height - member.y)
+      }
+      pushHistory()
+      for (const member of members) {
+        member.x = Math.round((member.x + deltaX) * 1000) / 1000
+        member.y = Math.round((member.y + deltaY) * 1000) / 1000
+      }
     } else {
       const page = getPage(selected.page)
       if (!page) return
+      pushHistory()
       const current = page.blocks[selected.id] ?? { dx: 0, dy: 0 }
       page.blocks[selected.id] = { ...current, dx: current.dx + dx, dy: current.dy + dy }
     }
@@ -1902,6 +2132,7 @@
             </div>
             <div class="flex flex-col items-end gap-1">
               <span class="badge badge-neutral">Halaman {selected?.page}</span>
+              {#if activeElement.hidden}<span class="badge badge-neutral">Tersembunyi</span>{/if}
               {#if activeElement.binding}<span class="badge badge-success">Data</span>{/if}
               {#if activeElement.source_block}<span class="badge badge-progress">Hasil detach</span>{/if}
             </div>
@@ -2258,6 +2489,9 @@
               {#if activeElement.source_block}
                 <Button variant="primary" size="sm" onclick={resetDetached}>Reset ke data</Button>
               {/if}
+              <Button variant="secondary" size="sm" onclick={toggleSelectedHidden}>
+                {#if activeElement.hidden}<Eye size={14} /> Tampilkan{:else}<EyeOff size={14} /> Sembunyikan{/if}
+              </Button>
               <Button variant="secondary" size="sm" onclick={duplicateSelected}><Copy size={14} /> Duplikat</Button>
               <Button variant="secondary" size="sm" onclick={() => moveLayer(1)}>Naik</Button>
               <Button variant="secondary" size="sm" onclick={() => moveLayer(-1)}>Turun</Button>
@@ -2358,10 +2592,90 @@
             <li>3. Tarik elemen untuk menggeser; tarik sudut untuk mengubah ukuran.</li>
             <li>4. Klik blok laporan untuk geser; tarik sudut kanan bawah untuk resize.</li>
             <li>5. Klik dua kali teks blok untuk mengeditnya.</li>
-            <li>6. Simpan, lalu Buat PDF.</li>
+            <li>6. Gunakan panel Layer untuk menyembunyikan, mengurutkan, atau menggabungkan objek.</li>
+            <li>7. Simpan desain sebagai template untuk dipakai pada periode lain.</li>
+            <li>8. Simpan, lalu Buat PDF.</li>
           </ul>
         </section>
       {/if}
+
+      <section class="card overflow-hidden">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">TEMPLATE DESAIN</span>
+            <h2 class="panel-title mt-1">Gunakan ulang tata letak</h2>
+          </div>
+          <Layers size={18} class="text-gold-500" />
+        </div>
+        <div class="space-y-3 p-4">
+          <div class="flex gap-2">
+            <input class="input min-w-0 flex-1 py-1.5 text-xs" placeholder="Nama template baru" data-template-name bind:value={templateName} />
+            <span data-template-save><Button variant="secondary" size="sm" loading={templateBusy} disabled={!templateName.trim()} onclick={saveAsTemplate}>Simpan</Button></span>
+          </div>
+          {#if templates.length}
+            <select class="input py-1.5 text-xs" data-template-select bind:value={selectedTemplateId}>
+              <option value="">Pilih template…</option>
+              {#each templates as template}
+                <option value={template.id}>{template.name}</option>
+              {/each}
+            </select>
+            <div class="flex flex-wrap gap-2">
+              <span data-template-apply><Button variant="secondary" size="sm" loading={templateBusy} disabled={!selectedTemplateId} onclick={applySelectedTemplate}>Terapkan</Button></span>
+              <span data-template-delete><Button variant="ghost" size="sm" disabled={!selectedTemplateId} onclick={deleteSelectedTemplate}>Hapus</Button></span>
+            </div>
+          {:else}
+            <p class="text-xs text-ink-muted">Belum ada template tersimpan.</p>
+          {/if}
+          <p class="text-[10px] leading-relaxed text-ink-muted">Template menyimpan semua halaman beserta gambar. Menerapkannya akan mengganti desain versi impor ini (bisa di-undo).</p>
+        </div>
+      </section>
+
+      <section class="card overflow-hidden">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">LAYER · HALAMAN {currentPage}</span>
+            <h2 class="panel-title mt-1">Objek desain</h2>
+          </div>
+          <span class="badge badge-neutral">{pageElements.length}</span>
+        </div>
+        <div class="space-y-3 p-4">
+          <div class="flex flex-wrap gap-2">
+            <span data-group-action="group"><Button variant="secondary" size="sm" disabled={checkedIds.length < 2} onclick={groupChecked}>Gabungkan</Button></span>
+            <span data-group-action="ungroup"><Button variant="ghost" size="sm" disabled={!checkedHasGroup} onclick={ungroupChecked}>Pisahkan</Button></span>
+            <span data-group-action="clear"><Button variant="ghost" size="sm" disabled={!checkedIds.length} onclick={() => (checkedIds = [])}>Bersihkan</Button></span>
+          </div>
+          {#if pageElements.length}
+            <div class="max-h-72 space-y-1.5 overflow-auto pr-1">
+              {#each pageElements as element (element.id)}
+                <div class="flex items-center gap-1.5 rounded-lg border px-2 py-1.5 {selected?.kind === 'element' && selected?.id === element.id ? 'border-gold-300 bg-gold-50' : 'border-line'}"
+                  data-layer-row={element.id}>
+                  <input class="h-3.5 w-3.5 shrink-0" type="checkbox" checked={checkedIds.includes(element.id)}
+                    data-layer-check={element.id}
+                    onchange={() => toggleChecked(element.id)} />
+                  <button type="button" class="min-w-0 flex-1 text-left" data-layer-select={element.id} onclick={() => selectLayer(element.id)}>
+                    <span class="block truncate text-[11px] font-semibold text-ink">{elementLabel(element)}</span>
+                    <span class="block text-[10px] text-ink-muted">z {element.z}{#if element.group} · grup{/if}</span>
+                  </button>
+                  <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title={element.hidden ? 'Tampilkan' : 'Sembunyikan'}
+                    data-layer-hide={element.id}
+                    onclick={() => toggleElementHidden(element.id)}>
+                    {#if element.hidden}<Eye size={13} />{:else}<EyeOff size={13} />{/if}
+                  </button>
+                  <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Naikkan layer"
+                    data-layer-up={element.id}
+                    onclick={() => moveLayerOf(element.id, 1)}><ArrowUp size={13} /></button>
+                  <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Turunkan layer"
+                    data-layer-down={element.id}
+                    onclick={() => moveLayerOf(element.id, -1)}><ArrowDown size={13} /></button>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <p class="text-xs text-ink-muted">Belum ada objek di halaman ini.</p>
+          {/if}
+          <p class="text-[10px] leading-relaxed text-ink-muted">Centang dua objek atau lebih lalu klik Gabungkan. Objek dalam satu grup bergerak bersama saat digeser atau dipindah dengan panah.</p>
+        </div>
+      </section>
 
       {#if hiddenBlocks.length}
         <section class="card p-5">

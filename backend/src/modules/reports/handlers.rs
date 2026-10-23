@@ -13,7 +13,10 @@ use crate::{
     modules::{
         auth::AuthUser,
         reports::{
-            layout::{DesignSource, LayoutView, SaveLayoutRequest, UploadedImage},
+            layout::{
+                ApplyTemplateRequest, DesignSource, DesignTemplateView, LayoutView,
+                SaveLayoutRequest, SaveTemplateRequest, UploadedImage,
+            },
             models::{
                 DraftView, GenerateReportRequest, PreviewReportRequest, PreviewResponse,
                 ReportContent, ReportMetrics, ReportView,
@@ -129,6 +132,54 @@ pub async fn design_sources(
     let metrics =
         service::metrics_for(&state.db, &state.config, &period_id, Some(&import_id)).await?;
     Ok(Json(sources::design_sources(&metrics)))
+}
+
+pub async fn list_templates(
+    State(state): State<AppState>,
+    _user: AuthUser,
+) -> ApiResult<Json<Vec<DesignTemplateView>>> {
+    Ok(Json(service::list_templates(&state.db).await?))
+}
+
+pub async fn save_template(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(input): Json<SaveTemplateRequest>,
+) -> ApiResult<Json<DesignTemplateView>> {
+    Ok(Json(
+        service::save_template(&state.db, &user.id, &input.name, input.layout).await?,
+    ))
+}
+
+pub async fn delete_template(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(template_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    service::delete_template(&state.db, &user.id, &template_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn apply_template(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((period_id, template_id)): Path<(String, String)>,
+    Json(input): Json<ApplyTemplateRequest>,
+) -> ApiResult<Json<LayoutView>> {
+    if input.import_id.trim().is_empty() {
+        return Err(ApiError::bad_request("Versi impor wajib dipilih."));
+    }
+    Ok(Json(
+        service::apply_template(
+            &state.db,
+            &state.config,
+            &user.id,
+            &period_id,
+            &input.import_id,
+            &template_id,
+        )
+        .await?,
+    ))
 }
 
 pub async fn upload_layout_image(

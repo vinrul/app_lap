@@ -2,6 +2,7 @@ import type {
   AdminUser,
   Dashboard,
   DesignSource,
+  DesignTemplateView,
   DraftView,
   ImportPreview,
   ImportView,
@@ -134,6 +135,19 @@ export const designApi = {
     request<DesignSource[]>(
       `/periods/${periodId}/design/sources${queryString({ import_id: importId })}`,
     ),
+  templates: () => request<DesignTemplateView[]>('/design/templates'),
+  saveTemplate: (name: string, layout: ReportLayout) =>
+    request<DesignTemplateView>('/design/templates', {
+      method: 'POST',
+      body: JSON.stringify({ name, layout }),
+    }),
+  deleteTemplate: (templateId: string) =>
+    request<void>(`/design/templates/${templateId}`, { method: 'DELETE' }),
+  applyTemplate: (periodId: string, importId: string, templateId: string) =>
+    request<LayoutView>(`/periods/${periodId}/design/templates/${templateId}/apply`, {
+      method: 'POST',
+      body: JSON.stringify({ import_id: importId }),
+    }),
 }
 
 export const usersApi = {

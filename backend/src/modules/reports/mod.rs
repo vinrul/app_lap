@@ -8,7 +8,7 @@ pub mod sources;
 
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 
 use crate::state::AppState;
@@ -38,6 +38,10 @@ pub fn period_routes() -> Router<AppState> {
             get(handlers::design_sources),
         )
         .route(
+            "/periods/{period_id}/design/templates/{template_id}/apply",
+            post(handlers::apply_template),
+        )
+        .route(
             "/periods/{period_id}/layout/images",
             post(handlers::upload_layout_image),
         )
@@ -49,6 +53,14 @@ pub fn period_routes() -> Router<AppState> {
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route(
+            "/design/templates",
+            get(handlers::list_templates).post(handlers::save_template),
+        )
+        .route(
+            "/design/templates/{template_id}",
+            delete(handlers::delete_template),
+        )
         .route("/reports/{report_id}/pdf", get(handlers::download))
         .route(
             "/reports/{report_id}/preview",

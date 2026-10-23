@@ -15,7 +15,9 @@ use crate::{
     modules::{
         imports, periods,
         reports::{
-            layout::{LayoutView, ReportLayout, UploadedImage, image_id_from_src},
+            layout::{
+                DesignTemplateView, LayoutView, ReportLayout, UploadedImage, image_id_from_src,
+            },
             metrics,
             models::{DraftView, ReportContent, ReportMetrics, ReportView},
             render,
@@ -226,6 +228,187 @@ pub async fn save_layout(
         updated_at: Some(now),
         updated_by: username,
     })
+}
+
+pub async fn list_templates(db: &SqlitePool) -> ApiResult<Vec<DesignTemplateView>> {
+    let rows = sqlx::query(
+        "SELECT t.id, t.name, t.layout_json, t.created_at, u.username AS created_by
+         FROM design_templates t
+         LEFT JOIN users u ON u.id = t.created_by
+         ORDER BY t.created_at DESC, t.name COLLATE NOCASE",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(ApiError::internal)?;
+
+    Ok(rows.into_iter().map(template_from_row).collect())
+}
+
+pub async fn save_template(
+    db: &SqlitePool,
+    user_id: &str,
+    name: &str,
+    layout: ReportLayout,
+) -> ApiResult<DesignTemplateView> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(ApiError::bad_request("Nama template wajib diisi."));
+    }
+    if name.chars().count() > 80 {
+        return Err(ApiError::bad_request("Nama template maksimal 80 karakter."));
+    }
+
+    let layout = layout.sanitize();
+    let layout_json = serde_json::to_string(&layout).map_err(ApiError::internal)?;
+    if layout_json.len() > 2 * 1024 * 1024 {
+        return Err(ApiError::payload_too_large(
+            "Layout template terlalu besar. Kurangi jumlah elemen atau gambar.",
+        ));
+    }
+
+    let id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO design_templates(id, name, layout_json, created_by)
+         VALUES(?,?,?,?)",
+    )
+    .bind(&id)
+    .bind(name)
+    .bind(&layout_json)
+    .bind(user_id)
+    .execute(db)
+    .await
+    .map_err(ApiError::internal)?;
+
+    audit::record(
+        db,
+        Some(user_id),
+        "template.create",
+        "design_template",
+        &id,
+        serde_json::json!({ "name": name }),
+    )
+    .await?;
+
+    template_view(db, &id).await
+}
+
+pub async fn delete_template(db: &SqlitePool, user_id: &str, template_id: &str) -> ApiResult<()> {
+    let result = sqlx::query("DELETE FROM design_templates WHERE id = ?")
+        .bind(template_id)
+        .execute(db)
+        .await
+        .map_err(ApiError::internal)?;
+    if result.rows_affected() == 0 {
+        return Err(ApiError::not_found("Template desain tidak ditemukan."));
+    }
+
+    audit::record(
+        db,
+        Some(user_id),
+        "template.delete",
+        "design_template",
+        template_id,
+        serde_json::json!({}),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn apply_template(
+    db: &SqlitePool,
+    config: &Config,
+    user_id: &str,
+    period_id: &str,
+    import_id: &str,
+    template_id: &str,
+) -> ApiResult<LayoutView> {
+    imports::service::ensure_import(db, period_id, import_id).await?;
+    let row = sqlx::query("SELECT layout_json FROM design_templates WHERE id = ?")
+        .bind(template_id)
+        .fetch_optional(db)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("Template desain tidak ditemukan."))?;
+
+    let mut layout = serde_json::from_str::<ReportLayout>(&row.get::<String, _>("layout_json"))
+        .unwrap_or_default()
+        .sanitize();
+    let mut cloned = HashMap::new();
+
+    for page in &mut layout.pages {
+        for element in &mut page.elements {
+            if element.kind != "image" {
+                continue;
+            }
+            let Some(old_id) = image_id_from_src(&element.src).map(str::to_string) else {
+                continue;
+            };
+            if let Some(new_id) = cloned.get(&old_id) {
+                element.src = format!("upload:{new_id}");
+                continue;
+            }
+
+            let image = sqlx::query("SELECT filename, stored_path FROM design_images WHERE id = ?")
+                .bind(&old_id)
+                .fetch_optional(db)
+                .await
+                .map_err(ApiError::internal)?;
+            let Some(image) = image else {
+                element.src.clear();
+                continue;
+            };
+            let path: String = image.get("stored_path");
+            let filename: String = image.get("filename");
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::warn!(error = %error, image_id = %old_id, "gambar template tidak dapat dibaca");
+                    element.src.clear();
+                    continue;
+                }
+            };
+            match save_layout_image(db, config, user_id, period_id, &filename, &bytes).await {
+                Ok(uploaded) => {
+                    cloned.insert(old_id, uploaded.id.clone());
+                    element.src = format!("upload:{}", uploaded.id);
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, image_id = %old_id, "gambar template tidak dapat disalin");
+                    element.src.clear();
+                }
+            }
+        }
+    }
+
+    save_layout(db, user_id, period_id, import_id, layout).await
+}
+
+fn template_from_row(row: sqlx::sqlite::SqliteRow) -> DesignTemplateView {
+    let layout = serde_json::from_str::<ReportLayout>(&row.get::<String, _>("layout_json"))
+        .unwrap_or_default()
+        .sanitize();
+    DesignTemplateView {
+        id: row.get("id"),
+        name: row.get("name"),
+        layout,
+        created_at: row.get("created_at"),
+        created_by: row.try_get("created_by").ok(),
+    }
+}
+
+async fn template_view(db: &SqlitePool, template_id: &str) -> ApiResult<DesignTemplateView> {
+    let row = sqlx::query(
+        "SELECT t.id, t.name, t.layout_json, t.created_at, u.username AS created_by
+         FROM design_templates t
+         LEFT JOIN users u ON u.id = t.created_by
+         WHERE t.id = ?",
+    )
+    .bind(template_id)
+    .fetch_optional(db)
+    .await
+    .map_err(ApiError::internal)?
+    .ok_or_else(|| ApiError::not_found("Template desain tidak ditemukan."))?;
+    Ok(template_from_row(row))
 }
 
 pub async fn save_layout_image(
