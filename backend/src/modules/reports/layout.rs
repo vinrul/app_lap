@@ -30,6 +30,7 @@ pub struct BlockLayout {
     pub dx: f64,
     pub dy: f64,
     pub hidden: bool,
+    pub preserve_space: bool,
     pub width: f64,
     pub height: f64,
     pub background: String,
@@ -69,6 +70,7 @@ pub struct LayoutElement {
     pub italic: bool,
     pub align: String,
     pub background: String,
+    pub source_block: String,
     pub table_rows: Vec<Vec<String>>,
     pub table_header: bool,
     pub table_header_bg: String,
@@ -131,6 +133,7 @@ impl Default for LayoutElement {
             italic: false,
             align: String::new(),
             background: String::new(),
+            source_block: String::new(),
             table_rows: Vec::new(),
             table_header: true,
             table_header_bg: String::new(),
@@ -197,6 +200,7 @@ impl PageLayout {
                 let border_color = optional_color(&block.border_color);
                 let border_width = clamp_num(block.border_width, 0.0, 20.0, 0.0);
                 let radius = clamp_num(block.radius, 0.0, 100.0, 0.0);
+                let preserve_space = block.hidden && block.preserve_space;
                 let texts = block
                     .texts
                     .into_iter()
@@ -224,6 +228,7 @@ impl PageLayout {
                         dx,
                         dy,
                         hidden: block.hidden,
+                        preserve_space,
                         width,
                         height,
                         background,
@@ -264,6 +269,9 @@ impl LayoutElement {
         if !valid_id(&self.id) || !used_ids.insert(self.id.clone()) {
             self.id = Uuid::new_v4().to_string();
             used_ids.insert(self.id.clone());
+        }
+        if !valid_id(&self.source_block) {
+            self.source_block.clear();
         }
 
         let (default_width, default_height) = match self.kind.as_str() {

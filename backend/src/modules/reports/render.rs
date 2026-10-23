@@ -1171,12 +1171,14 @@ fn block_css(layout: &ReportLayout) -> String {
             if !valid_id(id) {
                 continue;
             }
-            if block.hidden {
-                css.push_str(&format!("[data-block=\"{id}\"]{{display:none!important;}}"));
-                continue;
-            }
-
             let mut declarations = String::new();
+            if block.hidden {
+                if !block.preserve_space {
+                    css.push_str(&format!("[data-block=\"{id}\"]{{display:none!important;}}"));
+                    continue;
+                }
+                declarations.push_str("visibility:hidden;");
+            }
             if block.dx.abs() > 0.005 || block.dy.abs() > 0.005 {
                 declarations.push_str(&format!(
                     "transform:translate({:.3}mm,{:.3}mm);",

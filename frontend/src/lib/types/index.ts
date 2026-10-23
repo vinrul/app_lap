@@ -43,6 +43,7 @@ export interface LayoutBlockOffset {
   dx: number
   dy: number
   hidden?: boolean
+  preserve_space?: boolean
   width?: number
   height?: number
   background?: string
@@ -78,6 +79,7 @@ export interface LayoutElement {
   italic?: boolean
   align?: 'left' | 'center' | 'right'
   background?: string
+  source_block?: string
   table_rows?: string[][]
   table_header?: boolean
   table_header_bg?: string

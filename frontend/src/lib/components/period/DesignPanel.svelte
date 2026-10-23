@@ -117,8 +117,18 @@
     const page = getPage(currentPage)
     if (!page) return []
     return Object.entries(page.blocks)
-      .filter(([, block]) => block.hidden)
+      .filter(([, block]) => block.hidden && !block.preserve_space)
       .map(([id]) => id)
+  })
+  const activeBlockDetachKind = $derived.by(() => {
+    if (!selected || selected.kind !== 'block') return ''
+    const doc = iframeEl?.contentDocument
+    const pageEl = doc?.querySelectorAll<HTMLElement>('.page')[selected.page - 1]
+    const blockEl = pageEl?.querySelector<HTMLElement>(`[data-block="${selected.id}"]`)
+    if (!blockEl) return ''
+    if (blockEl.querySelector('table')) return 'table'
+    if (blockEl.querySelector('.bar-row')) return 'chart'
+    return ''
   })
 
   $effect(() => {
@@ -214,6 +224,7 @@
       italic: false,
       align: 'left',
       background: 'transparent',
+      source_block: '',
       table_rows: [
         ['Kolom 1', 'Kolom 2', 'Kolom 3'],
         ['', '', ''],
@@ -655,11 +666,12 @@
         if (!id) return
         const offset = page.blocks[id]
         blockEl.classList.remove('editor-block-selected')
-        if (offset?.hidden) {
+        if (offset?.hidden && !offset.preserve_space) {
           blockEl.style.display = 'none'
         } else {
           blockEl.style.removeProperty('display')
         }
+        blockEl.style.visibility = offset?.hidden && offset.preserve_space ? 'hidden' : ''
         // Selalu set inline agar rule transform dari layout tersimpan tidak
         // menempel saat blok di-reset ke posisi awal.
         blockEl.style.transform = `translate(${offset?.dx ?? 0}mm, ${offset?.dy ?? 0}mm)`
@@ -1330,8 +1342,12 @@
     if (selected.kind === 'element') {
       const page = getPage(selected.page)
       if (!page) return
+      const element = getElement(selected.page, selected.id)
+      const source = element?.source_block
+      const elementId = selected.id
       pushHistory()
-      page.elements = page.elements.filter((element) => element.id !== selected?.id)
+      page.elements = page.elements.filter((item) => item.id !== elementId)
+      if (source) delete page.blocks[source]
       selected = null
       applyLayoutToDom()
       return
@@ -1356,6 +1372,7 @@
       x: element.x + 8,
       y: element.y + 8,
       z: element.z + 1,
+      source_block: '',
     }
     clampElement(copy)
     page.elements.push(copy)
@@ -1417,6 +1434,121 @@
     applyLayoutToDom()
   }
 
+  function blockRect(blockEl: HTMLElement, pageEl: HTMLElement) {
+    const pageRect = pageEl.getBoundingClientRect()
+    const rect = blockEl.getBoundingClientRect()
+    const round = (value: number) => Math.round(value * 1000) / 1000
+    return {
+      x: round(((rect.left - pageRect.left) / pageRect.width) * PAGE_WIDTH),
+      y: round(((rect.top - pageRect.top) / pageRect.height) * PAGE_HEIGHT),
+      width: round((rect.width / pageRect.width) * PAGE_WIDTH),
+      height: round((rect.height / pageRect.height) * PAGE_HEIGHT),
+    }
+  }
+
+  function parseFormattedNumber(value: string): number {
+    const normalized = value.trim().replace(/\./g, '').replace(',', '.')
+    const number = Number(normalized)
+    return Number.isFinite(number) ? number : 0
+  }
+
+  function detachBlock() {
+    if (!selected || selected.kind !== 'block') return
+    const doc = iframeEl?.contentDocument
+    if (!doc) return
+    const page = getPage(selected.page)
+    const pageEl = doc.querySelectorAll<HTMLElement>('.page')[selected.page - 1]
+    const blockEl = pageEl?.querySelector<HTMLElement>(`[data-block="${selected.id}"]`)
+    if (!page || !pageEl || !blockEl) return
+    const rect = blockRect(blockEl, pageEl)
+    const tableEl = blockEl.querySelector<HTMLTableElement>('table')
+    const barRows = Array.from(blockEl.querySelectorAll<HTMLElement>('.bar-row'))
+    let element: LayoutElement | null = null
+
+    if (tableEl) {
+      const rows = Array.from(tableEl.querySelectorAll('tr'))
+        .map((row) =>
+          Array.from(row.querySelectorAll('th,td')).map((cell) => (cell.textContent ?? '').trim()),
+        )
+        .filter((row) => row.length > 0)
+      if (rows.length) {
+        const table = baseElement('table')
+        table.table_rows = rows
+        table.table_header = Boolean(tableEl.querySelector('thead')) || Boolean(tableEl.querySelector('tr th'))
+        table.font_size = 8
+        table.fill = '#ffffff'
+        table.color = '#143d30'
+        table.border_color = '#d7ddd6'
+        table.border_width = 0.5
+        table.table_header_bg = '#f6f8f5'
+        table.table_header_color = '#5b6861'
+        table.table_stripe = 'transparent'
+        table.source_block = selected.id
+        element = table
+      }
+    } else if (barRows.length) {
+      const labels = barRows.map(
+        (row) => row.querySelector('.bar-label')?.textContent?.trim() ?? '',
+      )
+      const values = barRows.map((row) =>
+        parseFormattedNumber(row.querySelector('.bar-value')?.textContent ?? ''),
+      )
+      const chart = baseElement('chart')
+      chart.chart_type = 'bar'
+      chart.chart_title = blockEl.querySelector('h3')?.textContent?.trim() ?? ''
+      chart.chart_labels = labels
+      chart.chart_values = values
+      chart.chart_colors = labels.map(
+        (_, index) => CHART_PALETTE[index % CHART_PALETTE.length],
+      )
+      chart.chart_show_values = true
+      chart.chart_show_legend = false
+      chart.chart_axis_color = '#6d7872'
+      chart.fill = '#ffffff'
+      chart.color = '#143d30'
+      chart.font_size = 9
+      chart.source_block = selected.id
+      element = chart
+    }
+
+    if (!element) {
+      toast.error('Blok ini tidak memiliki tabel atau grafik yang bisa di-detach.')
+      return
+    }
+
+    pushHistory()
+    element.x = rect.x
+    element.y = rect.y
+    element.width = rect.width
+    element.height = rect.height
+    element.z = 30
+    clampElement(element)
+    const block = page.blocks[selected.id] ?? { dx: 0, dy: 0, hidden: false }
+    block.hidden = true
+    block.preserve_space = true
+    page.blocks[selected.id] = block
+    page.elements.push(element)
+    selected = { kind: 'element', page: selected.page, id: element.id }
+    applyLayoutToDom()
+    toast.success('Blok di-detach. Isi tabel/grafik sekarang bisa diedit.')
+  }
+
+  function resetDetached() {
+    if (!selected || selected.kind !== 'element') return
+    const element = getElement(selected.page, selected.id)
+    const source = element?.source_block
+    if (!source) return
+    const page = getPage(selected.page)
+    if (!page) return
+    const elementId = selected.id
+    pushHistory()
+    page.elements = page.elements.filter((item) => item.id !== elementId)
+    delete page.blocks[source]
+    selected = { kind: 'block', page: selected.page, id: source }
+    applyLayoutToDom()
+    toast.success('Blok dikembalikan ke data otomatis.')
+  }
+
   function showBlock(id: string) {
     const page = getPage(currentPage)
     if (!page) return
@@ -1442,11 +1574,16 @@
     error = ''
     try {
       const view = await designApi.saveLayout(periodId, selectedImportId, layout)
+      const previous = selected
       layout = normalizeLayout(view.layout)
       savedJson = JSON.stringify(layout)
       updatedAt = view.updated_at
       updatedBy = view.updated_by
-      selected = null
+      if (previous?.kind === 'element' && !getElement(previous.page, previous.id)) {
+        selected = null
+      } else {
+        selected = previous
+      }
       applyLayoutToDom()
       if (!silent) toast.success('Layout desain tersimpan.')
       return true
@@ -1655,10 +1792,13 @@
             <div>
               <span class="eyebrow">ELEMEN TERPILIH</span>
               <h2 class="panel-title mt-1">
-                {activeElement.type === 'text' ? 'Teks' : activeElement.type === 'rect' ? 'Kotak' : 'Gambar'}
+                {activeElement.type === 'text' ? 'Teks' : activeElement.type === 'rect' ? 'Kotak' : activeElement.type === 'table' ? 'Tabel' : activeElement.type === 'chart' ? 'Grafik' : 'Gambar'}
               </h2>
             </div>
-            <span class="badge badge-neutral">Halaman {selected?.page}</span>
+            <div class="flex flex-col items-end gap-1">
+              <span class="badge badge-neutral">Halaman {selected?.page}</span>
+              {#if activeElement.source_block}<span class="badge badge-progress">Hasil detach</span>{/if}
+            </div>
           </div>
 
           <div class="space-y-4 p-5">
@@ -1952,6 +2092,9 @@
             {/if}
 
             <div class="flex flex-wrap gap-2 border-t border-line pt-4">
+              {#if activeElement.source_block}
+                <Button variant="primary" size="sm" onclick={resetDetached}>Reset ke data</Button>
+              {/if}
               <Button variant="secondary" size="sm" onclick={duplicateSelected}><Copy size={14} /> Duplikat</Button>
               <Button variant="secondary" size="sm" onclick={() => moveLayer(1)}>Naik</Button>
               <Button variant="secondary" size="sm" onclick={() => moveLayer(-1)}>Turun</Button>
@@ -2033,6 +2176,14 @@
               <Button variant="secondary" size="sm" onclick={resetBlock}>Reset ukuran & gaya</Button>
               <Button variant="danger" size="sm" onclick={hideBlock}>Sembunyikan</Button>
             </div>
+            {#if activeBlockDetachKind}
+              <div class="rounded-xl border border-gold-200 bg-gold-50/60 p-3.5">
+                <p class="text-[11px] leading-relaxed text-gold-800">
+                  Detach mengubah isi {activeBlockDetachKind === 'table' ? 'tabel' : 'grafik'} ini menjadi objek manual yang bisa diedit. Blok asli disembunyikan tetapi ruangnya dipertahankan.
+                </p>
+                <Button variant="primary" size="sm" class="mt-3" onclick={detachBlock}>Detach & edit isi</Button>
+              </div>
+            {/if}
           </div>
         </section>
       {:else}
