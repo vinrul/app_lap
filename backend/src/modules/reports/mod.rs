@@ -1,4 +1,5 @@
 mod handlers;
+pub mod layout;
 pub mod metrics;
 pub mod models;
 pub mod render;
@@ -26,6 +27,18 @@ pub fn period_routes() -> Router<AppState> {
         .route(
             "/periods/{period_id}/reports/preview",
             post(handlers::preview_render),
+        )
+        .route(
+            "/periods/{period_id}/layout",
+            get(handlers::get_layout).put(handlers::save_layout),
+        )
+        .route(
+            "/periods/{period_id}/layout/images",
+            post(handlers::upload_layout_image),
+        )
+        .route(
+            "/periods/{period_id}/layout/images/{image_id}",
+            get(handlers::layout_image),
         )
 }
 

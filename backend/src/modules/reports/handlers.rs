@@ -1,7 +1,7 @@
 use axum::{
     Json,
     body::Body,
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::{HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
 };
@@ -13,6 +13,7 @@ use crate::{
     modules::{
         auth::AuthUser,
         reports::{
+            layout::{LayoutView, SaveLayoutRequest, UploadedImage},
             models::{
                 DraftView, GenerateReportRequest, PreviewReportRequest, PreviewResponse,
                 ReportContent, ReportMetrics, ReportView,
@@ -72,6 +73,103 @@ pub async fn list(
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<Vec<ReportView>>> {
     Ok(Json(service::list_for_period(&state.db, &period_id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LayoutQuery {
+    pub import_id: Option<String>,
+}
+
+pub async fn get_layout(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(period_id): Path<String>,
+    Query(query): Query<LayoutQuery>,
+) -> ApiResult<Json<LayoutView>> {
+    let import_id = query
+        .import_id
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ApiError::bad_request("Versi impor wajib dipilih."))?;
+    Ok(Json(
+        service::get_layout(&state.db, &period_id, &import_id).await?,
+    ))
+}
+
+pub async fn save_layout(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+    Json(input): Json<SaveLayoutRequest>,
+) -> ApiResult<Json<LayoutView>> {
+    if input.import_id.trim().is_empty() {
+        return Err(ApiError::bad_request("Versi impor wajib dipilih."));
+    }
+    Ok(Json(
+        service::save_layout(
+            &state.db,
+            &user.id,
+            &period_id,
+            &input.import_id,
+            input.layout,
+        )
+        .await?,
+    ))
+}
+
+pub async fn upload_layout_image(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+    mut multipart: Multipart,
+) -> ApiResult<Json<UploadedImage>> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| ApiError::bad_request(format!("Berkas tidak dapat dibaca: {error}")))?
+    {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let filename = field.file_name().unwrap_or("gambar").to_string();
+        let bytes = field.bytes().await.map_err(|error| {
+            ApiError::bad_request(format!("Berkas tidak dapat dibaca: {error}"))
+        })?;
+        return Ok(Json(
+            service::save_layout_image(
+                &state.db,
+                &state.config,
+                &user.id,
+                &period_id,
+                &filename,
+                &bytes,
+            )
+            .await?,
+        ));
+    }
+    Err(ApiError::bad_request(
+        "Berkas gambar wajib diunggah pada field 'file'.",
+    ))
+}
+
+pub async fn layout_image(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path((period_id, image_id)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    let (path, content_type, _filename) =
+        service::layout_image(&state.db, &period_id, &image_id).await?;
+    let bytes = tokio::fs::read(path).await.map_err(ApiError::internal)?;
+    let content_type = HeaderValue::from_str(&content_type).map_err(ApiError::internal)?;
+
+    let mut response = Response::new(Body::from(bytes));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, content_type);
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=3600"),
+    );
+    Ok(response)
 }
 
 pub async fn generate(

@@ -14,6 +14,7 @@ Aplikasi lokal untuk mengubah export Excel **Quick Wins / Qins Polri** menjadi l
   - Aspirasi masyarakat dan bentuk tindak lanjut
   - Amplifikasi media (publikasi, dokumentasi, kanal, kegiatan)
 - Penyuntingan narasi laporan per bagian serta blok penandatangan.
+- Editor desain visual per laporan: tambah teks, kotak, dan gambar (unggah atau URL), geser blok laporan yang ada, lalu terapkan layout ke pratinjau dan PDF.
 - Pratinjau HTML sebelum penerbitan.
 - Pembuatan PDF 9 halaman dengan format laporan resmi, penomoran halaman, tabel sebaran wilayah, dan grafik batang.
 - Arsip PDF dengan snapshot metrik dan konten editorial.
@@ -83,7 +84,7 @@ app_lap/
 │           ├── users/           # Pengelolaan akun & peran
 │           ├── periods/         # Periode laporan
 │           ├── imports/         # Parser Excel, validasi, data baris
-│           ├── reports/         # Metrik, render PDF, draft editorial
+│           ├── reports/         # Metrik, render PDF, draft editorial, layout desain
 │           └── dashboard/       # Ringkasan lintas periode
 └── frontend/                    # Bun + Svelte 5 SPA + Tailwind CSS v4
     └── src/
@@ -129,6 +130,7 @@ Default data berada di `data/`:
 - `laporan.sqlite3` — akun, sesi, periode, impor, baris data, draft, audit, metadata PDF.
 - `imports/` — salinan workbook sumber per versi.
 - `reports/` — HTML dan PDF yang diarsipkan per versi laporan.
+- `design/` — gambar yang diunggah untuk layout desain laporan.
 
 Tutup aplikasi sebelum membuat cadangan konsisten. Salin seluruh direktori `data/` ke lokasi cadangan tepercaya; uji pemulihan dengan menyalin kembali direktori tersebut.
 

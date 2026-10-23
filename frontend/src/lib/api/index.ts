@@ -4,13 +4,16 @@ import type {
   DraftView,
   ImportPreview,
   ImportView,
+  LayoutView,
   Meta,
   Period,
   PeriodDetail,
   RecordsResponse,
   ReportContent,
+  ReportLayout,
   ReportMetrics,
   ReportView,
+  UploadedDesignImage,
   User,
 } from '../types'
 import { queryString, request } from './client'
@@ -104,6 +107,28 @@ export const reportsApi = {
     }),
   downloadUrl: (reportId: string) => `/api/reports/${reportId}/pdf`,
   previewUrl: (reportId: string) => `/api/reports/${reportId}/preview`,
+}
+
+export const designApi = {
+  getLayout: (periodId: string, importId: string) =>
+    request<LayoutView>(
+      `/periods/${periodId}/layout${queryString({ import_id: importId })}`,
+    ),
+  saveLayout: (periodId: string, importId: string, layout: ReportLayout) =>
+    request<LayoutView>(`/periods/${periodId}/layout`, {
+      method: 'PUT',
+      body: JSON.stringify({ import_id: importId, layout }),
+    }),
+  uploadImage: async (periodId: string, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request<UploadedDesignImage>(`/periods/${periodId}/layout/images`, {
+      method: 'POST',
+      body: form,
+    })
+  },
+  imageUrl: (periodId: string, imageId: string) =>
+    `/api/periods/${periodId}/layout/images/${imageId}`,
 }
 
 export const usersApi = {

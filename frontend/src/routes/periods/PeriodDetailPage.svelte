@@ -14,6 +14,7 @@
   import ImportPanel from '../../lib/components/period/ImportPanel.svelte'
   import RecordsPanel from '../../lib/components/period/RecordsPanel.svelte'
   import EditorialPanel from '../../lib/components/period/EditorialPanel.svelte'
+  import DesignPanel from '../../lib/components/period/DesignPanel.svelte'
   import DocumentsPanel from '../../lib/components/period/DocumentsPanel.svelte'
 
   type Props = { periodId: string; tab?: string }
@@ -28,7 +29,7 @@
   let error = $state('')
 
   const activeTab = $derived(
-    ['overview', 'imports', 'records', 'editorial', 'documents'].includes(tab) ? tab : 'overview',
+    ['overview', 'imports', 'records', 'editorial', 'design', 'documents'].includes(tab) ? tab : 'overview',
   )
   const status = $derived(detail ? statusOfPeriod(detail.period) : null)
 
@@ -89,6 +90,7 @@
     { id: 'imports', label: 'Impor', count: detail?.imports.length ?? 0 },
     { id: 'records', label: 'Data sumber' },
     { id: 'editorial', label: 'Editorial' },
+    { id: 'design', label: 'Desain' },
     { id: 'documents', label: 'Dokumen', count: detail?.reports.length ?? 0 },
   ])
 </script>
@@ -169,6 +171,14 @@
       {periodId}
       {detail}
       {metrics}
+      {selectedImportId}
+      onchangeimport={selectImport}
+      ongenerated={handleGenerated}
+    />
+  {:else if activeTab === 'design'}
+    <DesignPanel
+      {periodId}
+      {detail}
       {selectedImportId}
       onchangeimport={selectImport}
       ongenerated={handleGenerated}

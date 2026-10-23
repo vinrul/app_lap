@@ -205,7 +205,7 @@ sudo chown laporan:laporan /var/backups/laporan
 sudo -u laporan sqlite3 /var/lib/laporan/laporan.sqlite3 \
   ".backup '/var/backups/laporan/db-$(date +%F).sqlite3'"
 sudo -u laporan tar czf /var/backups/laporan/files-$(date +%F).tar.gz \
-  -C /var/lib/laporan imports reports
+  --ignore-failed-read -C /var/lib/laporan imports reports design
 ```
 
 Untuk backup penuh yang konsisten, hentikan service lebih dulu:

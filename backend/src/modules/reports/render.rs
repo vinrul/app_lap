@@ -1,13 +1,21 @@
-use std::sync::OnceLock;
+use std::{collections::HashMap, sync::OnceLock};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{Datelike, NaiveDate};
 
 use crate::{
     config::Config,
-    modules::reports::models::{GroupMetrics, ReportContent, ReportMetrics, RowSummary},
+    modules::reports::{
+        layout::{LayoutElement, ReportLayout, image_id_from_src, valid_id},
+        models::{GroupMetrics, ReportContent, ReportMetrics, RowSummary},
+    },
     shared::{escape_html, format_count, is_noise, paragraphs},
 };
+
+struct DesignContext<'a> {
+    layout: &'a ReportLayout,
+    images: &'a HashMap<String, String>,
+}
 
 const MONTHS: [&str; 12] = [
     "Januari",
@@ -28,8 +36,26 @@ const WEEKDAYS: [&str; 7] = [
     "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu",
 ];
 
+#[allow(dead_code)]
 pub fn render(metrics: &ReportMetrics, content: &ReportContent, config: &Config) -> String {
-    let cover = render_cover(metrics, content);
+    render_with_layout(
+        metrics,
+        content,
+        config,
+        &ReportLayout::default(),
+        &HashMap::new(),
+    )
+}
+
+pub fn render_with_layout(
+    metrics: &ReportMetrics,
+    content: &ReportContent,
+    config: &Config,
+    layout: &ReportLayout,
+    images: &HashMap<String, String>,
+) -> String {
+    let ctx = DesignContext { layout, images };
+    let cover = render_cover(metrics, content, &ctx);
 
     let narkoba = page(
         Some(2),
@@ -44,6 +70,7 @@ pub fn render(metrics: &ReportMetrics, content: &ReportContent, config: &Config)
         ),
         &render_narkoba(metrics, content),
         "",
+        &ctx,
     );
 
     let green = page(
@@ -59,6 +86,7 @@ pub fn render(metrics: &ReportMetrics, content: &ReportContent, config: &Config)
         ),
         &render_green(metrics, content),
         "",
+        &ctx,
     );
 
     let jumat = page(
@@ -79,8 +107,10 @@ pub fn render(metrics: &ReportMetrics, content: &ReportContent, config: &Config)
             &content.jumat_keliling,
             "Masjid",
             false,
+            4,
         ),
         "",
+        &ctx,
     );
 
     let subuh = page(
@@ -101,8 +131,10 @@ pub fn render(metrics: &ReportMetrics, content: &ReportContent, config: &Config)
             &content.subuh_keliling,
             "Masjid",
             false,
+            5,
         ),
         "",
+        &ctx,
     );
 
     let minggu = page(
@@ -123,8 +155,10 @@ pub fn render(metrics: &ReportMetrics, content: &ReportContent, config: &Config)
             &content.minggu_kasih,
             "Lokasi ibadah",
             true,
+            6,
         ),
         "",
+        &ctx,
     );
 
     let aspirations = page(
@@ -135,6 +169,7 @@ pub fn render(metrics: &ReportMetrics, content: &ReportContent, config: &Config)
         "Tema aspirasi yang muncul dari kegiatan Jumat Keliling, Subuh Keliling, dan Minggu Kasih.",
         &render_aspirations(metrics, content),
         "",
+        &ctx,
     );
 
     let follow_up = page(
@@ -145,6 +180,7 @@ pub fn render(metrics: &ReportMetrics, content: &ReportContent, config: &Config)
         "Tindak lanjut lintas fungsi atas keluhan dan masukan yang disampaikan masyarakat.",
         &render_follow_up(metrics, content),
         "",
+        &ctx,
     );
 
     let media = page(
@@ -155,9 +191,14 @@ pub fn render(metrics: &ReportMetrics, content: &ReportContent, config: &Config)
         "Rekap publikasi dan dokumentasi yang dilampirkan pada laporan satuan wilayah.",
         &render_media(metrics, content, config),
         "last-page",
+        &ctx,
     );
 
-    let css = REPORT_CSS.replace("__LOGO_DATA_URI__", logo_data_uri());
+    let css = format!(
+        "{}{}",
+        REPORT_CSS.replace("__LOGO_DATA_URI__", logo_data_uri()),
+        block_css(layout)
+    );
     format!(
         "<!doctype html><html lang=\"id\"><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
@@ -177,7 +218,7 @@ pub fn render(metrics: &ReportMetrics, content: &ReportContent, config: &Config)
     )
 }
 
-fn render_cover(metrics: &ReportMetrics, content: &ReportContent) -> String {
+fn render_cover(metrics: &ReportMetrics, content: &ReportContent, ctx: &DesignContext) -> String {
     let mut cards = String::new();
     for (index, card) in metrics.cards.iter().enumerate() {
         cards.push_str(&format!(
@@ -208,16 +249,17 @@ Data disusun dari {} baris laporan yang diimpor dari {}.",
 
     format!(
         "<section class=\"page cover\">\
-  <div class=\"cover-top\">\
+  <div class=\"cover-top\" data-block=\"cover-top\">\
     <div class=\"cover-brand\"><span class=\"crest-logo cover-crest\" role=\"img\" aria-label=\"Logo Polda Bali\"></span><span><strong>{polda}</strong><small>LAPORAN MINGGUAN PBM</small></span></div>\
     <span class=\"cover-doc\">PROGRAM PRIORITAS &amp; QUICK WINS KAPOLRI</span>\
     <h1>Laporan Mingguan<br>Pelaksanaan</h1>\
     <p class=\"cover-period\">{label}</p>\
     <p class=\"cover-source\">Sumber data: {source} · {rows} baris laporan</p>\
   </div>\
-  <div class=\"cover-kpis\">{cards}</div>\
-  <div class=\"cover-summary\"><span class=\"eyebrow gold\">RINGKASAN PELAKSANAAN</span>{summary}</div>\
-  <div class=\"cover-footer\"><span>LAPORAN MINGGUAN PBM · {polda}</span><span>{label}</span></div>\
+  <div class=\"cover-kpis\" data-block=\"cover-kpis\">{cards}</div>\
+  <div class=\"cover-summary\" data-block=\"cover-summary\"><span class=\"eyebrow gold\">RINGKASAN PELAKSANAAN</span>{summary}</div>\
+  <div class=\"cover-footer\" data-block=\"cover-footer\"><span>LAPORAN MINGGUAN PBM · {polda}</span><span>{label}</span></div>\
+  {layer}\
 </section>",
         polda = escape_html(&metrics.polda_name),
         label = escape_html(&metrics.period_label),
@@ -225,39 +267,45 @@ Data disusun dari {} baris laporan yang diimpor dari {}.",
         rows = format_count(metrics.total_rows),
         cards = cards,
         summary = summary,
+        layer = layout_layer(1, ctx),
     )
 }
 
 fn render_narkoba(metrics: &ReportMetrics, content: &ReportContent) -> String {
     let mut body = String::new();
-    body.push_str(&kpi_row(&[
-        ("Orang ditangkap", metrics.narkoba.orang_diamankan, "orang"),
-        ("Kawasan narkoba", metrics.narkoba.kawasan, "kawasan"),
-        ("Rehabilitasi", metrics.narkoba.rehabilitasi, "orang"),
-        (
-            "Peserta penyuluhan",
-            metrics.narkoba.peserta_penyuluhan,
-            "peserta",
-        ),
-    ]));
+    body.push_str(&kpi_row(
+        &[
+            ("Orang ditangkap", metrics.narkoba.orang_diamankan, "orang"),
+            ("Kawasan narkoba", metrics.narkoba.kawasan, "kawasan"),
+            ("Rehabilitasi", metrics.narkoba.rehabilitasi, "orang"),
+            (
+                "Peserta penyuluhan",
+                metrics.narkoba.peserta_penyuluhan,
+                "peserta",
+            ),
+        ],
+        "page-2-kpi",
+    ));
     body.push_str(&editorial_block(
         "Catatan pelaksanaan",
         &content.narkoba,
         "Bagian ini dapat diisi dengan konteks penindakan, hasil assault, dan rencana pemulihan kawasan.",
+        "page-2-editorial",
     ));
     body.push_str("<div class=\"two-col\">");
     body.push_str(&format!(
-        "<div class=\"panel\"><h3>Sebaran per polres</h3>{}</div>",
+        "<div class=\"panel\" data-block=\"page-2-panel-polres\"><h3>Sebaran per polres</h3>{}</div>",
         group_table(&metrics.narkoba.by_polres, false)
     ));
     body.push_str(&format!(
-        "<div class=\"panel\"><h3>Jenis kegiatan</h3>{}</div>",
+        "<div class=\"panel\" data-block=\"page-2-panel-kegiatan\"><h3>Jenis kegiatan</h3>{}</div>",
         bar_list(&metrics.narkoba.by_code, 8)
     ));
     body.push_str("</div>");
     body.push_str(&activity_panel(
         "Kegiatan menonjol",
         &metrics.narkoba.activities,
+        "page-2-panel-activity",
     ));
     body
 }
@@ -265,29 +313,33 @@ fn render_narkoba(metrics: &ReportMetrics, content: &ReportContent) -> String {
 fn render_green(metrics: &ReportMetrics, content: &ReportContent) -> String {
     let green = &metrics.green_policing;
     let mut body = String::new();
-    body.push_str(&kpi_row(&[
-        ("Bibit ditanam", green.bibit, "bibit"),
-        ("Kegiatan hijau", green.rows, "laporan"),
-        ("Luas area", green.area_m2, "m²"),
-        ("Kerja bakti", green.kerja_bakti, "kegiatan"),
-    ]));
+    body.push_str(&kpi_row(
+        &[
+            ("Bibit ditanam", green.bibit, "bibit"),
+            ("Kegiatan hijau", green.rows, "laporan"),
+            ("Luas area", green.area_m2, "m²"),
+            ("Kerja bakti", green.kerja_bakti, "kegiatan"),
+        ],
+        "page-3-kpi",
+    ));
     body.push_str(&editorial_block(
         "Catatan pelaksanaan",
         &content.green_policing,
         "Uraikan lokasi prioritas, jenis tanaman, kolaborasi dengan pemda, serta pemeliharaan pasca-tanam.",
+        "page-3-editorial",
     ));
     body.push_str("<div class=\"two-col\">");
     body.push_str(&format!(
-        "<div class=\"panel\"><h3>Bibit per polres</h3>{}</div>",
+        "<div class=\"panel\" data-block=\"page-3-panel-polres\"><h3>Bibit per polres</h3>{}</div>",
         group_table(&green.by_polres, true)
     ));
     body.push_str(&format!(
-        "<div class=\"panel\"><h3>Jenis kegiatan</h3>{}</div>",
+        "<div class=\"panel\" data-block=\"page-3-panel-kegiatan\"><h3>Jenis kegiatan</h3>{}</div>",
         bar_list(&green.by_kegiatan, 8)
     ));
     body.push_str("</div>");
     body.push_str(&format!(
-        "<div class=\"note-strip\"><strong>{}</strong><span> kegiatan penanaman · {} peserta terlibat · {} m² area ditangani</span></div>",
+        "<div class=\"note-strip\" data-block=\"page-3-note\"><strong>{}</strong><span> kegiatan penanaman · {} peserta terlibat · {} m² area ditangani</span></div>",
         format_count(green.penanaman),
         format_count(green.peserta),
         format_count(green.area_m2)
@@ -301,22 +353,27 @@ fn render_religious(
     editorial_text: &str,
     location_label: &str,
     show_religion: bool,
+    page_no: usize,
 ) -> String {
     let mut body = String::new();
-    body.push_str(&kpi_row(&[
-        ("Jemaah / jemaat", section.people, "orang"),
-        (location_label, section.locations, "lokasi"),
-        ("Polres", section.polres, "satuan"),
-        ("Polsek", section.polsek, "satuan"),
-    ]));
+    body.push_str(&kpi_row(
+        &[
+            ("Jemaah / jemaat", section.people, "orang"),
+            (location_label, section.locations, "lokasi"),
+            ("Polres", section.polres, "satuan"),
+            ("Polsek", section.polsek, "satuan"),
+        ],
+        &format!("page-{page_no}-kpi"),
+    ));
     body.push_str(&editorial_block(
         "Catatan pelaksanaan",
         editorial_text,
         "Lengkapi dengan pesan kamtibmas yang disampaikan, tokoh yang ditemui, dan aspirasi utama warga.",
+        &format!("page-{page_no}-editorial"),
     ));
     body.push_str("<div class=\"two-col\">");
     body.push_str(&format!(
-        "<div class=\"panel wide\"><h3>Sebaran per polres</h3>{}</div>",
+        "<div class=\"panel wide\" data-block=\"page-{page_no}-panel-polres\"><h3>Sebaran per polres</h3>{}</div>",
         group_table(&section.by_polres, false)
     ));
     let mut aside = String::new();
@@ -332,10 +389,12 @@ fn render_religious(
             bar_list(&section.top_locations, 6)
         ));
     }
-    body.push_str(&format!("<div class=\"panel\">{aside}</div>"));
+    body.push_str(&format!(
+        "<div class=\"panel\" data-block=\"page-{page_no}-panel-lokasi\">{aside}</div>"
+    ));
     body.push_str("</div>");
     body.push_str(&format!(
-        "<div class=\"note-strip\"><strong>{}</strong><span> laporan kegiatan keagamaan dalam periode {} · total {} orang dijangkau</span></div>",
+        "<div class=\"note-strip\" data-block=\"page-{page_no}-note\"><strong>{}</strong><span> laporan kegiatan keagamaan dalam periode {} · total {} orang dijangkau</span></div>",
         format_count(section.rows),
         escape_html(&metrics.period_label),
         format_count(section.people)
@@ -356,36 +415,40 @@ fn render_aspirations(metrics: &ReportMetrics, content: &ReportContent) -> Strin
         .sum();
 
     let mut body = String::new();
-    body.push_str(&kpi_row(&[
-        ("Aspirasi tercatat", aspirations.total, "masukan"),
-        ("Tema utama", aspirations.themes.len() as i64, "tema"),
-        ("Sudah ditindaklanjuti", completed, "masukan"),
-        (
-            "Sumber kegiatan",
-            aspirations.by_source.len() as i64,
-            "kegiatan",
-        ),
-    ]));
+    body.push_str(&kpi_row(
+        &[
+            ("Aspirasi tercatat", aspirations.total, "masukan"),
+            ("Tema utama", aspirations.themes.len() as i64, "tema"),
+            ("Sudah ditindaklanjuti", completed, "masukan"),
+            (
+                "Sumber kegiatan",
+                aspirations.by_source.len() as i64,
+                "kegiatan",
+            ),
+        ],
+        "page-7-kpi",
+    ));
     body.push_str(&editorial_block(
         "Catatan pelaksanaan",
         &content.aspirations,
         "Rangkum pola aspirasi lintas kegiatan dan tentukan prioritas tindak lanjut bersama satuan wilayah.",
+        "page-7-editorial",
     ));
     body.push_str("<div class=\"two-col\">");
     body.push_str(&format!(
-        "<div class=\"panel wide\"><h3>Tema aspirasi masyarakat</h3>{}</div>",
+        "<div class=\"panel wide\" data-block=\"page-7-panel-tema\"><h3>Tema aspirasi masyarakat</h3>{}</div>",
         aspiration_table(&aspirations.themes)
     ));
     body.push_str(&format!(
-        "<div class=\"panel\"><h3>Status tindak lanjut</h3>{}</div>",
+        "<div class=\"panel\" data-block=\"page-7-panel-status\"><h3>Status tindak lanjut</h3>{}</div>",
         bar_list(&aspirations.statuses, 6)
     ));
     body.push_str("</div>");
     if !aspirations.quotes.is_empty() {
         body.push_str("<div class=\"quote-grid\">");
-        for quote in &aspirations.quotes {
+        for (index, quote) in aspirations.quotes.iter().enumerate() {
             body.push_str(&format!(
-                "<div class=\"quote\">“{}”</div>",
+                "<div class=\"quote\" data-block=\"page-7-quote-{index}\">“{}”</div>",
                 escape_html(quote)
             ));
         }
@@ -397,28 +460,32 @@ fn render_aspirations(metrics: &ReportMetrics, content: &ReportContent) -> Strin
 fn render_follow_up(metrics: &ReportMetrics, content: &ReportContent) -> String {
     let follow_up = &metrics.follow_up;
     let mut body = String::new();
-    body.push_str(&kpi_row(&[
-        ("Tindak lanjut", follow_up.total, "masukan"),
-        ("Bentuk tindakan", follow_up.forms.len() as i64, "jenis"),
-        (
-            "Kegiatan gabungan",
-            follow_up.activities.len() as i64,
-            "kegiatan",
-        ),
-        ("Total laporan", metrics.total_rows, "baris"),
-    ]));
+    body.push_str(&kpi_row(
+        &[
+            ("Tindak lanjut", follow_up.total, "masukan"),
+            ("Bentuk tindakan", follow_up.forms.len() as i64, "jenis"),
+            (
+                "Kegiatan gabungan",
+                follow_up.activities.len() as i64,
+                "kegiatan",
+            ),
+            ("Total laporan", metrics.total_rows, "baris"),
+        ],
+        "page-8-kpi",
+    ));
     body.push_str(&editorial_block(
         "Catatan pelaksanaan",
         &content.follow_up,
         "Jelaskan kegiatan gabungan, KRYD, dan koordinasi lintas instansi yang dilakukan untuk menjawab aspirasi.",
+        "page-8-editorial",
     ));
     body.push_str("<div class=\"two-col\">");
     body.push_str(&format!(
-        "<div class=\"panel\"><h3>Bentuk tindak lanjut</h3>{}</div>",
+        "<div class=\"panel\" data-block=\"page-8-panel-bentuk\"><h3>Bentuk tindak lanjut</h3>{}</div>",
         bar_list(&follow_up.forms, 8)
     ));
     body.push_str(&format!(
-        "<div class=\"panel wide\"><h3>Kegiatan tindak lanjut</h3>{}</div>",
+        "<div class=\"panel wide\" data-block=\"page-8-panel-kegiatan\"><h3>Kegiatan tindak lanjut</h3>{}</div>",
         activity_table(&follow_up.activities)
     ));
     body.push_str("</div>");
@@ -428,29 +495,33 @@ fn render_follow_up(metrics: &ReportMetrics, content: &ReportContent) -> String 
 fn render_media(metrics: &ReportMetrics, content: &ReportContent, config: &Config) -> String {
     let media = &metrics.media;
     let mut body = String::new();
-    body.push_str(&kpi_row(&[
-        ("Publikasi", media.publications, "tautan"),
-        ("Dokumentasi", media.documentation, "berkas"),
-        ("Kegiatan teramplifikasi", media.rows_with_media, "kegiatan"),
-        ("Kanal publikasi", media.by_channel.len() as i64, "kanal"),
-    ]));
+    body.push_str(&kpi_row(
+        &[
+            ("Publikasi", media.publications, "tautan"),
+            ("Dokumentasi", media.documentation, "berkas"),
+            ("Kegiatan teramplifikasi", media.rows_with_media, "kegiatan"),
+            ("Kanal publikasi", media.by_channel.len() as i64, "kanal"),
+        ],
+        "page-9-kpi",
+    ));
     body.push_str(&editorial_block(
         "Catatan pelaksanaan",
         &content.media,
         "Rekap kanal pemberitaan, akun media sosial, dan tautan dokumentasi yang paling banyak digunakan.",
+        "page-9-editorial",
     ));
     body.push_str("<div class=\"two-col\">");
     body.push_str(&format!(
-        "<div class=\"panel\"><h3>Publikasi per kanal</h3>{}</div>",
+        "<div class=\"panel\" data-block=\"page-9-panel-kanal\"><h3>Publikasi per kanal</h3>{}</div>",
         bar_list(&media.by_channel, 6)
     ));
     body.push_str(&format!(
-        "<div class=\"panel\"><h3>Publikasi per kegiatan</h3>{}</div>",
+        "<div class=\"panel\" data-block=\"page-9-panel-kegiatan\"><h3>Publikasi per kegiatan</h3>{}</div>",
         bar_list(&media.by_activity, 6)
     ));
     body.push_str("</div>");
     body.push_str(&format!(
-        "<div class=\"note-strip\"><strong>{}</strong><span> total tautan terverifikasi · {} dokumentasi kegiatan · {} kegiatan memiliki publikasi</span></div>",
+        "<div class=\"note-strip\" data-block=\"page-9-note\"><strong>{}</strong><span> total tautan terverifikasi · {} dokumentasi kegiatan · {} kegiatan memiliki publikasi</span></div>",
         format_count(media.total),
         format_count(media.documentation),
         format_count(media.rows_with_media)
@@ -461,7 +532,7 @@ fn render_media(metrics: &ReportMetrics, content: &ReportContent, config: &Confi
         "Demikian laporan mingguan pelaksanaan Program Prioritas dan Quick Wins Kapolri ini disusun sebagai bahan evaluasi pimpinan dan tindak lanjut satuan wilayah.",
     );
     body.push_str(&format!(
-        "<div class=\"closing\"><h3>Penutup</h3>{}</div>",
+        "<div class=\"closing\" data-block=\"page-9-closing\"><h3>Penutup</h3>{}</div>",
         closing
     ));
 
@@ -484,7 +555,7 @@ fn render_media(metrics: &ReportMetrics, content: &ReportContent, config: &Confi
     let nip = content.signatory_nip.trim();
 
     body.push_str(&format!(
-        "<div class=\"signature\">\
+        "<div class=\"signature\" data-block=\"page-9-signature\">\
            <div class=\"signature-place\">{}, {}</div>\
            <div class=\"signature-title\">{}</div>\
            <div class=\"signature-space\"></div>\
@@ -520,15 +591,18 @@ fn page(
     subtitle: &str,
     body: &str,
     extra_class: &str,
+    ctx: &DesignContext,
 ) -> String {
     let page_number = number
         .map(|value| format!("<span>Halaman {value}</span>"))
         .unwrap_or_default();
+    let page_no = number.unwrap_or(9);
     format!(
         "<section class=\"page {extra_class}\">\
-  <header class=\"page-head\"><div class=\"page-head-text\"><span class=\"eyebrow gold\">{eyebrow}</span><h1>{title}</h1><p>{subtitle}</p></div><span class=\"crest-logo page-crest\" role=\"img\" aria-label=\"Logo Polda Bali\"></span></header>\
+  <header class=\"page-head\" data-block=\"page-{page_no}-head\"><div class=\"page-head-text\"><span class=\"eyebrow gold\">{eyebrow}</span><h1>{title}</h1><p>{subtitle}</p></div><span class=\"crest-logo page-crest\" role=\"img\" aria-label=\"Logo Polda Bali\"></span></header>\
   <div class=\"page-body\">{body}</div>\
-  <footer class=\"page-foot\"><span>LAPORAN MINGGUAN PBM · {polda} · {period}</span>{page_number}</footer>\
+  <footer class=\"page-foot\" data-block=\"page-{page_no}-foot\"><span>LAPORAN MINGGUAN PBM · {polda} · {period}</span>{page_number}</footer>\
+  {layer}\
 </section>",
         extra_class = extra_class,
         eyebrow = escape_html(eyebrow),
@@ -538,11 +612,111 @@ fn page(
         polda = escape_html(&metrics.polda_name),
         period = escape_html(&metrics.period_label),
         page_number = page_number,
+        page_no = page_no,
+        layer = layout_layer(page_no, ctx),
     )
 }
 
-fn kpi_row(items: &[(&str, i64, &str)]) -> String {
-    let mut output = String::from("<div class=\"kpi-row\">");
+fn layout_layer(page_no: usize, ctx: &DesignContext) -> String {
+    let mut html = String::new();
+    if let Some(page) = ctx.layout.pages.iter().find(|page| page.page == page_no) {
+        for element in &page.elements {
+            if element.hidden {
+                continue;
+            }
+            html.push_str(&render_layout_element(element, ctx));
+        }
+    }
+    format!("<div class=\"layout-layer\" data-layout-page=\"{page_no}\">{html}</div>")
+}
+
+fn render_layout_element(element: &LayoutElement, ctx: &DesignContext) -> String {
+    let mut style = format!(
+        "left:{:.3}mm;top:{:.3}mm;width:{:.3}mm;height:{:.3}mm;opacity:{:.3};z-index:{};",
+        element.x, element.y, element.width, element.height, element.opacity, element.z
+    );
+    if element.rotation.abs() > 0.005 {
+        style.push_str(&format!("transform:rotate({:.3}deg);", element.rotation));
+    }
+
+    match element.kind.as_str() {
+        "image" => {
+            let src = match image_id_from_src(&element.src) {
+                Some(id) => ctx.images.get(id).cloned().unwrap_or_default(),
+                None => element.src.clone(),
+            };
+            if src.is_empty() {
+                return String::new();
+            }
+            style.push_str(&format!("object-fit:{};", element.object_fit));
+            format!(
+                "<img class=\"layout-element layout-image\" data-element-id=\"{}\" src=\"{}\" alt=\"{}\" style=\"{}\">",
+                escape_html(&element.id),
+                escape_html(&src),
+                escape_html(&element.alt),
+                style
+            )
+        }
+        "rect" => {
+            style.push_str(&format!(
+                "background:{};border:{}pt solid {};border-radius:{}mm;",
+                element.fill, element.border_width, element.border_color, element.radius
+            ));
+            format!(
+                "<div class=\"layout-element layout-rect\" data-element-id=\"{}\" style=\"{}\"></div>",
+                escape_html(&element.id),
+                style
+            )
+        }
+        "text" => {
+            let font_family = if element.font_family == "serif" {
+                "Georgia, 'Times New Roman', serif"
+            } else {
+                "'Segoe UI', Arial, sans-serif"
+            };
+            style.push_str(&format!(
+                "font-family:{};font-size:{}pt;color:{};font-weight:{};font-style:{};text-align:{};background:{};",
+                font_family,
+                element.font_size,
+                element.color,
+                if element.bold { 700 } else { 400 },
+                if element.italic { "italic" } else { "normal" },
+                element.align,
+                element.background
+            ));
+            format!(
+                "<div class=\"layout-element layout-text\" data-element-id=\"{}\" style=\"{}\">{}</div>",
+                escape_html(&element.id),
+                style,
+                escape_html(&element.text)
+            )
+        }
+        _ => String::new(),
+    }
+}
+
+fn block_css(layout: &ReportLayout) -> String {
+    let mut css = String::new();
+    for page in &layout.pages {
+        for (id, block) in &page.blocks {
+            if !valid_id(id) {
+                continue;
+            }
+            if block.hidden {
+                css.push_str(&format!("[data-block=\"{id}\"]{{display:none!important;}}"));
+            } else if block.dx.abs() > 0.005 || block.dy.abs() > 0.005 {
+                css.push_str(&format!(
+                    "[data-block=\"{id}\"]{{transform:translate({:.3}mm,{:.3}mm);}}",
+                    block.dx, block.dy
+                ));
+            }
+        }
+    }
+    css
+}
+
+fn kpi_row(items: &[(&str, i64, &str)], block_id: &str) -> String {
+    let mut output = format!("<div class=\"kpi-row\" data-block=\"{block_id}\">");
     for (label, value, unit) in items {
         output.push_str(&format!(
             "<div class=\"kpi\"><span class=\"kpi-label\">{}</span><strong>{}</strong><span class=\"kpi-unit\">{}</span></div>",
@@ -555,9 +729,9 @@ fn kpi_row(items: &[(&str, i64, &str)]) -> String {
     output
 }
 
-fn editorial_block(title: &str, text: &str, fallback: &str) -> String {
+fn editorial_block(title: &str, text: &str, fallback: &str, block_id: &str) -> String {
     format!(
-        "<div class=\"editorial-block\"><h3>{}</h3>{}</div>",
+        "<div class=\"editorial-block\" data-block=\"{block_id}\"><h3>{}</h3>{}</div>",
         escape_html(title),
         editorial(text, fallback)
     )
@@ -663,12 +837,12 @@ fn aspiration_table(items: &[crate::shared::LabeledCount]) -> String {
     output
 }
 
-fn activity_panel(title: &str, items: &[RowSummary]) -> String {
+fn activity_panel(title: &str, items: &[RowSummary], block_id: &str) -> String {
     if items.is_empty() {
         return String::new();
     }
     format!(
-        "<div class=\"panel\"><h3>{}</h3>{}</div>",
+        "<div class=\"panel\" data-block=\"{block_id}\"><h3>{}</h3>{}</div>",
         escape_html(title),
         activity_table(items)
     )
@@ -800,6 +974,11 @@ h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; color: #143d30; mar
   background-size: contain;
 }
 .page-crest { width: 10mm; height: 14mm; flex: none; margin-top: 1mm; }
+.layout-layer { position: absolute; inset: 0; z-index: 20; pointer-events: none; }
+.layout-layer > * { pointer-events: auto; }
+.layout-element { position: absolute; box-sizing: border-box; }
+.layout-image { display: block; width: 100%; height: 100%; }
+.layout-text { white-space: pre-wrap; overflow: hidden; padding: .8mm; }
 h3 { font-size: 11pt; margin-bottom: 2.5mm; font-weight: 600; }
 p { margin: 0 0 2.5mm; }
 .muted { color: #7a857f; font-style: italic; }

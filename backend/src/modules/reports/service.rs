@@ -1,5 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::Value;
 use sqlx::{Row, SqlitePool};
 use tokio::{process::Command, sync::Mutex};
@@ -11,6 +15,7 @@ use crate::{
     modules::{
         imports, periods,
         reports::{
+            layout::{LayoutView, ReportLayout, UploadedImage, image_id_from_src},
             metrics,
             models::{DraftView, ReportContent, ReportMetrics, ReportView},
             render,
@@ -129,6 +134,251 @@ pub async fn save_draft(
     get_draft(db, period_id, import_id).await
 }
 
+pub async fn get_layout(
+    db: &SqlitePool,
+    period_id: &str,
+    import_id: &str,
+) -> ApiResult<LayoutView> {
+    imports::service::ensure_import(db, period_id, import_id).await?;
+    let row = sqlx::query(
+        "SELECT l.layout_json, l.updated_at, u.username AS updated_by
+         FROM report_layouts l
+         LEFT JOIN users u ON u.id = l.updated_by
+         WHERE l.period_id = ? AND l.import_id = ?",
+    )
+    .bind(period_id)
+    .bind(import_id)
+    .fetch_optional(db)
+    .await
+    .map_err(ApiError::internal)?;
+
+    Ok(match row {
+        Some(row) => {
+            let layout = serde_json::from_str::<ReportLayout>(&row.get::<String, _>("layout_json"))
+                .unwrap_or_default()
+                .sanitize();
+            LayoutView {
+                layout,
+                updated_at: Some(row.get("updated_at")),
+                updated_by: row.try_get("updated_by").ok(),
+            }
+        }
+        None => LayoutView {
+            layout: ReportLayout::default().sanitize(),
+            updated_at: None,
+            updated_by: None,
+        },
+    })
+}
+
+pub async fn save_layout(
+    db: &SqlitePool,
+    user_id: &str,
+    period_id: &str,
+    import_id: &str,
+    layout: ReportLayout,
+) -> ApiResult<LayoutView> {
+    imports::service::ensure_import(db, period_id, import_id).await?;
+    let layout = layout.sanitize();
+    let layout_json = serde_json::to_string(&layout).map_err(ApiError::internal)?;
+    if layout_json.len() > 2 * 1024 * 1024 {
+        return Err(ApiError::payload_too_large(
+            "Layout desain terlalu besar. Kurangi jumlah elemen atau gambar.",
+        ));
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        "INSERT INTO report_layouts(period_id, import_id, layout_json, updated_by, updated_at)
+         VALUES(?,?,?,?,?)
+         ON CONFLICT(period_id, import_id) DO UPDATE SET
+           layout_json = excluded.layout_json,
+           updated_by = excluded.updated_by,
+           updated_at = excluded.updated_at",
+    )
+    .bind(period_id)
+    .bind(import_id)
+    .bind(&layout_json)
+    .bind(user_id)
+    .bind(&now)
+    .execute(db)
+    .await
+    .map_err(ApiError::internal)?;
+
+    audit::record(
+        db,
+        Some(user_id),
+        "layout.update",
+        "period",
+        period_id,
+        serde_json::json!({ "import_id": import_id }),
+    )
+    .await?;
+
+    let username: Option<String> = sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(db)
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(LayoutView {
+        layout,
+        updated_at: Some(now),
+        updated_by: username,
+    })
+}
+
+pub async fn save_layout_image(
+    db: &SqlitePool,
+    config: &Config,
+    user_id: &str,
+    period_id: &str,
+    filename: &str,
+    bytes: &[u8],
+) -> ApiResult<UploadedImage> {
+    periods::service::get(db, period_id).await?;
+    if bytes.is_empty() {
+        return Err(ApiError::bad_request("Berkas gambar kosong."));
+    }
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err(ApiError::payload_too_large("Ukuran gambar maksimal 8 MB."));
+    }
+
+    let (extension, content_type) = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        ("png", "image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        ("jpg", "image/jpeg")
+    } else {
+        return Err(ApiError::bad_request(
+            "Gambar harus berformat PNG atau JPEG.",
+        ));
+    };
+
+    let id = Uuid::new_v4().to_string();
+    let directory = config.data_dir.join("design").join(period_id);
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(ApiError::internal)?;
+    let stored_path = directory.join(format!("{id}.{extension}"));
+    tokio::fs::write(&stored_path, bytes)
+        .await
+        .map_err(ApiError::internal)?;
+
+    let original_name = Path::new(filename)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("gambar")
+        .chars()
+        .take(200)
+        .collect::<String>();
+
+    let result = sqlx::query(
+        "INSERT INTO design_images(id, period_id, filename, content_type, stored_path, size_bytes, created_by)
+         VALUES(?,?,?,?,?,?,?)",
+    )
+    .bind(&id)
+    .bind(period_id)
+    .bind(&original_name)
+    .bind(content_type)
+    .bind(stored_path.to_string_lossy().to_string())
+    .bind(bytes.len() as i64)
+    .bind(user_id)
+    .execute(db)
+    .await;
+
+    if let Err(error) = result {
+        let _ = tokio::fs::remove_file(&stored_path).await;
+        return Err(ApiError::internal(error));
+    }
+
+    audit::record(
+        db,
+        Some(user_id),
+        "layout.image.upload",
+        "period",
+        period_id,
+        serde_json::json!({ "image_id": id, "bytes": bytes.len() }),
+    )
+    .await?;
+
+    Ok(UploadedImage {
+        url: format!("/api/periods/{period_id}/layout/images/{id}"),
+        id,
+    })
+}
+
+pub async fn layout_image(
+    db: &SqlitePool,
+    period_id: &str,
+    image_id: &str,
+) -> ApiResult<(PathBuf, String, String)> {
+    let row = sqlx::query(
+        "SELECT stored_path, content_type, filename FROM design_images
+         WHERE id = ? AND period_id = ?",
+    )
+    .bind(image_id)
+    .bind(period_id)
+    .fetch_optional(db)
+    .await
+    .map_err(ApiError::internal)?
+    .ok_or_else(|| ApiError::not_found("Gambar desain tidak ditemukan."))?;
+
+    Ok((
+        PathBuf::from(row.get::<String, _>("stored_path")),
+        row.get("content_type"),
+        row.get("filename"),
+    ))
+}
+
+pub async fn load_design(
+    db: &SqlitePool,
+    period_id: &str,
+    import_id: &str,
+) -> ApiResult<(ReportLayout, HashMap<String, String>)> {
+    let layout = get_layout(db, period_id, import_id).await?.layout;
+    let mut ids = HashSet::new();
+    for page in &layout.pages {
+        for element in &page.elements {
+            if element.hidden || element.kind != "image" {
+                continue;
+            }
+            if let Some(id) = image_id_from_src(&element.src) {
+                ids.insert(id.to_string());
+            }
+        }
+    }
+
+    let mut images = HashMap::new();
+    let mut total_bytes = 0usize;
+    for id in ids {
+        let row = sqlx::query(
+            "SELECT stored_path, content_type FROM design_images
+             WHERE id = ? AND period_id = ?",
+        )
+        .bind(&id)
+        .bind(period_id)
+        .fetch_optional(db)
+        .await
+        .map_err(ApiError::internal)?;
+        let Some(row) = row else { continue };
+        let path: String = row.get("stored_path");
+        let Ok(bytes) = tokio::fs::read(&path).await else {
+            continue;
+        };
+        total_bytes += bytes.len();
+        if total_bytes > 40 * 1024 * 1024 {
+            break;
+        }
+        let content_type: String = row.get("content_type");
+        images.insert(
+            id,
+            format!("data:{content_type};base64,{}", STANDARD.encode(bytes)),
+        );
+    }
+
+    Ok((layout, images))
+}
+
 pub async fn metrics_for(
     db: &SqlitePool,
     config: &Config,
@@ -165,7 +415,10 @@ pub async fn preview_html(
         Some(content) => content.clone(),
         None => get_draft(db, period_id, import_id).await?.content,
     };
-    Ok(render::render(&metrics, &content, config))
+    let (layout, images) = load_design(db, period_id, import_id).await?;
+    Ok(render::render_with_layout(
+        &metrics, &content, config, &layout, &images,
+    ))
 }
 
 pub async fn generate(
@@ -180,7 +433,8 @@ pub async fn generate(
     let (source_filename, _, _) = imports::service::ensure_import(db, period_id, import_id).await?;
     let content = get_draft(db, period_id, import_id).await?.content;
     let metrics = metrics_for(db, config, period_id, Some(import_id)).await?;
-    let html = render::render(&metrics, &content, config);
+    let (layout, images) = load_design(db, period_id, import_id).await?;
+    let html = render::render_with_layout(&metrics, &content, config, &layout, &images);
 
     let report_id = Uuid::new_v4().to_string();
     let report_dir = config.data_dir.join("reports").join(period_id);
@@ -244,15 +498,16 @@ pub async fn generate(
 
     sqlx::query(
         "INSERT INTO report_runs(
-            id, period_id, import_id, content_json, metrics_json, pdf_path, html_path,
+            id, period_id, import_id, content_json, metrics_json, layout_json, pdf_path, html_path,
             polda_name, source_filename, period_label, created_by
-         ) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .bind(&report_id)
     .bind(period_id)
     .bind(import_id)
     .bind(serde_json::to_string(&content).map_err(ApiError::internal)?)
     .bind(serde_json::to_string(&metrics).map_err(ApiError::internal)?)
+    .bind(serde_json::to_string(&layout).map_err(ApiError::internal)?)
     .bind(pdf_path.to_string_lossy().to_string())
     .bind(html_path.to_string_lossy().to_string())
     .bind(&config.polda_name)
@@ -291,24 +546,24 @@ pub async fn generate(
 
 pub async fn stored_preview(
     db: &SqlitePool,
-    config: &Config,
+    _config: &Config,
     report_id: &str,
 ) -> ApiResult<String> {
-    let row = sqlx::query("SELECT content_json, metrics_json FROM report_runs WHERE id = ?")
+    let row = sqlx::query("SELECT html_path FROM report_runs WHERE id = ?")
         .bind(report_id)
         .fetch_optional(db)
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found("Dokumen laporan tidak ditemukan."))?;
-
-    let content: ReportContent =
-        serde_json::from_str::<Value>(&row.get::<String, _>("content_json"))
-            .map(|value| ReportContent::from_value(&value))
-            .unwrap_or_default();
-    let metrics: ReportMetrics = serde_json::from_str(&row.get::<String, _>("metrics_json"))
-        .map_err(|error| ApiError::internal(format!("snapshot metrik rusak: {error}")))?;
-
-    Ok(render::render(&metrics, &content, config))
+    let html_path: String = row.get("html_path");
+    if html_path.trim().is_empty() || !Path::new(&html_path).exists() {
+        return Err(ApiError::not_found(
+            "Snapshot HTML laporan tidak ditemukan. Buat ulang PDF.",
+        ));
+    }
+    tokio::fs::read_to_string(&html_path)
+        .await
+        .map_err(ApiError::internal)
 }
 
 pub async fn download_path(

@@ -1,6 +1,6 @@
 use std::{
     env,
-    net::{IpAddr, Ipv4Addr},
+    net::IpAddr,
     path::{Path, PathBuf},
 };
 
@@ -28,7 +28,7 @@ impl Config {
         Self {
             data_dir: PathBuf::new(),
             frontend_dir: PathBuf::new(),
-            bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            bind_addr: IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             allowed_hosts: Vec::new(),
             port: 0,
             chrome_path: String::new(),

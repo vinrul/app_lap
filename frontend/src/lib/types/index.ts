@@ -39,6 +39,62 @@ export interface ImportView {
   imported_by: string
 }
 
+export interface LayoutBlockOffset {
+  dx: number
+  dy: number
+  hidden?: boolean
+}
+
+export interface LayoutElement {
+  id: string
+  type: 'image' | 'rect' | 'text'
+  x: number
+  y: number
+  width: number
+  height: number
+  rotation: number
+  opacity: number
+  z: number
+  hidden?: boolean
+  src?: string
+  alt?: string
+  object_fit?: 'contain' | 'cover' | 'fill'
+  fill?: string
+  border_color?: string
+  border_width?: number
+  radius?: number
+  text?: string
+  font_size?: number
+  font_family?: 'sans' | 'serif'
+  color?: string
+  bold?: boolean
+  italic?: boolean
+  align?: 'left' | 'center' | 'right'
+  background?: string
+}
+
+export interface LayoutPage {
+  page: number
+  blocks: Record<string, LayoutBlockOffset>
+  elements: LayoutElement[]
+}
+
+export interface ReportLayout {
+  version: number
+  pages: LayoutPage[]
+}
+
+export interface LayoutView {
+  layout: ReportLayout
+  updated_at: string | null
+  updated_by: string | null
+}
+
+export interface UploadedDesignImage {
+  id: string
+  url: string
+}
+
 export interface ReportView {
   id: string
   period_id: string
