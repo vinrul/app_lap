@@ -334,8 +334,9 @@ impl LayoutElement {
             "rect" => {
                 self.src.clear();
                 self.alt.clear();
-                self.fill = safe_color(&self.fill, "#ffffff");
-                self.border_color = safe_color(&self.border_color, "#143d30");
+                self.fill = normalize_transparent(safe_color(&self.fill, "#ffffff"));
+                self.border_color =
+                    normalize_transparent(safe_color(&self.border_color, "#143d30"));
                 self.border_width = clamp_num(self.border_width, 0.0, 20.0, 0.5);
                 self.radius = clamp_num(self.radius, 0.0, 100.0, 1.0);
                 self.clear_table_chart();
@@ -618,6 +619,14 @@ fn optional_color(value: &str) -> String {
     safe_color(value, "")
 }
 
+fn normalize_transparent(value: String) -> String {
+    if value.eq_ignore_ascii_case("none") {
+        "transparent".to_string()
+    } else {
+        value
+    }
+}
+
 fn safe_color(value: &str, fallback: &str) -> String {
     let value = value.trim();
     if value.eq_ignore_ascii_case("transparent") || value.eq_ignore_ascii_case("none") {
@@ -734,6 +743,44 @@ mod tests {
             .unwrap();
         assert_eq!(rect.fill, "#ffffff");
         assert!(!page.elements.iter().any(|item| item.kind == "video"));
+    }
+
+    #[test]
+    fn keeps_transparent_rect_fill_and_border() {
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![PageLayout {
+                page: 2,
+                blocks: BTreeMap::new(),
+                elements: vec![
+                    LayoutElement {
+                        id: "rect-no-paint".into(),
+                        kind: "rect".into(),
+                        fill: "transparent".into(),
+                        border_color: "none".into(),
+                        border_width: 0.0,
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "rect-no-stroke".into(),
+                        kind: "rect".into(),
+                        fill: "none".into(),
+                        border_color: "transparent".into(),
+                        border_width: 2.0,
+                        ..Default::default()
+                    },
+                ],
+            }],
+        };
+
+        let sanitized = layout.sanitize();
+        let page = &sanitized.pages[1];
+        assert_eq!(page.elements[0].fill, "transparent");
+        assert_eq!(page.elements[0].border_color, "transparent");
+        assert_eq!(page.elements[0].border_width, 0.0);
+        assert_eq!(page.elements[1].fill, "transparent");
+        assert_eq!(page.elements[1].border_color, "transparent");
+        assert_eq!(page.elements[1].border_width, 2.0);
     }
 
     #[test]

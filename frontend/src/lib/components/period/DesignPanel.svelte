@@ -168,6 +168,13 @@
     if (!selected || selected.kind !== 'block') return null
     return getPage(selected.page)?.blocks[selected.id] ?? { dx: 0, dy: 0, hidden: false }
   })
+  const rectNoFill = $derived(
+    activeElement?.type === 'rect' && isTransparentColor(activeElement.fill),
+  )
+  const rectNoStroke = $derived(
+    activeElement?.type === 'rect' &&
+      ((activeElement.border_width ?? 0) <= 0 || isTransparentColor(activeElement.border_color)),
+  )
   const hiddenBlocks = $derived.by(() => {
     const page = getPage(currentPage)
     if (!page) return []
@@ -725,8 +732,12 @@
       node = image
     } else if (element.type === 'rect') {
       const rect = doc.createElement('div')
-      rect.style.background = element.fill ?? '#ffffff'
-      rect.style.border = `${element.border_width ?? 0.5}pt solid ${element.border_color ?? '#143d30'}`
+      const fill = element.fill ?? '#ffffff'
+      const borderWidth = element.border_width ?? 0.5
+      const borderColor = element.border_color ?? '#143d30'
+      rect.style.background = isTransparentColor(fill) ? 'transparent' : fill
+      rect.style.border =
+        borderWidth > 0 && !isTransparentColor(borderColor) ? `${borderWidth}pt solid ${borderColor}` : 'none'
       rect.style.borderRadius = `${element.radius ?? 1}mm`
       node = rect
     } else if (element.type === 'table') {
@@ -2280,8 +2291,47 @@
     applyLayoutToDom()
   }
 
-  function pickerColor(value: string | undefined): string {
-    return value && /^#[0-9a-fA-F]{6}$/.test(value) ? value : '#143d30'
+  function pickerColor(value: string | undefined, fallback = '#143d30'): string {
+    return value && /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback
+  }
+
+  function isTransparentColor(value: string | undefined | null): boolean {
+    const normalized = value?.trim().toLowerCase() ?? ''
+    return !normalized || normalized === 'transparent' || normalized === 'none'
+  }
+
+  let lastRectFill = $state('#ffffff')
+  let lastRectBorder = $state('#143d30')
+
+  function toggleRectFill(transparent: boolean) {
+    const element = activeElement
+    if (!element || element.type !== 'rect') return
+    pushHistory()
+    if (transparent) {
+      if (!isTransparentColor(element.fill)) {
+        lastRectFill = pickerColor(element.fill, '#ffffff')
+      }
+      updateElement({ fill: 'transparent' })
+    } else {
+      updateElement({ fill: lastRectFill })
+    }
+  }
+
+  function toggleRectStroke(disabled: boolean) {
+    const element = activeElement
+    if (!element || element.type !== 'rect') return
+    pushHistory()
+    if (disabled) {
+      if (!isTransparentColor(element.border_color)) {
+        lastRectBorder = pickerColor(element.border_color, '#143d30')
+      }
+      updateElement({ border_color: 'transparent' })
+    } else {
+      updateElement({
+        border_color: lastRectBorder,
+        border_width: (element.border_width ?? 0) > 0 ? element.border_width : 0.5,
+      })
+    }
   }
 
   function numberValue(value: string): number {
@@ -2704,22 +2754,39 @@
                   onchange={(event) => updateElement({ background: (event.currentTarget as HTMLInputElement).value }, true)} />
               </label>
             {:else if activeElement.type === 'rect'}
+              <div class="grid grid-cols-2 gap-3">
+                <label class="flex items-center gap-2 text-xs font-medium text-ink">
+                  <input type="checkbox" checked={rectNoFill} data-rect-no-fill
+                    onchange={(event) => toggleRectFill((event.currentTarget as HTMLInputElement).checked)} />
+                  Tanpa isi
+                </label>
+                <label class="flex items-center gap-2 text-xs font-medium text-ink">
+                  <input type="checkbox" checked={rectNoStroke} data-rect-no-stroke
+                    onchange={(event) => toggleRectStroke((event.currentTarget as HTMLInputElement).checked)} />
+                  Tanpa garis
+                </label>
+              </div>
               <label class="block">
                 <span class="label">Isi</span>
-                <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.fill)}
+                <input class="input h-9 py-1 disabled:opacity-40" type="color" value={pickerColor(activeElement.fill, lastRectFill)}
+                  data-rect-fill
+                  disabled={rectNoFill}
                   onfocus={pushHistory}
                   oninput={(event) => updateElement({ fill: (event.currentTarget as HTMLInputElement).value })} />
               </label>
               <div class="grid grid-cols-2 gap-3">
                 <label class="block">
                   <span class="label">Garis</span>
-                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.border_color)}
+                  <input class="input h-9 py-1 disabled:opacity-40" type="color" value={pickerColor(activeElement.border_color, lastRectBorder)}
+                    data-rect-border
+                    disabled={rectNoStroke}
                     onfocus={pushHistory}
                     oninput={(event) => updateElement({ border_color: (event.currentTarget as HTMLInputElement).value })} />
                 </label>
                 <label class="block">
                   <span class="label">Tebal garis (pt)</span>
-                  <input class="input py-1.5 text-xs" type="number" min="0" step="0.25" value={activeElement.border_width ?? 0.5}
+                  <input class="input py-1.5 text-xs disabled:opacity-40" type="number" min="0" step="0.25" value={activeElement.border_width ?? 0.5}
+                    disabled={rectNoStroke}
                     onfocus={pushHistory}
                     oninput={(event) => updateElement({ border_width: numberValue((event.currentTarget as HTMLInputElement).value) })} />
                 </label>
@@ -2730,6 +2797,7 @@
                     oninput={(event) => updateElement({ radius: numberValue((event.currentTarget as HTMLInputElement).value) })} />
                 </label>
               </div>
+              <p class="text-[10px] leading-relaxed text-ink-muted">Tanpa isi membuat latar transparan. Tanpa garis menyembunyikan garis tepi tanpa menghapus warna dan tebalnya.</p>
             {:else if activeElement.type === 'icon'}
               <div class="flex items-center gap-3 rounded-xl border border-line p-3">
                 <span class="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-forest-50 text-forest-800">

@@ -791,6 +791,13 @@ fn layout_layer(page_no: usize, ctx: &DesignContext) -> String {
     format!("<div class=\"layout-layer\" data-layout-page=\"{page_no}\">{html}</div>")
 }
 
+fn is_transparent_color(value: &str) -> bool {
+    let value = value.trim();
+    value.is_empty()
+        || value.eq_ignore_ascii_case("transparent")
+        || value.eq_ignore_ascii_case("none")
+}
+
 fn render_layout_element(element: &LayoutElement, ctx: &DesignContext) -> String {
     let mut style = format!(
         "left:{:.3}mm;top:{:.3}mm;width:{:.3}mm;height:{:.3}mm;opacity:{:.3};z-index:{};",
@@ -819,10 +826,16 @@ fn render_layout_element(element: &LayoutElement, ctx: &DesignContext) -> String
             )
         }
         "rect" => {
-            style.push_str(&format!(
-                "background:{};border:{}pt solid {};border-radius:{}mm;",
-                element.fill, element.border_width, element.border_color, element.radius
-            ));
+            if !is_transparent_color(&element.fill) {
+                style.push_str(&format!("background:{};", element.fill));
+            }
+            if element.border_width > 0.0 && !is_transparent_color(&element.border_color) {
+                style.push_str(&format!(
+                    "border:{}pt solid {};",
+                    element.border_width, element.border_color
+                ));
+            }
+            style.push_str(&format!("border-radius:{}mm;", element.radius));
             format!(
                 "<div class=\"layout-element layout-rect\" data-element-id=\"{}\" style=\"{}\"></div>",
                 escape_html(&element.id),
@@ -1964,6 +1977,45 @@ mod tests {
         assert!(html.contains("font-family: 'Playfair Display'"));
         assert!(html.contains("font-weight: 100 900"));
         assert!(html.contains("Judul Playfair"));
+    }
+
+    #[test]
+    fn renders_rect_fill_and_stroke_toggles() {
+        let layout = ReportLayout::default();
+        let images = HashMap::new();
+        let ctx = DesignContext {
+            layout: &layout,
+            images: &images,
+            sources: &[],
+        };
+        let mut element = LayoutElement {
+            id: "rect-1".into(),
+            kind: "rect".into(),
+            width: 40.0,
+            height: 20.0,
+            fill: "#ffffff".into(),
+            border_color: "#143d30".into(),
+            border_width: 0.5,
+            radius: 2.0,
+            ..Default::default()
+        };
+
+        let html = render_layout_element(&element, &ctx);
+        assert!(html.contains("background:#ffffff;"));
+        assert!(html.contains("border:0.5pt solid #143d30;"));
+
+        element.fill = "transparent".into();
+        element.border_color = "none".into();
+        let html = render_layout_element(&element, &ctx);
+        assert!(!html.contains("background:"));
+        assert!(!html.contains("border:"));
+        assert!(html.contains("border-radius:2mm;"));
+
+        element.border_color = "#143d30".into();
+        element.border_width = 0.0;
+        let html = render_layout_element(&element, &ctx);
+        assert!(!html.contains("background:"));
+        assert!(!html.contains("border:"));
     }
 
     #[test]
