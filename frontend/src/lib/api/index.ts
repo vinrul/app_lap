@@ -102,10 +102,10 @@ export const reportsApi = {
       method: 'POST',
       body: JSON.stringify({ import_id: importId, content }),
     }),
-  preview: (periodId: string, importId: string, content: ReportContent) =>
+  preview: (periodId: string, importId: string, content: ReportContent, layout?: ReportLayout) =>
     request<{ html: string }>(`/periods/${periodId}/reports/preview`, {
       method: 'POST',
-      body: JSON.stringify({ import_id: importId, content }),
+      body: JSON.stringify({ import_id: importId, content, layout }),
     }),
   downloadUrl: (reportId: string) => `/api/reports/${reportId}/pdf`,
   previewUrl: (reportId: string) => `/api/reports/${reportId}/preview`,

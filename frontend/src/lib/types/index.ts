@@ -118,6 +118,8 @@ export interface LayoutPage {
 
 export interface ReportLayout {
   version: number
+  mode: 'report' | 'blank'
+  orientation: 'portrait' | 'landscape'
   pages: LayoutPage[]
 }
 

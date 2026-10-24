@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::shared::types::LabeledCount;
+use crate::{modules::reports::layout::ReportLayout, shared::types::LabeledCount};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -58,6 +58,7 @@ pub struct GenerateReportRequest {
 pub struct PreviewReportRequest {
     pub import_id: String,
     pub content: Option<ReportContent>,
+    pub layout: Option<ReportLayout>,
 }
 
 #[derive(Debug, Serialize)]

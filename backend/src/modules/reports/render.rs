@@ -7,7 +7,10 @@ use crate::{
     config::Config,
     modules::reports::{
         fonts, icons,
-        layout::{DesignSource, LayoutElement, ReportLayout, image_id_from_src, valid_id},
+        layout::{
+            DesignSource, LayoutElement, PAGE_HEIGHT_MM, PAGE_WIDTH_MM, ReportLayout,
+            image_id_from_src, valid_id,
+        },
         models::{GroupMetrics, ReportContent, ReportMetrics, RowSummary},
         shapes::{self, Geometry},
         sources::design_sources,
@@ -64,6 +67,9 @@ pub fn render_with_layout(
         images,
         sources: &sources,
     };
+    if layout.mode == "blank" {
+        return render_blank_document(config, metrics, layout, &ctx);
+    }
     let cover = render_cover(metrics, content, &ctx);
 
     let narkoba = page(
@@ -339,6 +345,45 @@ Data disusun dari {} baris laporan yang diimpor dari {}.",
         footer_left = escape_html(&footer_left),
         footer_right = escape_html(&footer_right),
         layer = layout_layer(1, ctx),
+    )
+}
+
+fn render_blank_document(
+    config: &Config,
+    metrics: &ReportMetrics,
+    layout: &ReportLayout,
+    ctx: &DesignContext,
+) -> String {
+    let landscape = layout.orientation == "landscape";
+    let (page_width, page_height) = if landscape {
+        (PAGE_HEIGHT_MM, PAGE_WIDTH_MM)
+    } else {
+        (PAGE_WIDTH_MM, PAGE_HEIGHT_MM)
+    };
+    let mut pages = String::new();
+    for page in &layout.pages {
+        pages.push_str(&format!(
+            "<div class=\"page blank-page\" data-page=\"{}\">{}</div>",
+            page.page,
+            layout_layer(page.page, ctx)
+        ));
+    }
+    let mut css = format!(
+        "{}{}{}",
+        fonts::face_css(),
+        REPORT_CSS.replace("__LOGO_DATA_URI__", logo_data_uri()),
+        block_css(layout)
+    );
+    css.push_str(&format!(
+        "\n@page {{ size: A4 {}; margin: 0; }}\nbody.blank-doc {{ background: #fff; }}\n.blank-page {{ width: {page_width}mm; height: {page_height}mm; padding: 0; display: block; }}\n",
+        if landscape { "landscape" } else { "portrait" }
+    ));
+    format!(
+        "<!doctype html><html lang=\"id\"><head><meta charset=\"utf-8\">\
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+<title>{} · {}</title><style>{css}</style></head><body class=\"blank-doc\">{pages}</body></html>",
+        escape_html(&config.app_name),
+        escape_html(&metrics.period_label)
     )
 }
 
@@ -2025,6 +2070,8 @@ mod tests {
         kpi_texts.insert("card-1-unit".to_string(), "pohon".to_string());
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![
                 crate::modules::reports::layout::PageLayout {
                     page: 1,
@@ -2070,6 +2117,8 @@ mod tests {
         let metrics = ReportMetrics::default();
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![crate::modules::reports::layout::PageLayout {
                 page: 2,
                 blocks: std::collections::BTreeMap::new(),
@@ -2226,10 +2275,71 @@ mod tests {
     }
 
     #[test]
+    fn renders_blank_document_with_orientation() {
+        let metrics = ReportMetrics::default();
+        let layout = ReportLayout {
+            version: 1,
+            mode: "blank".into(),
+            orientation: "landscape".into(),
+            pages: vec![
+                crate::modules::reports::layout::PageLayout {
+                    page: 1,
+                    blocks: std::collections::BTreeMap::new(),
+                    elements: vec![LayoutElement {
+                        id: "blank-text-1".into(),
+                        kind: "text".into(),
+                        x: 20.0,
+                        y: 20.0,
+                        width: 120.0,
+                        height: 30.0,
+                        text: "Halaman kosong satu".into(),
+                        ..Default::default()
+                    }],
+                },
+                crate::modules::reports::layout::PageLayout {
+                    page: 2,
+                    blocks: std::collections::BTreeMap::new(),
+                    elements: vec![LayoutElement {
+                        id: "blank-text-2".into(),
+                        kind: "text".into(),
+                        x: 20.0,
+                        y: 20.0,
+                        width: 120.0,
+                        height: 30.0,
+                        text: "Halaman kosong dua".into(),
+                        ..Default::default()
+                    }],
+                },
+            ],
+        };
+
+        let html = render_with_layout(
+            &metrics,
+            &ReportContent::default(),
+            &Config::test_config(),
+            &layout,
+            &HashMap::new(),
+        );
+        assert!(html.contains("body class=\"blank-doc\""));
+        assert!(html.contains("@page { size: A4 landscape; margin: 0; }"));
+        assert!(
+            html.contains(
+                ".blank-page { width: 297mm; height: 210mm; padding: 0; display: block; }"
+            )
+        );
+        assert_eq!(html.matches("class=\"page blank-page\"").count(), 2);
+        assert!(html.contains("Halaman kosong satu"));
+        assert!(html.contains("Halaman kosong dua"));
+        assert!(!html.contains("Berantas Narkoba"));
+    }
+
+    #[test]
     fn renders_text_vertical_alignment() {
         let metrics = ReportMetrics::default();
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![crate::modules::reports::layout::PageLayout {
                 page: 2,
                 blocks: std::collections::BTreeMap::new(),
@@ -2266,6 +2376,8 @@ mod tests {
         let metrics = ReportMetrics::default();
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![crate::modules::reports::layout::PageLayout {
                 page: 2,
                 blocks: std::collections::BTreeMap::new(),
@@ -2311,6 +2423,8 @@ mod tests {
         }];
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![crate::modules::reports::layout::PageLayout {
                 page: 2,
                 blocks: std::collections::BTreeMap::new(),
@@ -2358,6 +2472,8 @@ mod tests {
         let metrics = ReportMetrics::default();
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![crate::modules::reports::layout::PageLayout {
                 page: 2,
                 blocks: std::collections::BTreeMap::new(),
@@ -2414,6 +2530,8 @@ mod tests {
 
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![crate::modules::reports::layout::PageLayout {
                 page: 2,
                 blocks: std::collections::BTreeMap::new(),

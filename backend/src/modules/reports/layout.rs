@@ -9,11 +9,14 @@ pub const PAGE_COUNT: usize = 9;
 const MAX_ELEMENTS_PER_PAGE: usize = 80;
 const MAX_TEXT_CHARS: usize = 5000;
 const MAX_GRADIENT_COLORS: usize = 8;
+pub const MAX_BLANK_PAGES: usize = 30;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ReportLayout {
     pub version: u32,
+    pub mode: String,
+    pub orientation: String,
     pub pages: Vec<PageLayout>,
 }
 
@@ -184,37 +187,84 @@ impl Default for LayoutElement {
 
 impl ReportLayout {
     pub fn sanitize(self) -> Self {
-        let mut slots: Vec<Option<PageLayout>> = (0..PAGE_COUNT).map(|_| None).collect();
+        let mode = if self.mode.trim().eq_ignore_ascii_case("blank") {
+            "blank"
+        } else {
+            "report"
+        };
+        let orientation =
+            if mode == "blank" && self.orientation.trim().eq_ignore_ascii_case("landscape") {
+                "landscape"
+            } else {
+                "portrait"
+            };
+        let (page_width, page_height) = if orientation == "landscape" {
+            (PAGE_HEIGHT_MM, PAGE_WIDTH_MM)
+        } else {
+            (PAGE_WIDTH_MM, PAGE_HEIGHT_MM)
+        };
         let mut used_element_ids = HashSet::new();
 
-        for page in self.pages {
-            if page.page == 0 || page.page > PAGE_COUNT {
-                continue;
-            }
-            let index = page.page - 1;
-            if slots[index].is_some() {
-                continue;
-            }
-            slots[index] = Some(page.sanitize(&mut used_element_ids));
-        }
-
-        let pages = slots
-            .into_iter()
-            .enumerate()
-            .map(|(index, page)| {
-                page.unwrap_or_else(|| PageLayout {
-                    page: index + 1,
-                    ..PageLayout::default()
+        let pages = if mode == "blank" {
+            let mut source = self.pages;
+            source.sort_by_key(|page| page.page);
+            let mut pages = source
+                .into_iter()
+                .take(MAX_BLANK_PAGES)
+                .enumerate()
+                .map(|(index, mut page)| {
+                    page.page = index + 1;
+                    page.blocks.clear();
+                    page.sanitize(&mut used_element_ids, page_width, page_height)
                 })
-            })
-            .collect();
+                .collect::<Vec<_>>();
+            if pages.is_empty() {
+                pages.push(PageLayout {
+                    page: 1,
+                    ..PageLayout::default()
+                });
+            }
+            pages
+        } else {
+            let mut slots: Vec<Option<PageLayout>> = (0..PAGE_COUNT).map(|_| None).collect();
+            for page in self.pages {
+                if page.page == 0 || page.page > PAGE_COUNT {
+                    continue;
+                }
+                let index = page.page - 1;
+                if slots[index].is_some() {
+                    continue;
+                }
+                slots[index] = Some(page.sanitize(&mut used_element_ids, page_width, page_height));
+            }
+            slots
+                .into_iter()
+                .enumerate()
+                .map(|(index, page)| {
+                    page.unwrap_or_else(|| PageLayout {
+                        page: index + 1,
+                        ..PageLayout::default()
+                    })
+                })
+                .collect()
+        };
 
-        Self { version: 1, pages }
+        Self {
+            version: 1,
+            mode: mode.to_string(),
+            orientation: orientation.to_string(),
+            pages,
+        }
     }
 }
 
 impl PageLayout {
-    fn sanitize(self, used_element_ids: &mut HashSet<String>) -> Self {
+    fn sanitize(
+        self,
+        used_element_ids: &mut HashSet<String>,
+        page_width: f64,
+        page_height: f64,
+    ) -> Self {
         let page = self.page;
         let blocks = self
             .blocks
@@ -225,8 +275,8 @@ impl PageLayout {
                 }
                 let dx = clamp_num(block.dx, -1000.0, 1000.0, 0.0);
                 let dy = clamp_num(block.dy, -1000.0, 1000.0, 0.0);
-                let width = clamp_num(block.width, 0.0, PAGE_WIDTH_MM, 0.0);
-                let height = clamp_num(block.height, 0.0, PAGE_HEIGHT_MM, 0.0);
+                let width = clamp_num(block.width, 0.0, page_width, 0.0);
+                let height = clamp_num(block.height, 0.0, page_height, 0.0);
                 let background = optional_color(&block.background);
                 let border_color = optional_color(&block.border_color);
                 let border_width = clamp_num(block.border_width, 0.0, 20.0, 0.0);
@@ -276,7 +326,7 @@ impl PageLayout {
             .elements
             .into_iter()
             .take(MAX_ELEMENTS_PER_PAGE)
-            .filter_map(|element| element.sanitize(used_element_ids))
+            .filter_map(|element| element.sanitize(used_element_ids, page_width, page_height))
             .collect();
 
         Self {
@@ -288,7 +338,12 @@ impl PageLayout {
 }
 
 impl LayoutElement {
-    fn sanitize(mut self, used_ids: &mut HashSet<String>) -> Option<Self> {
+    fn sanitize(
+        mut self,
+        used_ids: &mut HashSet<String>,
+        page_width: f64,
+        page_height: f64,
+    ) -> Option<Self> {
         self.kind = self.kind.trim().to_ascii_lowercase();
         if !matches!(
             self.kind.as_str(),
@@ -317,7 +372,7 @@ impl LayoutElement {
             self.group.clear();
         }
 
-        let (default_width, default_height) = match self.kind.as_str() {
+        let (default_width, default_height): (f64, f64) = match self.kind.as_str() {
             "image" => (60.0, 45.0),
             "rect" => (40.0, 20.0),
             "table" => (120.0, 60.0),
@@ -326,10 +381,15 @@ impl LayoutElement {
             "icon" => (14.0, 14.0),
             _ => (60.0, 15.0),
         };
-        self.width = clamp_num(self.width, 5.0, PAGE_WIDTH_MM, default_width);
-        self.height = clamp_num(self.height, 3.0, PAGE_HEIGHT_MM, default_height);
-        self.x = clamp_num(self.x, 0.0, PAGE_WIDTH_MM - self.width, 10.0);
-        self.y = clamp_num(self.y, 0.0, PAGE_HEIGHT_MM - self.height, 10.0);
+        self.width = clamp_num(self.width, 5.0, page_width, default_width.min(page_width));
+        self.height = clamp_num(
+            self.height,
+            3.0,
+            page_height,
+            default_height.min(page_height),
+        );
+        self.x = clamp_num(self.x, 0.0, page_width - self.width, 10.0);
+        self.y = clamp_num(self.y, 0.0, page_height - self.height, 10.0);
         self.rotation = clamp_num(self.rotation, -360.0, 360.0, 0.0);
         self.opacity = clamp_num(self.opacity, 0.0, 1.0, 1.0);
         self.z = self.z.clamp(-100, 1000);
@@ -701,6 +761,8 @@ mod tests {
     fn sanitizes_bounds_ids_and_colors() {
         let layout = ReportLayout {
             version: 0,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![PageLayout {
                 page: 2,
                 blocks: BTreeMap::from([
@@ -780,6 +842,8 @@ mod tests {
     fn keeps_transparent_rect_fill_and_border() {
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![PageLayout {
                 page: 2,
                 blocks: BTreeMap::new(),
@@ -818,6 +882,8 @@ mod tests {
     fn normalizes_rect_shapes() {
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![PageLayout {
                 page: 2,
                 blocks: BTreeMap::new(),
@@ -859,6 +925,8 @@ mod tests {
         }
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![PageLayout {
                 page: 2,
                 blocks: BTreeMap::new(),
@@ -915,9 +983,75 @@ mod tests {
     }
 
     #[test]
+    fn sanitizes_blank_documents() {
+        let mut many_pages = Vec::new();
+        for index in 1..=40 {
+            many_pages.push(PageLayout {
+                page: index,
+                ..PageLayout::default()
+            });
+        }
+        let layout = ReportLayout {
+            version: 1,
+            mode: "blank".into(),
+            orientation: "landscape".into(),
+            pages: vec![
+                PageLayout {
+                    page: 5,
+                    blocks: BTreeMap::from([(
+                        "page-5-head".to_string(),
+                        BlockLayout {
+                            hidden: true,
+                            ..Default::default()
+                        },
+                    )]),
+                    elements: vec![LayoutElement {
+                        id: "wide-rect".into(),
+                        kind: "rect".into(),
+                        x: 290.0,
+                        y: 195.0,
+                        width: 80.0,
+                        height: 40.0,
+                        ..Default::default()
+                    }],
+                },
+                PageLayout {
+                    page: 2,
+                    ..PageLayout::default()
+                },
+            ],
+        };
+
+        let sanitized = layout.sanitize();
+        assert_eq!(sanitized.mode, "blank");
+        assert_eq!(sanitized.orientation, "landscape");
+        assert_eq!(sanitized.pages.len(), 2);
+        assert_eq!(sanitized.pages[0].page, 1);
+        assert!(sanitized.pages[0].blocks.is_empty());
+        assert_eq!(sanitized.pages[1].page, 2);
+        assert!(sanitized.pages[1].blocks.is_empty());
+        let element = &sanitized.pages[1].elements[0];
+        assert_eq!(element.width, 80.0);
+        assert!(element.x <= 297.0 - element.width + 0.001);
+        assert!(element.y <= 210.0 - element.height + 0.001);
+
+        let limited = ReportLayout {
+            version: 1,
+            mode: "blank".into(),
+            orientation: "portrait".into(),
+            pages: many_pages,
+        }
+        .sanitize();
+        assert_eq!(limited.pages.len(), MAX_BLANK_PAGES);
+        assert_eq!(limited.pages[MAX_BLANK_PAGES - 1].page, MAX_BLANK_PAGES);
+    }
+
+    #[test]
     fn sanitizes_data_binding_keys() {
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![PageLayout {
                 page: 2,
                 blocks: BTreeMap::new(),
@@ -965,6 +1099,8 @@ mod tests {
     fn sanitizes_card_elements() {
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![PageLayout {
                 page: 2,
                 blocks: BTreeMap::new(),
@@ -1005,6 +1141,8 @@ mod tests {
     fn sanitizes_text_font_family() {
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![PageLayout {
                 page: 2,
                 blocks: BTreeMap::new(),
@@ -1041,6 +1179,8 @@ mod tests {
     fn sanitizes_text_vertical_alignment() {
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![PageLayout {
                 page: 2,
                 blocks: BTreeMap::new(),
@@ -1077,6 +1217,8 @@ mod tests {
     fn sanitizes_icon_elements() {
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![PageLayout {
                 page: 2,
                 blocks: BTreeMap::new(),
@@ -1111,6 +1253,8 @@ mod tests {
     fn accepts_horizontal_bar_chart_type() {
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![PageLayout {
                 page: 2,
                 blocks: BTreeMap::new(),
@@ -1148,6 +1292,8 @@ mod tests {
         };
         let layout = ReportLayout {
             version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
             pages: vec![PageLayout {
                 page: 2,
                 blocks: BTreeMap::new(),

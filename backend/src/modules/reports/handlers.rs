@@ -279,6 +279,7 @@ pub async fn preview_render(
         &period_id,
         &input.import_id,
         input.content.as_ref(),
+        input.layout.as_ref(),
     )
     .await?;
     Ok(Json(PreviewResponse { html }))

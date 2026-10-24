@@ -14,6 +14,7 @@
     Eye,
     EyeOff,
     FileDown,
+    FilePlus2,
     ImagePlus,
     Layers,
     Link2,
@@ -83,13 +84,12 @@
     groupStarts?: { id: string; x: number; y: number }[]
   }
 
-  const PAGE_WIDTH = 210
-  const PAGE_HEIGHT = 297
-  const PAGE_WIDTH_PX = 793.7
-  const PAGE_HEIGHT_PX = 1122.5
+  const PAGE_PORTRAIT_WIDTH_PX = 793.7
+  const PAGE_PORTRAIT_HEIGHT_PX = 1122.5
   const MIN_ZOOM = 0.25
   const MAX_ZOOM = 2
   const MAX_HISTORY = 40
+  const MAX_BLANK_PAGES = 30
 
   let {
     periodId,
@@ -102,8 +102,8 @@
   let iframeEl = $state<HTMLIFrameElement | null>(null)
   let canvasAreaEl = $state<HTMLDivElement | null>(null)
   let iframeHtml = $state('')
-  let canvasWidth = $state(PAGE_WIDTH_PX)
-  let canvasHeight = $state(PAGE_HEIGHT_PX)
+  let canvasWidth = $state(PAGE_PORTRAIT_WIDTH_PX)
+  let canvasHeight = $state(PAGE_PORTRAIT_HEIGHT_PX)
   let canvasZoom = $state(1)
   let fitZoom = $state(1)
   let zoomOverride = $state<number | null>(null)
@@ -112,6 +112,13 @@
 
   let content = $state<ReportContent>({ ...emptyContent })
   let layout = $state<ReportLayout>(emptyLayout())
+  const isBlank = $derived(layout.mode === 'blank')
+  const PAGE_WIDTH = $derived(layout.orientation === 'landscape' ? 297 : 210)
+  const PAGE_HEIGHT = $derived(layout.orientation === 'landscape' ? 210 : 297)
+  const PAGE_WIDTH_PX = $derived((PAGE_WIDTH / 25.4) * 96)
+  const PAGE_HEIGHT_PX = $derived((PAGE_HEIGHT / 25.4) * 96)
+  let blankOrientation = $state<'portrait' | 'landscape'>('portrait')
+  let blankPageCount = $state(1)
   let sources = $state<DesignSource[]>([])
   let savedJson = $state('')
   let updatedAt = $state<string | null>(null)
@@ -138,13 +145,14 @@
   let iconCategory = $state('Semua')
 
   let loadedKey = ''
+  let canvasRequest = 0
   let boundDoc: Document | null = null
   let drag: DragState | null = null
   const defaultTexts = new Map<string, string>()
 
   const hasImport = $derived(Boolean(selectedImportId))
   const dirty = $derived(JSON.stringify(layout) !== savedJson)
-  const pageNumbers = Array.from({ length: 9 }, (_, index) => index + 1)
+  const pageNumbers = $derived(Array.from({ length: layout.pages.length }, (_, index) => index + 1))
   const zoomPercent = $derived(Math.round((zoomOverride ?? fitZoom) * 100))
   const atFitZoom = $derived(zoomOverride === null)
   const canZoomOut = $derived((zoomOverride ?? fitZoom) > MIN_ZOOM + 0.001)
@@ -222,9 +230,17 @@
     return () => observer.disconnect()
   })
 
+  $effect(() => {
+    void PAGE_WIDTH_PX
+    void PAGE_HEIGHT_PX
+    untrack(() => updateCanvasSize())
+  })
+
   function emptyLayout(): ReportLayout {
     return {
       version: 1,
+      mode: 'report',
+      orientation: 'portrait',
       pages: Array.from({ length: 9 }, (_, index) => ({
         page: index + 1,
         blocks: {},
@@ -234,8 +250,29 @@
   }
 
   function normalizeLayout(input: ReportLayout | null | undefined): ReportLayout {
+    const mode = input?.mode === 'blank' ? 'blank' : 'report'
+    const orientation =
+      mode === 'blank' && input?.orientation === 'landscape' ? 'landscape' : 'portrait'
+    if (mode === 'blank') {
+      const source = [...(input?.pages ?? [])]
+        .sort((a, b) => a.page - b.page)
+        .slice(0, MAX_BLANK_PAGES)
+      const pages = source.map((page, index) => ({
+        page: index + 1,
+        blocks: {},
+        elements: (page.elements ?? []).map((element) => ({ ...element })),
+      }))
+      return {
+        version: 1,
+        mode,
+        orientation,
+        pages: pages.length ? pages : [{ page: 1, blocks: {}, elements: [] }],
+      }
+    }
     return {
       version: 1,
+      mode: 'report',
+      orientation: 'portrait',
       pages: Array.from({ length: 9 }, (_, index) => {
         const found = input?.pages?.find((page) => page.page === index + 1)
         return {
@@ -458,6 +495,7 @@
       selected = null
       checkedIds = []
       applyLayoutToDom()
+      void refreshCanvasStructure()
       toast.success('Template diterapkan ke versi impor ini.')
     } catch (caught) {
       toast.error(errorMessage(caught))
@@ -604,12 +642,24 @@
       savedJson = JSON.stringify(layout)
       updatedAt = layoutView.updated_at
       updatedBy = layoutView.updated_by
-      const preview = await reportsApi.preview(periodId, selectedImportId, content)
+      const preview = await reportsApi.preview(periodId, selectedImportId, content, layout)
       iframeHtml = preview.html
     } catch (caught) {
       error = errorMessage(caught)
     } finally {
       loading = false
+    }
+  }
+
+  async function refreshCanvasStructure(): Promise<void> {
+    if (!selectedImportId) return
+    const request = ++canvasRequest
+    try {
+      const preview = await reportsApi.preview(periodId, selectedImportId, content, layout)
+      if (request !== canvasRequest) return
+      iframeHtml = preview.html
+    } catch (caught) {
+      if (request === canvasRequest) toast.error(errorMessage(caught))
     }
   }
 
@@ -1849,20 +1899,117 @@
     pushSnapshot(cloneLayout(layout))
   }
 
+  function layoutStructure(value: ReportLayout): string {
+    return `${value.mode}:${value.orientation}:${value.pages.length}`
+  }
+
   function undo() {
     if (!history.length) return
     redoStack.push(cloneLayout(layout))
-    layout = history.pop()!
+    const next = history.pop()!
+    const needsRefresh = layoutStructure(next) !== layoutStructure(layout)
+    layout = next
     selected = null
     applyLayoutToDom()
+    if (needsRefresh) void refreshCanvasStructure()
   }
 
   function redo() {
     if (!redoStack.length) return
     history.push(cloneLayout(layout))
-    layout = redoStack.pop()!
+    const next = redoStack.pop()!
+    const needsRefresh = layoutStructure(next) !== layoutStructure(layout)
+    layout = next
     selected = null
     applyLayoutToDom()
+    if (needsRefresh) void refreshCanvasStructure()
+  }
+
+  function startBlankDocument() {
+    const pages = Math.round(clamp(blankPageCount, 1, MAX_BLANK_PAGES))
+    if (
+      !window.confirm(
+        `Mulai dokumen kosong ${blankOrientation === 'landscape' ? 'landscape' : 'portrait'} dengan ${pages} halaman? Desain laporan saat ini akan diganti (bisa di-undo).`,
+      )
+    ) {
+      return
+    }
+    pushHistory()
+    layout = {
+      version: 1,
+      mode: 'blank',
+      orientation: blankOrientation,
+      pages: Array.from({ length: pages }, (_, index) => ({
+        page: index + 1,
+        blocks: {},
+        elements: [],
+      })),
+    }
+    currentPage = 1
+    selected = null
+    checkedIds = []
+    void refreshCanvasStructure()
+  }
+
+  function setDocumentOrientation(orientation: 'portrait' | 'landscape') {
+    if (!isBlank) {
+      blankOrientation = orientation
+      return
+    }
+    if (layout.orientation === orientation) return
+    pushHistory()
+    layout.orientation = orientation
+    for (const page of layout.pages) {
+      for (const element of page.elements) clampElement(element)
+    }
+    void refreshCanvasStructure()
+  }
+
+  function addBlankPage() {
+    if (!isBlank || layout.pages.length >= MAX_BLANK_PAGES) return
+    pushHistory()
+    layout.pages = [
+      ...layout.pages,
+      { page: layout.pages.length + 1, blocks: {}, elements: [] },
+    ]
+    currentPage = layout.pages.length
+    selected = null
+    checkedIds = []
+    void refreshCanvasStructure()
+  }
+
+  function removeBlankPage() {
+    if (!isBlank || layout.pages.length <= 1) return
+    const page = layout.pages.find((item) => item.page === currentPage)
+    if (
+      page?.elements.length &&
+      !window.confirm('Halaman ini berisi objek. Hapus halaman beserta isinya?')
+    ) {
+      return
+    }
+    pushHistory()
+    layout.pages = layout.pages
+      .filter((item) => item.page !== currentPage)
+      .map((item, index) => ({ ...item, page: index + 1 }))
+    if (currentPage > layout.pages.length) currentPage = layout.pages.length
+    selected = null
+    checkedIds = []
+    void refreshCanvasStructure()
+  }
+
+  function backToReport() {
+    if (!window.confirm('Kembali ke laporan 9 halaman? Halaman blank saat ini akan diganti.')) return
+    pushHistory()
+    layout = normalizeLayout({
+      version: 1,
+      mode: 'report',
+      orientation: 'portrait',
+      pages: layout.pages,
+    })
+    currentPage = 1
+    selected = null
+    checkedIds = []
+    void refreshCanvasStructure()
   }
 
   function goToPage(page: number) {
@@ -2505,6 +2652,7 @@
     if (!selectedImportId) return false
     saving = true
     error = ''
+    const beforeStructure = layoutStructure(layout)
     try {
       const view = await designApi.saveLayout(periodId, selectedImportId, layout)
       const previous = selected
@@ -2518,6 +2666,7 @@
         selected = previous
       }
       applyLayoutToDom()
+      if (layoutStructure(layout) !== beforeStructure) void refreshCanvasStructure()
       if (!silent) toast.success('Layout desain tersimpan.')
       return true
     } catch (caught) {
@@ -2538,7 +2687,7 @@
     }
     previewing = true
     try {
-      const result = await reportsApi.preview(periodId, selectedImportId, content)
+      const result = await reportsApi.preview(periodId, selectedImportId, content, layout)
       const url = URL.createObjectURL(new Blob([result.html], { type: 'text/html' }))
       target.location.href = url
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
@@ -3492,6 +3641,50 @@
       <section class="card overflow-hidden">
         <div class="panel-heading">
           <div>
+            <span class="eyebrow">DOKUMEN</span>
+            <h2 class="panel-title mt-1">Halaman & orientasi</h2>
+          </div>
+          <FilePlus2 size={18} class="text-gold-500" />
+        </div>
+        <div class="space-y-3 p-4">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="badge {isBlank ? 'badge-success' : 'badge-neutral'}">{isBlank ? 'Blank' : 'Laporan 9 halaman'}</span>
+            {#if isBlank}
+              <span class="text-[10px] text-ink-muted">{layout.pages.length} halaman · A4 {layout.orientation === 'landscape' ? 'landscape' : 'portrait'}</span>
+            {/if}
+          </div>
+          <label class="block">
+            <span class="label">Orientasi</span>
+            <select class="input py-1.5 text-xs" data-doc-orientation
+              value={isBlank ? layout.orientation : blankOrientation}
+              onchange={(event) => setDocumentOrientation((event.currentTarget as HTMLSelectElement).value as 'portrait' | 'landscape')}>
+              <option value="portrait">Portrait (A4)</option>
+              <option value="landscape">Landscape (A4)</option>
+            </select>
+          </label>
+          {#if isBlank}
+            <div class="flex flex-wrap gap-2">
+              <span data-blank-add-page><Button variant="secondary" size="sm" disabled={layout.pages.length >= MAX_BLANK_PAGES} onclick={addBlankPage}><Plus size={13} /> Tambah halaman</Button></span>
+              <span data-blank-remove-page><Button variant="secondary" size="sm" disabled={layout.pages.length <= 1} onclick={removeBlankPage}><Minus size={13} /> Kurangi halaman</Button></span>
+            </div>
+            <span data-blank-back><Button variant="ghost" size="sm" onclick={backToReport}>Kembali ke laporan</Button></span>
+          {:else}
+            <label class="block">
+              <span class="label">Jumlah halaman awal</span>
+              <input class="input py-1.5 text-xs" type="number" min="1" max={MAX_BLANK_PAGES}
+                value={blankPageCount}
+                data-blank-page-count
+                oninput={(event) => (blankPageCount = Math.round(clamp(numberValue((event.currentTarget as HTMLInputElement).value), 1, MAX_BLANK_PAGES)))} />
+            </label>
+            <span data-blank-start><Button variant="secondary" size="sm" onclick={startBlankDocument}><FilePlus2 size={13} /> Mulai blank</Button></span>
+          {/if}
+          <p class="text-[10px] leading-relaxed text-ink-muted">Dokumen blank tidak memakai blok laporan otomatis. Simpan sebagai template untuk dipakai lagi di periode berikutnya.</p>
+        </div>
+      </section>
+
+      <section class="card overflow-hidden">
+        <div class="panel-heading">
+          <div>
             <span class="eyebrow">TEMPLATE DESAIN</span>
             <h2 class="panel-title mt-1">Gunakan ulang tata letak</h2>
           </div>
@@ -3516,7 +3709,7 @@
           {:else}
             <p class="text-xs text-ink-muted">Belum ada template tersimpan.</p>
           {/if}
-          <p class="text-[10px] leading-relaxed text-ink-muted">Template menyimpan semua halaman beserta gambar. Menerapkannya akan mengganti desain versi impor ini (bisa di-undo).</p>
+          <p class="text-[10px] leading-relaxed text-ink-muted">Template menyimpan semua halaman, mode blank/laporan, orientasi, dan gambar. Menerapkannya akan mengganti desain versi impor ini (bisa di-undo).</p>
         </div>
       </section>
 

@@ -519,6 +519,15 @@ pub async fn load_design(
     import_id: &str,
 ) -> ApiResult<(ReportLayout, HashMap<String, String>)> {
     let layout = get_layout(db, period_id, import_id).await?.layout;
+    let images = load_images(db, period_id, &layout).await?;
+    Ok((layout, images))
+}
+
+async fn load_images(
+    db: &SqlitePool,
+    period_id: &str,
+    layout: &ReportLayout,
+) -> ApiResult<HashMap<String, String>> {
     let mut ids = HashSet::new();
     for page in &layout.pages {
         for element in &page.elements {
@@ -559,7 +568,7 @@ pub async fn load_design(
         );
     }
 
-    Ok((layout, images))
+    Ok(images)
 }
 
 pub async fn metrics_for(
@@ -592,13 +601,21 @@ pub async fn preview_html(
     period_id: &str,
     import_id: &str,
     content_override: Option<&ReportContent>,
+    layout_override: Option<&ReportLayout>,
 ) -> ApiResult<String> {
     let metrics = metrics_for(db, config, period_id, Some(import_id)).await?;
     let content = match content_override {
         Some(content) => content.clone(),
         None => get_draft(db, period_id, import_id).await?.content,
     };
-    let (layout, images) = load_design(db, period_id, import_id).await?;
+    let (layout, images) = match layout_override {
+        Some(layout) => {
+            let layout = layout.clone().sanitize();
+            let images = load_images(db, period_id, &layout).await?;
+            (layout, images)
+        }
+        None => load_design(db, period_id, import_id).await?,
+    };
     Ok(render::render_with_layout(
         &metrics, &content, config, &layout, &images,
     ))
