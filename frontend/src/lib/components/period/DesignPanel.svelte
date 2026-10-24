@@ -48,6 +48,7 @@
   import { emptyContent } from '../../utils/constants'
   import { formatDateTime } from '../../utils/format'
   import { toast } from '../../stores/toast.svelte'
+  import { dialog } from '../../stores/dialog.svelte'
   import Button from '../ui/Button.svelte'
   import EmptyState from '../ui/EmptyState.svelte'
   import Modal from '../ui/Modal.svelte'
@@ -482,7 +483,12 @@
     if (!selectedImportId || !selectedTemplateId) return
     const template = templates.find((item) => item.id === selectedTemplateId)
     const label = template?.name ?? 'ini'
-    if (!window.confirm(`Terapkan template "${label}"? Desain saat ini akan diganti.`)) return
+    const confirmed = await dialog.confirm({
+      title: 'Terapkan template?',
+      message: `Desain saat ini akan diganti dengan template "${label}". Perubahan masih bisa di-undo.`,
+      confirmLabel: 'Terapkan',
+    })
+    if (!confirmed) return
     templateBusy = true
     const before = cloneLayout(layout)
     try {
@@ -507,7 +513,13 @@
   async function deleteSelectedTemplate(): Promise<void> {
     if (!selectedTemplateId) return
     const template = templates.find((item) => item.id === selectedTemplateId)
-    if (!window.confirm(`Hapus template "${template?.name ?? 'ini'}"?`)) return
+    const confirmed = await dialog.confirm({
+      title: 'Hapus template?',
+      message: `Template "${template?.name ?? 'ini'}" akan dihapus secara permanen.`,
+      confirmLabel: 'Hapus',
+      tone: 'danger',
+    })
+    if (!confirmed) return
     templateBusy = true
     try {
       await designApi.deleteTemplate(selectedTemplateId)
@@ -1925,15 +1937,14 @@
     if (needsRefresh) void refreshCanvasStructure()
   }
 
-  function startBlankDocument() {
+  async function startBlankDocument() {
     const pages = Math.round(clamp(blankPageCount, 1, MAX_BLANK_PAGES))
-    if (
-      !window.confirm(
-        `Mulai dokumen kosong ${blankOrientation === 'landscape' ? 'landscape' : 'portrait'} dengan ${pages} halaman? Desain laporan saat ini akan diganti (bisa di-undo).`,
-      )
-    ) {
-      return
-    }
+    const confirmed = await dialog.confirm({
+      title: 'Mulai dokumen kosong?',
+      message: `Dokumen ${blankOrientation === 'landscape' ? 'landscape' : 'portrait'} dengan ${pages} halaman akan menggantikan desain laporan saat ini. Perubahan bisa di-undo.`,
+      confirmLabel: 'Mulai blank',
+    })
+    if (!confirmed) return
     pushHistory()
     layout = {
       version: 1,
@@ -1978,14 +1989,17 @@
     void refreshCanvasStructure()
   }
 
-  function removeBlankPage() {
+  async function removeBlankPage() {
     if (!isBlank || layout.pages.length <= 1) return
     const page = layout.pages.find((item) => item.page === currentPage)
-    if (
-      page?.elements.length &&
-      !window.confirm('Halaman ini berisi objek. Hapus halaman beserta isinya?')
-    ) {
-      return
+    if (page?.elements.length) {
+      const confirmed = await dialog.confirm({
+        title: 'Hapus halaman?',
+        message: 'Halaman ini berisi objek. Semua objek pada halaman tersebut ikut dihapus.',
+        confirmLabel: 'Hapus halaman',
+        tone: 'danger',
+      })
+      if (!confirmed) return
     }
     pushHistory()
     layout.pages = layout.pages
@@ -1997,8 +2011,14 @@
     void refreshCanvasStructure()
   }
 
-  function backToReport() {
-    if (!window.confirm('Kembali ke laporan 9 halaman? Halaman blank saat ini akan diganti.')) return
+  async function backToReport() {
+    const confirmed = await dialog.confirm({
+      title: 'Kembali ke laporan?',
+      message: 'Halaman blank saat ini akan diganti dengan laporan 9 halaman. Perubahan bisa di-undo.',
+      confirmLabel: 'Kembali ke laporan',
+      tone: 'danger',
+    })
+    if (!confirmed) return
     pushHistory()
     layout = normalizeLayout({
       version: 1,
@@ -2263,8 +2283,16 @@
     }
   }
 
-  function addImageUrl() {
-    const value = window.prompt('URL gambar (http atau https):')
+  async function addImageUrl() {
+    const value = await dialog.prompt({
+      title: 'Tambah gambar dari URL',
+      message: 'Masukkan tautan langsung ke gambar yang dapat diakses publik.',
+      inputLabel: 'URL gambar',
+      inputPlaceholder: 'https://contoh.com/gambar.png',
+      inputType: 'url',
+      inputHint: 'Hanya URL http atau https yang didukung, sebaiknya berformat PNG atau JPEG.',
+      confirmLabel: 'Tambahkan',
+    })
     if (!value) return
     try {
       const url = new URL(value)

@@ -12,6 +12,7 @@
   import UsersPage from './routes/users/UsersPage.svelte'
   import AppShell from './lib/components/layout/AppShell.svelte'
   import Toast from './lib/components/ui/Toast.svelte'
+  import ConfirmDialog from './lib/components/ui/ConfirmDialog.svelte'
   import Button from './lib/components/ui/Button.svelte'
   import EmptyState from './lib/components/ui/EmptyState.svelte'
 
@@ -107,3 +108,4 @@
 {/if}
 
 <Toast />
+<ConfirmDialog />
