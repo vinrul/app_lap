@@ -8,6 +8,7 @@ pub const PAGE_HEIGHT_MM: f64 = 297.0;
 pub const PAGE_COUNT: usize = 9;
 const MAX_ELEMENTS_PER_PAGE: usize = 80;
 const MAX_TEXT_CHARS: usize = 5000;
+const MAX_GRADIENT_COLORS: usize = 8;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -60,6 +61,9 @@ pub struct LayoutElement {
     pub object_fit: String,
     pub shape: String,
     pub fill: String,
+    pub fill_mode: String,
+    pub gradient_angle: f64,
+    pub gradient_colors: Vec<String>,
     pub border_color: String,
     pub border_width: f64,
     pub radius: f64,
@@ -135,6 +139,9 @@ impl Default for LayoutElement {
             object_fit: String::new(),
             shape: String::new(),
             fill: String::new(),
+            fill_mode: String::new(),
+            gradient_angle: 0.0,
+            gradient_colors: Vec::new(),
             border_color: String::new(),
             border_width: 0.0,
             radius: 0.0,
@@ -291,6 +298,9 @@ impl LayoutElement {
         }
         if self.kind != "rect" {
             self.shape.clear();
+            self.fill_mode.clear();
+            self.gradient_angle = 0.0;
+            self.gradient_colors.clear();
         }
 
         if !valid_id(&self.id) || !used_ids.insert(self.id.clone()) {
@@ -341,6 +351,21 @@ impl LayoutElement {
                 self.alt.clear();
                 self.shape = super::shapes::normalize(&self.shape);
                 self.fill = normalize_transparent(safe_color(&self.fill, "#ffffff"));
+                self.fill_mode = match self.fill_mode.trim().to_ascii_lowercase().as_str() {
+                    "linear" => "linear".to_string(),
+                    "radial" => "radial".to_string(),
+                    _ => "solid".to_string(),
+                };
+                self.gradient_angle = clamp_num(self.gradient_angle, -360.0, 360.0, 90.0);
+                self.gradient_colors = self
+                    .gradient_colors
+                    .iter()
+                    .take(MAX_GRADIENT_COLORS)
+                    .map(|color| normalize_transparent(safe_color(color, "#ffffff")))
+                    .collect();
+                if self.gradient_colors.len() < 2 {
+                    self.fill_mode = "solid".to_string();
+                }
                 self.border_color =
                     normalize_transparent(safe_color(&self.border_color, "#143d30"));
                 self.border_width = clamp_num(self.border_width, 0.0, 20.0, 0.5);
@@ -824,6 +849,69 @@ mod tests {
         assert_eq!(page.elements[0].shape, "star");
         assert_eq!(page.elements[1].shape, "rect");
         assert!(page.elements[2].shape.is_empty());
+    }
+
+    #[test]
+    fn sanitizes_gradient_fills() {
+        let mut many_colors = Vec::new();
+        for index in 0..12 {
+            many_colors.push(format!("#00000{}", index % 10));
+        }
+        let layout = ReportLayout {
+            version: 1,
+            pages: vec![PageLayout {
+                page: 2,
+                blocks: BTreeMap::new(),
+                elements: vec![
+                    LayoutElement {
+                        id: "rect-gradient".into(),
+                        kind: "rect".into(),
+                        fill_mode: "Linear".into(),
+                        gradient_angle: 120.0,
+                        gradient_colors: vec!["#143d30".into(), "#b8894b".into(), "#3f765d".into()],
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "rect-one-color".into(),
+                        kind: "rect".into(),
+                        fill_mode: "radial".into(),
+                        gradient_colors: vec!["#143d30".into()],
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "rect-bad-color".into(),
+                        kind: "rect".into(),
+                        fill_mode: "radial".into(),
+                        gradient_colors: vec![
+                            "#fff".into(),
+                            "red;display:none".into(),
+                            "transparent".into(),
+                        ],
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "rect-many-colors".into(),
+                        kind: "rect".into(),
+                        fill_mode: "linear".into(),
+                        gradient_angle: 999.0,
+                        gradient_colors: many_colors,
+                        ..Default::default()
+                    },
+                ],
+            }],
+        };
+
+        let sanitized = layout.sanitize();
+        let page = &sanitized.pages[1];
+        assert_eq!(page.elements[0].fill_mode, "linear");
+        assert_eq!(page.elements[0].gradient_angle, 120.0);
+        assert_eq!(page.elements[0].gradient_colors.len(), 3);
+        assert_eq!(page.elements[1].fill_mode, "solid");
+        assert_eq!(page.elements[2].fill_mode, "radial");
+        assert_eq!(page.elements[2].gradient_colors[1], "#ffffff");
+        assert_eq!(page.elements[2].gradient_colors[2], "transparent");
+        assert_eq!(page.elements[3].gradient_colors.len(), MAX_GRADIENT_COLORS);
+        assert_eq!(page.elements[3].gradient_angle, 360.0);
     }
 
     #[test]

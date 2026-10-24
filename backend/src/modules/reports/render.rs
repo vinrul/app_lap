@@ -799,12 +799,96 @@ fn is_transparent_color(value: &str) -> bool {
         || value.eq_ignore_ascii_case("none")
 }
 
-fn render_shape_element(element: &LayoutElement, style: &str) -> String {
-    let fill = if is_transparent_color(&element.fill) {
-        "none".to_string()
-    } else {
-        escape_html(&element.fill)
+fn gradient_stops(element: &LayoutElement) -> Option<Vec<(String, f64)>> {
+    if element.gradient_colors.len() < 2 {
+        return None;
+    }
+    let last = (element.gradient_colors.len() - 1) as f64;
+    Some(
+        element
+            .gradient_colors
+            .iter()
+            .enumerate()
+            .map(|(index, color)| (escape_html(color), index as f64 / last * 100.0))
+            .collect(),
+    )
+}
+
+fn gradient_css(element: &LayoutElement) -> Option<String> {
+    if element.fill_mode == "solid" {
+        return None;
+    }
+    let stops = gradient_stops(element)?
+        .iter()
+        .map(|(color, offset)| format!("{color} {offset:.1}%"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match element.fill_mode.as_str() {
+        "linear" => Some(format!(
+            "linear-gradient({}deg, {stops})",
+            element.gradient_angle
+        )),
+        "radial" => Some(format!("radial-gradient(circle, {stops})")),
+        _ => None,
+    }
+}
+
+fn linear_gradient_coords(angle: f64, width: f64, height: f64) -> (f64, f64, f64, f64) {
+    let radians = angle.to_radians();
+    let mut dx = radians.sin() / width.max(0.001);
+    let mut dy = -radians.cos() / height.max(0.001);
+    let length = (dx * dx + dy * dy).sqrt();
+    if length > 0.0 {
+        dx /= length;
+        dy /= length;
+    }
+    let span = (dx.abs() + dy.abs()) * 0.5;
+    (
+        0.5 - dx * span,
+        0.5 - dy * span,
+        0.5 + dx * span,
+        0.5 + dy * span,
+    )
+}
+
+fn shape_fill(element: &LayoutElement) -> (String, String) {
+    if is_transparent_color(&element.fill) {
+        return (String::new(), "none".to_string());
+    }
+    let Some(stops) = gradient_stops(element) else {
+        return (String::new(), escape_html(&element.fill));
     };
+    if element.fill_mode == "solid" {
+        return (String::new(), escape_html(&element.fill));
+    }
+    let stop_markup = stops
+        .iter()
+        .map(|(color, offset)| format!("<stop offset=\"{offset:.1}%\" stop-color=\"{color}\"/>"))
+        .collect::<String>();
+    let raw_id = format!("grad-{}", element.id);
+    let gradient = match element.fill_mode.as_str() {
+        "linear" => {
+            let (x1, y1, x2, y2) =
+                linear_gradient_coords(element.gradient_angle, element.width, element.height);
+            format!(
+                "<linearGradient id=\"{}\" x1=\"{x1:.4}\" y1=\"{y1:.4}\" x2=\"{x2:.4}\" y2=\"{y2:.4}\">{stop_markup}</linearGradient>",
+                escape_html(&raw_id)
+            )
+        }
+        "radial" => format!(
+            "<radialGradient id=\"{}\" cx=\"50%\" cy=\"50%\" r=\"50%\">{stop_markup}</radialGradient>",
+            escape_html(&raw_id)
+        ),
+        _ => return (String::new(), escape_html(&element.fill)),
+    };
+    (
+        format!("<defs>{gradient}</defs>"),
+        format!("url(#{})", escape_html(&raw_id)),
+    )
+}
+
+fn render_shape_element(element: &LayoutElement, style: &str) -> String {
+    let (defs, fill) = shape_fill(element);
     let mut stroke = String::new();
     if element.border_width > 0.0 && !is_transparent_color(&element.border_color) {
         stroke = format!(
@@ -823,11 +907,10 @@ fn render_shape_element(element: &LayoutElement, style: &str) -> String {
         }
     };
     format!(
-        "<div class=\"layout-element layout-rect layout-shape\" data-element-id=\"{}\" data-shape=\"{}\" style=\"{}\"><svg class=\"layout-shape-svg\" viewBox=\"0 0 100 100\" preserveAspectRatio=\"none\" xmlns=\"http://www.w3.org/2000/svg\">{}</svg></div>",
+        "<div class=\"layout-element layout-rect layout-shape\" data-element-id=\"{}\" data-shape=\"{}\" style=\"{}\"><svg class=\"layout-shape-svg\" viewBox=\"0 0 100 100\" preserveAspectRatio=\"none\" xmlns=\"http://www.w3.org/2000/svg\">{defs}{geometry}</svg></div>",
         escape_html(&element.id),
         escape_html(&element.shape),
-        style,
-        geometry
+        style
     )
 }
 
@@ -863,7 +946,9 @@ fn render_layout_element(element: &LayoutElement, ctx: &DesignContext) -> String
                 return render_shape_element(element, &style);
             }
             if !is_transparent_color(&element.fill) {
-                style.push_str(&format!("background:{};", element.fill));
+                let background =
+                    gradient_css(element).unwrap_or_else(|| escape_html(&element.fill));
+                style.push_str(&format!("background:{background};"));
             }
             if element.border_width > 0.0 && !is_transparent_color(&element.border_color) {
                 style.push_str(&format!(
@@ -2093,6 +2178,51 @@ mod tests {
         assert!(html.contains("<ellipse"));
         assert!(html.contains("fill=\"none\""));
         assert!(!html.contains("stroke="));
+    }
+
+    #[test]
+    fn renders_gradient_fills() {
+        let layout = ReportLayout::default();
+        let images = HashMap::new();
+        let ctx = DesignContext {
+            layout: &layout,
+            images: &images,
+            sources: &[],
+        };
+        let mut element = LayoutElement {
+            id: "gradient-box".into(),
+            kind: "rect".into(),
+            width: 40.0,
+            height: 30.0,
+            fill: "#143d30".into(),
+            fill_mode: "linear".into(),
+            gradient_angle: 135.0,
+            gradient_colors: vec!["#143d30".into(), "#b8894b".into(), "#3f765d".into()],
+            ..Default::default()
+        };
+
+        let html = render_layout_element(&element, &ctx);
+        assert!(html.contains(
+            "background:linear-gradient(135deg, #143d30 0.0%, #b8894b 50.0%, #3f765d 100.0%);"
+        ));
+
+        element.shape = "star".into();
+        let html = render_layout_element(&element, &ctx);
+        assert!(html.contains("<linearGradient id=\"grad-gradient-box\""));
+        assert!(html.contains("<stop offset=\"0.0%\" stop-color=\"#143d30\"/>"));
+        assert!(html.contains("<stop offset=\"50.0%\" stop-color=\"#b8894b\"/>"));
+        assert!(html.contains("<stop offset=\"100.0%\" stop-color=\"#3f765d\"/>"));
+        assert!(html.contains("fill=\"url(#grad-gradient-box)\""));
+
+        element.fill_mode = "radial".into();
+        let html = render_layout_element(&element, &ctx);
+        assert!(html.contains("<radialGradient id=\"grad-gradient-box\""));
+        assert!(html.contains("fill=\"url(#grad-gradient-box)\""));
+
+        element.fill = "transparent".into();
+        let html = render_layout_element(&element, &ctx);
+        assert!(html.contains("fill=\"none\""));
+        assert!(!html.contains("<radialGradient"));
     }
 
     #[test]

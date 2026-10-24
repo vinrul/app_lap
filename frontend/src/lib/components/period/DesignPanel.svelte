@@ -522,6 +522,9 @@
       object_fit: 'contain',
       shape: 'rect',
       fill: type === 'card' ? '#f6f8f5' : '#ffffff',
+      fill_mode: 'solid',
+      gradient_angle: 90,
+      gradient_colors: [],
       border_color: '#143d30',
       border_width: type === 'card' ? 2 : 0.5,
       radius: type === 'card' ? 1.5 : 1,
@@ -725,6 +728,23 @@
     return node
   }
 
+  function linearGradientCoords(
+    angle: number,
+    width: number,
+    height: number,
+  ): [number, number, number, number] {
+    const radians = (angle * Math.PI) / 180
+    let dx = Math.sin(radians) / Math.max(width, 0.001)
+    let dy = -Math.cos(radians) / Math.max(height, 0.001)
+    const length = Math.hypot(dx, dy)
+    if (length > 0) {
+      dx /= length
+      dy /= length
+    }
+    const span = (Math.abs(dx) + Math.abs(dy)) * 0.5
+    return [0.5 - dx * span, 0.5 - dy * span, 0.5 + dx * span, 0.5 + dy * span]
+  }
+
   function createShapeSvg(doc: Document, element: LayoutElement): SVGElement {
     const shape = shapeDefinition(element.shape)
     const svg = svgNode(doc, 'svg', {
@@ -734,7 +754,36 @@
       height: '100%',
       'aria-hidden': 'true',
     })
-    const fill = isTransparentColor(element.fill) ? 'none' : (element.fill ?? '#ffffff')
+    const rawColors = element.gradient_colors ?? []
+    const mode = rectFillMode(element)
+    let fill = isTransparentColor(element.fill) ? 'none' : (element.fill ?? '#ffffff')
+    if (fill !== 'none' && mode !== 'solid' && rawColors.length >= 2) {
+      const gradientId = `grad-${element.id}`
+      const defs = svgNode(doc, 'defs')
+      let gradient: SVGElement
+      if (mode === 'radial') {
+        gradient = svgNode(doc, 'radialGradient', { id: gradientId, cx: '50%', cy: '50%', r: '50%' })
+      } else {
+        const [x1, y1, x2, y2] = linearGradientCoords(
+          element.gradient_angle ?? 90,
+          element.width,
+          element.height,
+        )
+        gradient = svgNode(doc, 'linearGradient', { id: gradientId, x1, y1, x2, y2 })
+      }
+      const last = rawColors.length - 1
+      rawColors.forEach((color, index) => {
+        gradient.appendChild(
+          svgNode(doc, 'stop', {
+            offset: `${((index / last) * 100).toFixed(1)}%`,
+            'stop-color': color,
+          }),
+        )
+      })
+      defs.appendChild(gradient)
+      svg.appendChild(defs)
+      fill = `url(#${gradientId})`
+    }
     const attributes: Record<string, string | number> = { fill }
     const borderWidth = element.border_width ?? 0.5
     const borderColor = element.border_color ?? '#143d30'
@@ -775,7 +824,7 @@
         const fill = element.fill ?? '#ffffff'
         const borderWidth = element.border_width ?? 0.5
         const borderColor = element.border_color ?? '#143d30'
-        rect.style.background = isTransparentColor(fill) ? 'transparent' : fill
+        rect.style.background = isTransparentColor(fill) ? 'transparent' : gradientCss(element)
         rect.style.border =
           borderWidth > 0 && !isTransparentColor(borderColor) ? `${borderWidth}pt solid ${borderColor}` : 'none'
         rect.style.borderRadius = `${element.radius ?? 1}mm`
@@ -2388,6 +2437,65 @@
     }
   }
 
+  function rectFillMode(element: LayoutElement): 'solid' | 'linear' | 'radial' {
+    return element.fill_mode === 'linear' || element.fill_mode === 'radial'
+      ? element.fill_mode
+      : 'solid'
+  }
+
+  function gradientColors(element: LayoutElement): string[] {
+    const colors = element.gradient_colors ?? []
+    if (colors.length >= 2) return colors
+    return [pickerColor(element.fill, '#ffffff'), '#b8894b']
+  }
+
+  function gradientCss(element: LayoutElement): string {
+    const colors = element.gradient_colors ?? []
+    const mode = rectFillMode(element)
+    if (mode === 'solid' || colors.length < 2) return element.fill ?? '#ffffff'
+    const last = colors.length - 1
+    const stops = colors
+      .map((color, index) => `${color} ${((index / last) * 100).toFixed(1)}%`)
+      .join(', ')
+    return mode === 'radial'
+      ? `radial-gradient(circle, ${stops})`
+      : `linear-gradient(${element.gradient_angle ?? 90}deg, ${stops})`
+  }
+
+  function setFillMode(mode: 'solid' | 'linear' | 'radial') {
+    const element = activeElement
+    if (!element || element.type !== 'rect') return
+    pushHistory()
+    updateElement({ fill_mode: mode, gradient_colors: gradientColors(element) })
+  }
+
+  function setGradientColor(index: number, color: string) {
+    const element = activeElement
+    if (!element || element.type !== 'rect') return
+    const colors = [...gradientColors(element)]
+    colors[index] = color
+    updateElement({ gradient_colors: colors })
+  }
+
+  function addGradientColor() {
+    const element = activeElement
+    if (!element || element.type !== 'rect') return
+    const colors = gradientColors(element)
+    if (colors.length >= 8) return
+    pushHistory()
+    const palette = ['#143d30', '#b8894b', '#3f765d', '#5b8fa8', '#a4743d', '#d9b87e', '#7a857f', '#2f5d7c']
+    updateElement({ gradient_colors: [...colors, palette[colors.length % palette.length]] })
+  }
+
+  function removeGradientColor(index: number) {
+    const element = activeElement
+    if (!element || element.type !== 'rect') return
+    const colors = gradientColors(element)
+    if (colors.length <= 2) return
+    pushHistory()
+    updateElement({ gradient_colors: colors.filter((_, itemIndex) => itemIndex !== index) })
+  }
+
   function numberValue(value: string): number {
     const parsed = Number(value)
     return Number.isFinite(parsed) ? parsed : 0
@@ -2846,13 +2954,67 @@
                 </label>
               </div>
               <label class="block">
-                <span class="label">Isi</span>
-                <input class="input h-9 py-1 disabled:opacity-40" type="color" value={pickerColor(activeElement.fill, lastRectFill)}
-                  data-rect-fill
+                <span class="label">Tipe isi</span>
+                <select class="input py-1.5 text-xs disabled:opacity-40" value={rectFillMode(activeElement)}
+                  data-rect-fill-mode
                   disabled={rectNoFill}
-                  onfocus={pushHistory}
-                  oninput={(event) => updateElement({ fill: (event.currentTarget as HTMLInputElement).value })} />
+                  onchange={(event) => setFillMode((event.currentTarget as HTMLSelectElement).value as 'solid' | 'linear' | 'radial')}>
+                  <option value="solid">Warna solid</option>
+                  <option value="linear">Gradien linear</option>
+                  <option value="radial">Gradien radial</option>
+                </select>
               </label>
+              {#if rectFillMode(activeElement) === 'solid'}
+                <label class="block">
+                  <span class="label">Isi</span>
+                  <input class="input h-9 py-1 disabled:opacity-40" type="color" value={pickerColor(activeElement.fill, lastRectFill)}
+                    data-rect-fill
+                    disabled={rectNoFill}
+                    onfocus={pushHistory}
+                    oninput={(event) => updateElement({ fill: (event.currentTarget as HTMLInputElement).value })} />
+                </label>
+              {:else}
+                <div class="space-y-2.5 rounded-xl border border-line p-3">
+                  <span class="block h-7 rounded-md border border-line" data-gradient-preview
+                    style={`background:${gradientCss(activeElement)}`}></span>
+                  <div class="space-y-1.5">
+                    {#each gradientColors(activeElement) as color, index (index)}
+                      <div class="flex items-center gap-2">
+                        <input class="input h-8 min-w-0 flex-1 py-1 disabled:opacity-40" type="color" value={pickerColor(color, '#ffffff')}
+                          data-gradient-color={index}
+                          disabled={rectNoFill}
+                          onfocus={pushHistory}
+                          oninput={(event) => setGradientColor(index, (event.currentTarget as HTMLInputElement).value)} />
+                        <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100 disabled:opacity-30"
+                          title="Hapus warna" data-gradient-remove={index}
+                          disabled={rectNoFill || gradientColors(activeElement).length <= 2}
+                          onclick={() => removeGradientColor(index)}>
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    {/each}
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span data-gradient-add>
+                      <Button variant="secondary" size="sm" disabled={rectNoFill || gradientColors(activeElement).length >= 8}
+                        onclick={addGradientColor}>
+                        <Plus size={13} /> Tambah warna
+                      </Button>
+                    </span>
+                    {#if rectFillMode(activeElement) === 'linear'}
+                      <label class="flex items-center gap-1.5 text-[10px] text-ink-muted">Sudut
+                        <input class="input w-16 py-1 text-xs disabled:opacity-40" type="number" min="0" max="360" step="5"
+                          value={activeElement.gradient_angle ?? 90}
+                          data-gradient-angle
+                          disabled={rectNoFill}
+                          onfocus={pushHistory}
+                          oninput={(event) => updateElement({ gradient_angle: numberValue((event.currentTarget as HTMLInputElement).value) })} />°
+                      </label>
+                    {/if}
+                  </div>
+                  <p class="text-[10px] leading-relaxed text-ink-muted">Warna tersebar merata dari 0% sampai 100%. Bisa memakai 2–8 warna.</p>
+                </div>
+              {/if}
               <div class="grid grid-cols-2 gap-3">
                 <label class="block">
                   <span class="label">Garis</span>

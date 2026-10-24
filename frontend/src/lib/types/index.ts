@@ -69,6 +69,9 @@ export interface LayoutElement {
   object_fit?: 'contain' | 'cover' | 'fill'
   shape?: string
   fill?: string
+  fill_mode?: 'solid' | 'linear' | 'radial'
+  gradient_angle?: number
+  gradient_colors?: string[]
   border_color?: string
   border_width?: number
   radius?: number
