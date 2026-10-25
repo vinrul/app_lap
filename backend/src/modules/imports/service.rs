@@ -176,7 +176,7 @@ async fn persist_import(
     .bind(filename)
     .bind(digest)
     .bind(stored_path.to_string_lossy().to_string())
-    .bind("3")
+    .bind("4")
     .bind(preview.valid_rows as i64)
     .bind(preview.skipped_rows as i64)
     .bind(preview.duplicate_rows as i64)

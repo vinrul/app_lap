@@ -4,7 +4,7 @@ Aplikasi lokal untuk mengubah export Excel **Quick Wins / Qins Polri** menjadi l
 
 ## Fitur
 
-- Impor workbook `.xlsx` sheet `Data` dengan pemetaan 18 kolom berdasarkan nama header.
+- Impor workbook `.xlsx` sheet `Data` dengan pemetaan kolom berdasarkan nama header. Kolom wajib: `Tanggal`, `Waktu kirim (WIB)`, `Satuan`, `Tingkat`, `Polres`, `Polsek`, dan `Kode`; kolom lain opsional.
 - Import berdiri sendiri di menu **Import data**, tidak lagi menempel pada satu periode. Satu berkas dapat dipakai oleh banyak periode.
 - Validasi berkas, tanggal, duplikasi dalam berkas, dan pratinjau sebelum penyimpanan; duplikasi lintas berkas dibuang otomatis saat periode dibaca (kunci: tanggal, waktu kirim, satuan, tingkat, polres, polsek, dan kode).
 - Periode harian (pilih tanggal), mingguan/rentang (pilih rentang tanggal), atau bulanan (pilih bulan dan tahun). Hierarki pelaksana diturunkan otomatis: Polres/Polsek kosong berarti Polda/satker Polda, Polsek kosong berarti Polres/satker Polres.

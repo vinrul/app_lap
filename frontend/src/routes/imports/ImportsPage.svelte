@@ -203,7 +203,7 @@
       <div>
         <span class="eyebrow">UNGGAH WORKBOOK</span>
         <h2 class="mt-1 font-display text-xl font-semibold text-forest-900">Pilih file sumber</h2>
-        <p class="mt-1 text-sm text-ink-muted">Sheet <code class="rounded bg-stone-100 px-1.5 py-0.5 text-xs text-forest-800">Data</code> dengan 18 kolom sesuai template.</p>
+        <p class="mt-1 text-sm text-ink-muted">Sheet <code class="rounded bg-stone-100 px-1.5 py-0.5 text-xs text-forest-800">Data</code>. Wajib: Tanggal, Waktu kirim (WIB), Satuan, Tingkat, Polres, Polsek, dan Kode. Kolom lain opsional.</p>
       </div>
       <span class="badge badge-neutral">LANGKAH 01</span>
     </div>
@@ -237,7 +237,7 @@
           {#if !checking}<Search size={15} />{/if} Periksa isi file
         </Button>
         {#if preview}
-          <Button loading={committing} onclick={commit}><CheckCircle2 size={15} /> Simpan import</Button>
+          <Button loading={committing} disabled={preview.errors.length > 0} onclick={commit}><CheckCircle2 size={15} /> Simpan import</Button>
         {/if}
       </div>
     </div>
@@ -268,8 +268,21 @@
           {preview.file_date_start ? `${formatDate(preview.file_date_start)} – ${formatDate(preview.file_date_end)}` : 'Rentang tanggal tidak terdeteksi'}
         </p>
       </div>
-      <span class="badge badge-success"><CheckCircle2 size={12} /> SIAP DISIMPAN</span>
+      {#if preview.errors.length}
+        <span class="badge badge-danger"><AlertCircle size={12} /> PERIKSA HEADER</span>
+      {:else}
+        <span class="badge badge-success"><CheckCircle2 size={12} /> SIAP DISIMPAN</span>
+      {/if}
     </div>
+
+    {#if preview.errors.length}
+      <div class="border-b border-red-200 bg-red-50 px-5 py-4 text-red-800">
+        <p class="text-[10px] font-bold tracking-[0.12em] uppercase">Kesalahan</p>
+        <ul class="mt-1.5 space-y-1 text-[11px] leading-relaxed">
+          {#each preview.errors as message}<li>• {message}</li>{/each}
+        </ul>
+      </div>
+    {/if}
 
     <div class="grid gap-3 border-b border-line p-5 sm:grid-cols-2 lg:grid-cols-4">
       {#each [

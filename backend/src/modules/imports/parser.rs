@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use crate::{
     modules::imports::{
         analysis,
-        models::{HEADERS, ImportPreview, ImportedRow},
+        models::{HEADERS, ImportPreview, ImportedRow, MAP_HEADERS, REQUIRED_HEADERS},
         qw,
     },
     shared::{LabeledCount, extract_links, normalize_date, parse_fields},
@@ -40,11 +40,7 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
 
     let actual_headers: Vec<String> = header_cells.iter().map(cell_text).collect();
     let header_map = build_header_map(&actual_headers);
-    let missing_headers: Vec<String> = HEADERS
-        .iter()
-        .filter(|header| !header_map.contains_key(&normalize_header(header)))
-        .map(|header| (*header).to_string())
-        .collect();
+    let missing_headers = missing_required_headers(&header_map);
 
     if !missing_headers.is_empty() {
         return Ok(ImportPreview {
@@ -76,6 +72,11 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
             missing_headers,
         });
     }
+
+    let map_columns: Vec<usize> = MAP_HEADERS
+        .iter()
+        .filter_map(|header| header_map.get(&normalize_header(header)).copied())
+        .collect();
 
     let mut parsed_rows = Vec::new();
     let mut total_rows = 0_usize;
@@ -122,7 +123,9 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
             continue;
         }
 
-        let key = dedupe_key(&date, &values[1], &values[2], &values[3], &values[5], &values[6], &values[7]);
+        let key = dedupe_key(
+            &date, &values[1], &values[2], &values[3], &values[5], &values[6], &values[7],
+        );
         if !seen.insert(key) {
             duplicate_rows += 1;
             push_warning(
@@ -159,7 +162,19 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
         links.dedup();
         evidence_links += links.len();
 
-        let row_analysis = analysis::analyze(&fields, &values[17], &values[15]);
+        let map_text = map_columns
+            .iter()
+            .filter_map(|index| cells.get(*index))
+            .map(cell_text)
+            .filter(|value| !value.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let analysis_text = if map_text.is_empty() {
+            values[17].clone()
+        } else {
+            format!("{}\n{}", values[17], map_text)
+        };
+        let row_analysis = analysis::analyze(&fields, &analysis_text, &values[15]);
         if row_analysis.latitude.is_some() && row_analysis.longitude.is_some() {
             rows_with_coordinates += 1;
         }
@@ -248,6 +263,14 @@ fn build_header_map(headers: &[String]) -> BTreeMap<String, usize> {
     map
 }
 
+fn missing_required_headers(header_map: &BTreeMap<String, usize>) -> Vec<String> {
+    REQUIRED_HEADERS
+        .iter()
+        .filter(|header| !header_map.contains_key(&normalize_header(header)))
+        .map(|header| (*header).to_string())
+        .collect()
+}
+
 fn normalize_header(value: &str) -> String {
     value
         .trim_start_matches('\u{feff}')
@@ -289,13 +312,11 @@ fn dedupe_key(
     polsek: &str,
     kode: &str,
 ) -> String {
-    [
-        tanggal, waktu, satuan, tingkat, polres, polsek, kode,
-    ]
-    .iter()
-    .map(|value| value.trim().to_lowercase())
-    .collect::<Vec<_>>()
-    .join("|")
+    [tanggal, waktu, satuan, tingkat, polres, polsek, kode]
+        .iter()
+        .map(|value| value.trim().to_lowercase())
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 fn hierarchy(polda: &str, polres: &str, polsek: &str, satuan: &str) -> (String, String) {
@@ -373,8 +394,48 @@ mod tests {
         assert!(preview.preview_rows[0].fields.contains_key("Pelaksana"));
         assert!(preview.quick_wins.iter().any(|item| item.label == "QW1"));
         assert!(preview.duplicate_rows > 0);
-        assert!(preview.rows.iter().any(|row| row.qw_title.contains("Jumat")));
+        assert!(
+            preview
+                .rows
+                .iter()
+                .any(|row| row.qw_title.contains("Jumat"))
+        );
         assert!(preview.rows.iter().any(|row| row.analysis.jamaah > 0));
+    }
+
+    #[test]
+    fn only_core_headers_are_required() {
+        let headers = [
+            "Tanggal",
+            "Waktu kirim (WIB)",
+            "Satuan",
+            "Tingkat",
+            "Polres",
+            "Polsek",
+            "Kode",
+            "Kegiatan",
+            "Tautan peta 1",
+        ]
+        .iter()
+        .map(|header| header.to_string())
+        .collect::<Vec<_>>();
+        let header_map = build_header_map(&headers);
+
+        assert!(missing_required_headers(&header_map).is_empty());
+    }
+
+    #[test]
+    fn reports_only_missing_core_headers() {
+        let headers = ["Tanggal", "Satuan", "Tingkat", "Polres", "Polsek", "Kode"]
+            .iter()
+            .map(|header| header.to_string())
+            .collect::<Vec<_>>();
+        let header_map = build_header_map(&headers);
+
+        assert_eq!(
+            missing_required_headers(&header_map),
+            vec!["Waktu kirim (WIB)".to_string()]
+        );
     }
 
     #[test]

@@ -8,6 +8,8 @@ use crate::{
     shared::{LabeledCount, UnitBreakdown},
 };
 
+/// Kolom yang dikenali saat impor. Hanya `REQUIRED_HEADERS` yang wajib ada;
+/// kolom lain boleh hilang dari workbook.
 pub const HEADERS: [&str; 18] = [
     "Tanggal",
     "Waktu kirim (WIB)",
@@ -27,6 +29,26 @@ pub const HEADERS: [&str; 18] = [
     "Bukti dukung",
     "Keluhan personel Polri",
     "Isian laporan",
+];
+
+pub const REQUIRED_HEADERS: [&str; 7] = [
+    "Tanggal",
+    "Waktu kirim (WIB)",
+    "Satuan",
+    "Tingkat",
+    "Polres",
+    "Polsek",
+    "Kode",
+];
+
+/// Kolom tambahan yang opsional dan dipakai untuk mengambil tautan peta.
+pub const MAP_HEADERS: [&str; 6] = [
+    "Tautan peta 1",
+    "Tautan peta 2",
+    "Tautan peta 3",
+    "Tautan peta 4",
+    "Tautan peta 5",
+    "Tautan peta 6",
 ];
 
 /// Representasi terstruktur dari kolom `Isian laporan`.
