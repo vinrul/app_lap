@@ -75,6 +75,7 @@ sudo cp -r dist /opt/laporan/frontend/dist
 
 cd ~/app_lap/backend
 cargo build --release --locked
+sudo rm -rf /opt/laporan/laporan_mingguan
 sudo cp target/release/laporan_mingguan /opt/laporan/laporan_mingguan
 sudo chmod 755 /opt/laporan/laporan_mingguan
 ```
