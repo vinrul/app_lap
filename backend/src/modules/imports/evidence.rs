@@ -2,9 +2,9 @@
 //!
 //! Unduhan berjalan di latar belakang setelah impor disimpan. Hanya tautan
 //! yang benar-benar menunjuk berkas yang dicoba: gambar/PDF langsung, berkas
-//! Google Drive, serta ekspor Google Docs. Folder Drive dan tautan media
-//! sosial ditandai `skipped` agar tidak membanjiri jaringan dengan permintaan
-//! yang tidak akan pernah menghasilkan berkas.
+//! Google Drive, ekspor Google Docs, serta folder Google Drive publik pada
+//! akar dan satu tingkat subfolder. Tautan media sosial dan isi folder yang
+//! tidak didukung ditandai `skipped`.
 
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 
@@ -20,12 +20,15 @@ use uuid::Uuid;
 use crate::{
     config::Config,
     error::{ApiError, ApiResult},
+    modules::imports::drive,
     state::EvidenceDownloadLocks,
 };
 
 const MAX_EVIDENCE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CONCURRENT_DOWNLOADS: usize = 4;
 const REQUEST_TIMEOUT_SECS: u64 = 25;
+const MAX_DRIVE_FILES: usize = 100;
+const MAX_DRIVE_SKIPPED: usize = 100;
 
 pub fn spawn_import_downloads(
     db: SqlitePool,
@@ -83,7 +86,8 @@ pub async fn retry_import(
     sqlx::query(
         "UPDATE import_evidence
          SET status = 'pending', error = ''
-         WHERE import_id = ? AND status IN ('failed', 'skipped')",
+         WHERE import_id = ? AND status IN ('failed', 'skipped')
+           AND error NOT LIKE 'Jenis berkas % tidak didukung%'",
     )
     .bind(import_id)
     .execute(db)
@@ -98,9 +102,7 @@ pub async fn retry_import(
     .await
     .map_err(ApiError::internal)?;
 
-    if queued > 0
-        && !spawn_import_downloads(db.clone(), config, locks, import_id.to_string())
-    {
+    if queued > 0 && !spawn_import_downloads(db.clone(), config, locks, import_id.to_string()) {
         tracing::debug!(%import_id, "worker unduhan sudah berjalan; permintaan rerun dicatat");
     }
     Ok(queued.max(0) as u64)
@@ -199,45 +201,245 @@ async fn ensure_evidence_rows(db: &SqlitePool, import_id: &str) -> ApiResult<()>
 }
 
 async fn process_import(db: &SqlitePool, config: &Config, import_id: &str) -> ApiResult<()> {
-    let rows = sqlx::query(
-        "SELECT id, source_url FROM import_evidence
-         WHERE import_id = ? AND status = 'pending'
-         ORDER BY source_url ASC, created_at ASC",
-    )
-    .bind(import_id)
-    .fetch_all(db)
-    .await
-    .map_err(ApiError::internal)?;
-    if rows.is_empty() {
-        return Ok(());
-    }
-
-    let mut groups = HashMap::<String, (Url, Vec<String>)>::new();
-    let mut skipped = HashMap::<String, Vec<String>>::new();
-    for row in rows {
-        let id: String = row.get("id");
-        let source_url: String = row.get("source_url");
-        match normalize_target(&source_url) {
-            Ok(target) => {
-                groups
-                    .entry(target.as_str().to_string())
-                    .or_insert_with(|| (target, Vec::new()))
-                    .1
-                    .push(id);
-            }
-            Err(reason) => skipped.entry(reason).or_default().push(id),
-        }
-    }
-
-    for (reason, ids) in skipped {
-        mark_many(db, &ids, "skipped", &reason).await;
-    }
-
     let client = Client::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .user_agent("LaporanMingguanPBM/1.0 (bukti dukung)")
         .build()
         .map_err(ApiError::internal)?;
+
+    // Folder Drive harus diperluas lebih dulu. Putaran kedua mengambil baris
+    // anak yang baru dibuat agar unduhan folder ikut berjalan pada proses yang
+    // sama, sementara status pending tetap tersimpan untuk auto-resume.
+    for _pass in 0..2 {
+        let rows = sqlx::query(
+            "SELECT id, row_id, source_url FROM import_evidence
+             WHERE import_id = ? AND status = 'pending'
+             ORDER BY source_url ASC, created_at ASC",
+        )
+        .bind(import_id)
+        .fetch_all(db)
+        .await
+        .map_err(ApiError::internal)?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let mut folders = HashMap::<String, Vec<(String, i64)>>::new();
+        let mut groups = HashMap::<String, (Url, Vec<String>)>::new();
+        let mut skipped = HashMap::<String, Vec<String>>::new();
+        for row in rows {
+            let id: String = row.get("id");
+            let row_id: i64 = row.get("row_id");
+            let source_url: String = row.get("source_url");
+            if let Some(folder_id) = drive::folder_id(&source_url) {
+                folders.entry(folder_id).or_default().push((id, row_id));
+                continue;
+            }
+            match normalize_target(&source_url) {
+                Ok(target) => {
+                    groups
+                        .entry(target.as_str().to_string())
+                        .or_insert_with(|| (target, Vec::new()))
+                        .1
+                        .push(id);
+                }
+                Err(reason) => skipped.entry(reason).or_default().push(id),
+            }
+        }
+
+        for (reason, ids) in skipped {
+            mark_many(db, &ids, "skipped", &reason).await;
+        }
+
+        if !folders.is_empty() {
+            expand_drive_folders(db, config, import_id, &client, folders).await;
+        }
+
+        download_groups(db, config, import_id, &client, groups).await;
+    }
+
+    Ok(())
+}
+
+async fn expand_drive_folders(
+    db: &SqlitePool,
+    config: &Config,
+    import_id: &str,
+    client: &Client,
+    folders: HashMap<String, Vec<(String, i64)>>,
+) {
+    let Some(api_key) = config.google_drive_api_key.as_deref() else {
+        for (_, parents) in folders {
+            let ids = parents.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+            mark_many(
+                db,
+                &ids,
+                "failed",
+                "LAPORAN_GOOGLE_DRIVE_API_KEY belum diatur. Atur API key lalu jalankan unduh ulang.",
+            )
+            .await;
+        }
+        return;
+    };
+
+    for (folder_id, parents) in folders {
+        let evidence_ids = parents.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        let mut row_ids = parents
+            .iter()
+            .map(|(_, row_id)| *row_id)
+            .collect::<Vec<_>>();
+        row_ids.sort_unstable();
+        row_ids.dedup();
+
+        match drive::discover(client, api_key, &folder_id).await {
+            Ok(listing) => {
+                tracing::info!(
+                    %import_id,
+                    folder_id = %folder_id,
+                    files = listing.files.len(),
+                    truncated = listing.truncated,
+                    "folder Google Drive diperluas"
+                );
+                match insert_drive_children(db, import_id, &row_ids, &listing.files).await {
+                    Ok(inserted) => {
+                        if listing.files.is_empty() {
+                            mark_many(
+                                db,
+                                &evidence_ids,
+                                "skipped",
+                                "Folder Google Drive tidak berisi gambar/PDF yang dapat diunduh.",
+                            )
+                            .await;
+                        } else {
+                            let message = if listing.truncated {
+                                "Sebagian isi folder tidak diproses karena melebihi batas 500 entri."
+                            } else if inserted == 0 {
+                                "Berkas folder sudah pernah didaftarkan."
+                            } else {
+                                ""
+                            };
+                            mark_many(db, &evidence_ids, "expanded", message).await;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            %import_id,
+                            folder_id = %folder_id,
+                            %error,
+                            "gagal menyimpan daftar berkas folder Google Drive"
+                        );
+                        mark_many(
+                            db,
+                            &evidence_ids,
+                            "failed",
+                            &format!("Gagal menyimpan daftar berkas folder: {error}"),
+                        )
+                        .await;
+                    }
+                }
+            }
+            Err(message) => {
+                tracing::warn!(
+                    %import_id,
+                    folder_id = %folder_id,
+                    %message,
+                    "folder Google Drive gagal diperluas"
+                );
+                mark_many(db, &evidence_ids, "failed", &message).await;
+            }
+        }
+    }
+}
+
+async fn insert_drive_children(
+    db: &SqlitePool,
+    import_id: &str,
+    row_ids: &[i64],
+    files: &[drive::DriveFile],
+) -> ApiResult<usize> {
+    let mut supported = 0_usize;
+    let mut skipped = 0_usize;
+    let mut inserted = 0_usize;
+    let mut tx = db.begin().await.map_err(ApiError::internal)?;
+
+    for file in files {
+        let extension = drive::supported_extension(file);
+        let (status, content_type, error) = match extension {
+            Some(extension) => {
+                if supported >= MAX_DRIVE_FILES {
+                    continue;
+                }
+                supported += 1;
+                (
+                    "pending",
+                    drive::content_type_for(file, extension),
+                    String::new(),
+                )
+            }
+            None => {
+                if skipped >= MAX_DRIVE_SKIPPED {
+                    continue;
+                }
+                skipped += 1;
+                let kind = if file.mime_type.is_empty() {
+                    "tidak dikenal".to_string()
+                } else {
+                    file.mime_type.clone()
+                };
+                (
+                    "skipped",
+                    drive::content_type_for(file, ""),
+                    format!("Jenis berkas {kind} tidak didukung (hanya gambar/PDF)."),
+                )
+            }
+        };
+        let filename = sanitize_filename(&file.name)
+            .unwrap_or_else(|| format!("berkas-{}", &Uuid::new_v4().to_string()[..8]));
+        let source_url = drive::file_url(&file.id);
+
+        for row_id in row_ids {
+            let result = sqlx::query(
+                "INSERT INTO import_evidence(
+                    id, import_id, row_id, source_url, filename, content_type,
+                    size_bytes, status, error
+                 )
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM import_evidence WHERE row_id = ? AND source_url = ?
+                 )",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(import_id)
+            .bind(row_id)
+            .bind(&source_url)
+            .bind(&filename)
+            .bind(&content_type)
+            .bind(file.size)
+            .bind(status)
+            .bind(&error)
+            .bind(row_id)
+            .bind(&source_url)
+            .execute(&mut *tx)
+            .await
+            .map_err(ApiError::internal)?;
+            inserted += result.rows_affected() as usize;
+        }
+    }
+
+    tx.commit().await.map_err(ApiError::internal)?;
+    Ok(inserted)
+}
+
+async fn download_groups(
+    db: &SqlitePool,
+    config: &Config,
+    import_id: &str,
+    client: &Client,
+    groups: HashMap<String, (Url, Vec<String>)>,
+) {
+    if groups.is_empty() {
+        return;
+    }
 
     let mut pending = groups.into_values().collect::<Vec<_>>().into_iter();
     let mut tasks = JoinSet::new();
@@ -272,7 +474,6 @@ async fn process_import(db: &SqlitePool, config: &Config, import_id: &str) -> Ap
             client.clone(),
         ));
     }
-    Ok(())
 }
 
 async fn download_group(
@@ -327,7 +528,10 @@ async fn download_group(
                 }
             }
         }
-        Err(message) => mark_many(&db, &evidence_ids, "failed", &message).await,
+        Err(message) => {
+            tracing::warn!(%message, "bukti dukung gagal diunduh");
+            mark_many(&db, &evidence_ids, "failed", &message).await;
+        }
     }
 }
 
@@ -445,7 +649,9 @@ fn normalize_target(raw_url: &str) -> Result<Url, String> {
     match host.as_str() {
         "drive.google.com" => {
             if url.path().contains("/folders/") {
-                return Err("Folder Google Drive tidak dapat diunduh sebagai satu berkas.".to_string());
+                return Err(
+                    "Folder Google Drive tidak dapat diunduh sebagai satu berkas.".to_string(),
+                );
             }
             let id = drive_file_id(&url)
                 .ok_or_else(|| "Tautan Google Drive tidak memuat ID berkas.".to_string())?;
@@ -614,14 +820,13 @@ fn is_blocked_host(host: &str) -> bool {
 async fn mark_many(db: &SqlitePool, evidence_ids: &[String], status: &str, message: &str) {
     let message: String = message.chars().take(300).collect();
     for evidence_id in evidence_ids {
-        if let Err(error) = sqlx::query(
-            "UPDATE import_evidence SET status = ?, error = ? WHERE id = ?",
-        )
-        .bind(status)
-        .bind(&message)
-        .bind(evidence_id)
-        .execute(db)
-        .await
+        if let Err(error) =
+            sqlx::query("UPDATE import_evidence SET status = ?, error = ? WHERE id = ?")
+                .bind(status)
+                .bind(&message)
+                .bind(evidence_id)
+                .execute(db)
+                .await
         {
             tracing::warn!(%error, %evidence_id, "gagal menandai bukti dukung");
         }
@@ -646,14 +851,17 @@ mod tests {
 
     #[test]
     fn skips_drive_folders_and_social_links() {
-        assert!(normalize_target("https://drive.google.com/drive/folders/abc?usp=sharing").is_err());
+        assert!(
+            normalize_target("https://drive.google.com/drive/folders/abc?usp=sharing").is_err()
+        );
         assert!(normalize_target("https://www.instagram.com/reel/abc/").is_err());
         assert!(normalize_target("https://maps.app.goo.gl/abc").is_err());
     }
 
     #[test]
     fn exports_google_docs_as_pdf() {
-        let target = normalize_target("https://docs.google.com/document/d/abc/edit?usp=sharing").unwrap();
+        let target =
+            normalize_target("https://docs.google.com/document/d/abc/edit?usp=sharing").unwrap();
         assert_eq!(
             target.as_str(),
             "https://docs.google.com/document/d/abc/export?format=pdf"
@@ -665,5 +873,82 @@ mod tests {
         assert!(normalize_target("https://contoh.go.id/bukti/foto.jpg").is_ok());
         assert!(normalize_target("http://127.0.0.1/bukti.pdf").is_err());
         assert!(normalize_target("file:///C:/bukti.pdf").is_err());
+    }
+
+    #[tokio::test]
+    async fn inserts_drive_children_once_and_skips_unsupported_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::test_config();
+        config.data_dir = dir.path().to_path_buf();
+        let db = crate::db::connect(&config).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO users(id,username,password_hash,role) VALUES('u1','tester','x','admin')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO imports(
+                id,filename,file_hash,stored_path,parser_version,row_count,skipped_rows,
+                duplicate_rows,date_start,date_end,warnings_json,imported_by
+             ) VALUES('imp1','x.xlsx','hash','path','4',1,0,0,'2026-10-25','2026-10-25','[]','u1')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let row_id = sqlx::query(
+            "INSERT INTO import_rows(import_id,source_row,raw_json) VALUES('imp1',2,'{}')",
+        )
+        .execute(&db)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+
+        let mut files = (0..101)
+            .map(|index| drive::DriveFile {
+                id: format!("img-{index}"),
+                name: format!("foto-{index}.jpg"),
+                mime_type: "image/jpeg".to_string(),
+                size: 128,
+            })
+            .collect::<Vec<_>>();
+        files.push(drive::DriveFile {
+            id: "doc-1".to_string(),
+            name: "dokumen.docx".to_string(),
+            mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                .to_string(),
+            size: 256,
+        });
+
+        let inserted = insert_drive_children(&db, "imp1", &[row_id], &files)
+            .await
+            .unwrap();
+        assert_eq!(inserted, 101);
+
+        let pending: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM import_evidence WHERE status = 'pending'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let skipped: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM import_evidence WHERE status = 'skipped'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let skipped_name: String =
+            sqlx::query_scalar("SELECT filename FROM import_evidence WHERE status = 'skipped'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        assert_eq!(pending, 100);
+        assert_eq!(skipped, 1);
+        assert_eq!(skipped_name, "dokumen.docx");
+
+        let inserted_again = insert_drive_children(&db, "imp1", &[row_id], &files)
+            .await
+            .unwrap();
+        assert_eq!(inserted_again, 0);
     }
 }

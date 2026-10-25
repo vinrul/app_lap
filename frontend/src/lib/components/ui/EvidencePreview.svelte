@@ -1,19 +1,22 @@
 <script lang="ts">
-  import { Download, ExternalLink, FileText, X } from 'lucide-svelte'
+  import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, X } from 'lucide-svelte'
   import { evidencePreview } from '../../stores/evidencePreview.svelte'
+  import type { EvidenceItem } from '../../types'
   import { formatBytes } from '../../utils/format'
 
   const item = $derived(evidencePreview.item)
-  const kind = $derived.by(() => {
-    if (!item) return 'other'
-    const type = item.content_type.toLowerCase()
-    const filename = item.filename.toLowerCase()
+  const items = $derived(evidencePreview.items)
+  const kind = $derived(item ? itemKind(item) : 'other')
+
+  function itemKind(entry: EvidenceItem): 'image' | 'pdf' | 'other' {
+    const type = entry.content_type.toLowerCase()
+    const filename = entry.filename.toLowerCase()
     if (type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|avif)$/.test(filename)) {
       return 'image'
     }
     if (type.startsWith('application/pdf') || filename.endsWith('.pdf')) return 'pdf'
     return 'other'
-  })
+  }
   const typeLabel = $derived.by(() => {
     if (!item) return ''
     if (kind === 'pdf') return 'PDF'
@@ -27,10 +30,20 @@
   $effect(() => {
     if (!item) return
     const handler = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      event.stopImmediatePropagation()
-      evidencePreview.close()
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        evidencePreview.close()
+        return
+      }
+      if (!evidencePreview.hasMultiple) return
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        evidencePreview.prev()
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault()
+        evidencePreview.next()
+      }
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
@@ -61,6 +74,27 @@
           </p>
         </div>
         <div class="flex shrink-0 flex-wrap items-center gap-2">
+          {#if evidencePreview.hasMultiple}
+            <span class="text-[10px] font-semibold whitespace-nowrap text-ink-muted">
+              {evidencePreview.position} / {items.length}
+            </span>
+            <button
+              type="button"
+              class="btn btn-secondary btn-sm"
+              aria-label="Bukti sebelumnya"
+              onclick={() => evidencePreview.prev()}
+            >
+              <ChevronLeft size={14} /> Sebelumnya
+            </button>
+            <button
+              type="button"
+              class="btn btn-secondary btn-sm"
+              aria-label="Bukti berikutnya"
+              onclick={() => evidencePreview.next()}
+            >
+              Berikutnya <ChevronRight size={14} />
+            </button>
+          {/if}
           <a class="btn btn-secondary btn-sm" href={item.url} target="_blank" rel="noopener">
             <ExternalLink size={14} /> Buka tab baru
           </a>
@@ -103,6 +137,29 @@
           </div>
         {/if}
       </div>
+
+      {#if evidencePreview.hasMultiple}
+        <div class="flex shrink-0 gap-2 overflow-x-auto border-t border-line bg-stone-50 p-2">
+          {#each items as entry, index (entry.id)}
+            <button
+              type="button"
+              class="flex shrink-0 items-center gap-2 rounded-lg border-2 bg-white p-1.5 text-left transition-colors {index === evidencePreview.index ? 'border-forest-500' : 'border-transparent hover:border-line'}"
+              title={entry.filename || `Bukti ${index + 1}`}
+              aria-label={`Tampilkan bukti ${index + 1}`}
+              onclick={() => evidencePreview.select(index)}
+            >
+              {#if itemKind(entry) === 'image'}
+                <img class="h-11 w-14 rounded object-cover" src={entry.url} alt="" loading="lazy" decoding="async" />
+              {:else}
+                <span class="flex h-11 w-14 items-center justify-center rounded bg-stone-100 text-ink-muted">
+                  <FileText size={18} />
+                </span>
+              {/if}
+              <span class="max-w-28 truncate text-[10px] font-medium text-ink-soft">{entry.filename || `Bukti ${index + 1}`}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
     </div>
   </div>
 {/if}

@@ -10,7 +10,7 @@ Aplikasi lokal untuk mengubah export Excel **Quick Wins / Qins Polri** menjadi l
 - Periode harian (pilih tanggal), mingguan/rentang (pilih rentang tanggal), atau bulanan (pilih bulan dan tahun). Hierarki pelaksana diturunkan otomatis: Polres/Polsek kosong berarti Polda/satker Polda, Polsek kosong berarti Polres/satker Polres.
 - Analisis otomatis dari `Isian laporan`: jumlah personel, bibit, luas area, jemaah, titik koordinat, dan tautan peta; tersedia sebagai kartu ringkas, tren harian, dan sebaran kelompok/kode/tingkat/unit.
 - Drill-down pelaksana: klik satker Polda atau polres pada tabel breakdown untuk melihat ringkasan metrik, sebaran Quick Wins dan sub-kode, rincian polsek, serta kegiatan. Kode sub-kegiatan ditampilkan bersama deskripsinya. Klik QW1/QW1.2 untuk melihat cakupan polres/satker dan kegiatan sampai tingkat unit.
-- Bukti dukung diunduh best-effort dari tautan gambar/PDF langsung, berkas Google Drive, dan ekspor Google Docs. Folder Drive, media sosial, dan tautan peta ditandai tidak dapat diunduh; pengguna dapat menjalankan ulang unduhan dari halaman Import data. Bukti yang sudah terunduh dapat dipratinjau langsung di aplikasi (gambar atau PDF) tanpa harus mengunduh berkasnya terlebih dahulu. Antrean `pending` dilanjutkan otomatis saat backend start, dengan lock per import agar tidak ada worker ganda; permintaan baru saat worker berjalan dijadwalkan sebagai putaran ulang.
+- Bukti dukung diunduh best-effort dari tautan gambar/PDF langsung, berkas Google Drive, ekspor Google Docs, dan folder Google Drive publik. Folder dibaca pada akar dan satu tingkat subfolder, maksimal 100 gambar/PDF per folder; berkas lain ditandai `skipped`. Media sosial dan tautan peta ditandai tidak dapat diunduh; pengguna dapat menjalankan ulang unduhan dari halaman Import data. Bukti yang sudah terunduh dapat dipratinjau langsung di aplikasi, termasuk galeri beberapa gambar/PDF dari folder Drive, tanpa harus mengunduh berkasnya terlebih dahulu. Antrean `pending` dilanjutkan otomatis saat backend start, dengan lock per import agar tidak ada worker ganda; permintaan baru saat worker berjalan dijadwalkan sebagai putaran ulang.
 - Peta lokasi kegiatan dari koordinat baris sumber memakai Leaflet + OpenStreetMap, dimuat hanya saat detail dibuka. Tersedia marker, popup, tombol **Google Maps**, dan **Rute** ke tab baru. Tile peta diambil melalui backend dengan User-Agent aplikasi dan cache di `data/map-tiles/`; koneksi internet tetap diperlukan.
 - Perhitungan metrik otomatis dari kolom `Isian laporan`:
   - Berantas narkoba (orang ditangkap, kawasan, rehabilitasi, penyuluhan)
@@ -133,7 +133,7 @@ cargo test
 cargo run --release
 ```
 
-Pengujian backend mencakup parser workbook contoh (termasuk dedupe dan hierarki unit), analisis isian laporan, normalisasi tautan bukti dukung, normalisasi tanggal/angka, klasifikasi tautan media, render 9 halaman/halaman blank, dan agregasi metrik.
+Pengujian backend mencakup parser workbook contoh (termasuk dedupe dan hierarki unit), analisis isian laporan, normalisasi tautan bukti dukung, klasifikasi folder Google Drive dan batas 100 berkas, normalisasi tanggal/angka, klasifikasi tautan media, render 9 halaman/halaman blank, dan agregasi metrik.
 
 ## Data dan cadangan
 
@@ -160,6 +160,7 @@ Tutup aplikasi sebelum membuat cadangan konsisten. Salin seluruh direktori `data
 | `LAPORAN_APP_NAME` | `Laporan Mingguan PBM` | Nama aplikasi |
 | `LAPORAN_MAX_UPLOAD_MB` | `32` | Batas ukuran workbook |
 | `LAPORAN_SESSION_HOURS` | `12` | Masa berlaku sesi login |
+| `LAPORAN_GOOGLE_DRIVE_API_KEY` | kosong | API key untuk membaca folder Google Drive publik |
 | `LAPORAN_FRONTEND_DIR` | `<root>/frontend/dist` | Lokasi build frontend |
 | `LAPORAN_SECURE_COOKIE` | `false` | Set `true` bila memakai HTTPS |
 
@@ -168,3 +169,10 @@ Default server mengikat ke `127.0.0.1`. Untuk akses langsung dari LAN, set
 `192.168.1.10,laporan.local`). Jika `LAPORAN_ALLOWED_HOSTS` kosong saat bind non-loopback,
 semua Host header diterima dan server menulis peringatan di log. Untuk VPS, tetap gunakan
 loopback + reverse proxy seperti pada `deploy/DEPLOY.md`.
+
+### Menjalankan dengan API key Google Drive di Windows
+
+```powershell
+$env:LAPORAN_GOOGLE_DRIVE_API_KEY = '<API_KEY>'
+.\start.ps1
+```

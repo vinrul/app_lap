@@ -13,6 +13,15 @@ use crate::{
 
 pub async fn run() -> anyhow::Result<()> {
     let config = Config::from_env()?;
+    if config.google_drive_api_key.is_none() {
+        tracing::info!(
+            "LAPORAN_GOOGLE_DRIVE_API_KEY tidak diatur; tautan folder Google Drive tidak akan diperluas."
+        );
+    } else {
+        tracing::info!(
+            "LAPORAN_GOOGLE_DRIVE_API_KEY terdeteksi; dukungan folder Google Drive publik aktif."
+        );
+    }
     let db = db::connect(&config).await?;
 
     if let Err(error) = auth_service::cleanup_expired_sessions(&db).await {

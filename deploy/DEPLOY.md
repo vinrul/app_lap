@@ -95,6 +95,7 @@ Nilai penting:
 - `LAPORAN_SECURE_COOKIE=true` — wajib karena diakses lewat HTTPS.
 - `LAPORAN_CHROME=/usr/bin/google-chrome-stable` — sesuaikan hasil `command -v`.
 - `LAPORAN_DATA_DIR` dan `LAPORAN_FRONTEND_DIR` harus persis seperti pada contoh.
+- `LAPORAN_GOOGLE_DRIVE_API_KEY` — opsional, wajib jika workbook memakai tautan folder Google Drive publik. Isi API key asli di `/etc/laporan/laporan.env`; jangan menyimpannya di file contoh atau repository.
 
 Migrasi database berjalan otomatis saat server mulai (`sqlx::migrate!()` di `db.rs`). Tidak ada langkah migrasi manual.
 

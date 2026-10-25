@@ -678,13 +678,13 @@ async fn load_evidence_for_rows(
     ids: &[i64],
 ) -> ApiResult<HashMap<i64, Vec<EvidenceView>>> {
     let mut qb = QueryBuilder::<Sqlite>::new(
-        "SELECT id, row_id, source_url, filename, content_type, size_bytes, status, error FROM import_evidence WHERE row_id IN (",
+        "SELECT id, row_id, source_url, filename, content_type, size_bytes, status, error FROM import_evidence WHERE status <> 'expanded' AND row_id IN (",
     );
     let mut separated = qb.separated(", ");
     for id in ids {
         separated.push_bind(*id);
     }
-    separated.push_unseparated(") ORDER BY created_at ASC, id ASC");
+    separated.push_unseparated(") ORDER BY created_at ASC, rowid ASC");
     let rows = qb
         .build()
         .fetch_all(db)

@@ -6,7 +6,7 @@ use std::{
 
 /// Konfigurasi proses. Semua nilai dapat diubah lewat environment variable
 /// agar deployment lokal tidak memerlukan perubahan kode.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Config {
     pub data_dir: PathBuf,
     pub frontend_dir: PathBuf,
@@ -20,6 +20,30 @@ pub struct Config {
     pub max_upload_bytes: usize,
     pub session_hours: i64,
     pub timezone_label: String,
+    pub google_drive_api_key: Option<String>,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("data_dir", &self.data_dir)
+            .field("frontend_dir", &self.frontend_dir)
+            .field("bind_addr", &self.bind_addr)
+            .field("allowed_hosts", &self.allowed_hosts)
+            .field("port", &self.port)
+            .field("chrome_path", &self.chrome_path)
+            .field("secure_cookie", &self.secure_cookie)
+            .field("polda_name", &self.polda_name)
+            .field("app_name", &self.app_name)
+            .field("max_upload_bytes", &self.max_upload_bytes)
+            .field("session_hours", &self.session_hours)
+            .field("timezone_label", &self.timezone_label)
+            .field(
+                "google_drive_api_key",
+                &self.google_drive_api_key.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 impl Config {
@@ -38,6 +62,7 @@ impl Config {
             max_upload_bytes: 32 * 1024 * 1024,
             session_hours: 12,
             timezone_label: "WITA".into(),
+            google_drive_api_key: None,
         }
     }
 
@@ -82,6 +107,10 @@ impl Config {
             .and_then(|value| value.parse::<i64>().ok())
             .unwrap_or(12)
             .clamp(1, 24 * 30);
+        let google_drive_api_key = env::var("LAPORAN_GOOGLE_DRIVE_API_KEY")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
 
         Ok(Self {
             data_dir,
@@ -101,6 +130,7 @@ impl Config {
             session_hours,
             timezone_label: env::var("LAPORAN_TIMEZONE_LABEL")
                 .unwrap_or_else(|_| "WITA".to_string()),
+            google_drive_api_key,
         })
     }
 }
@@ -117,6 +147,20 @@ pub fn project_root() -> anyhow::Result<PathBuf> {
         }
     }
     Ok(current)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn debug_redacts_google_drive_api_key() {
+        let mut config = Config::test_config();
+        config.google_drive_api_key = Some("rahasia".to_string());
+        let output = format!("{config:?}");
+        assert!(!output.contains("rahasia"));
+        assert!(output.contains("<redacted>"));
+    }
 }
 
 fn discover_chrome() -> String {
