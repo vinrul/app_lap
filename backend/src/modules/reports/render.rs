@@ -1035,7 +1035,7 @@ fn render_layout_element(element: &LayoutElement, ctx: &DesignContext) -> String
         }
         "table" => render_table_element(element, ctx, &style),
         "chart" => render_chart_element(element, ctx, &style),
-        "card" => render_card_element(element, &style),
+        "card" => render_card_element(element, ctx, &style),
         "icon" => render_icon_element(element, &style),
         _ => String::new(),
     }
@@ -1059,36 +1059,146 @@ fn render_missing_source(element: &LayoutElement, style: &str, message: &str) ->
     )
 }
 
-fn render_card_element(element: &LayoutElement, style: &str) -> String {
+fn render_card_element(element: &LayoutElement, ctx: &DesignContext, style: &str) -> String {
+    let (label, value, unit, detail_text) = if element.binding.is_empty() {
+        (
+            element.card_label.clone(),
+            element.card_value.clone(),
+            element.card_unit.clone(),
+            element.card_detail.clone(),
+        )
+    } else {
+        match bound_source(element, ctx) {
+            Some(source) if source.can_card => (
+                source.card_label.clone(),
+                source.card_value.clone(),
+                source.card_unit.clone(),
+                source.card_detail.clone(),
+            ),
+            Some(_) => {
+                return render_missing_source(
+                    element,
+                    style,
+                    "Sumber data ini bukan sumber kartu.",
+                );
+            }
+            None => {
+                return render_missing_source(element, style, "Sumber data tidak tersedia.");
+            }
+        }
+    };
+
+    let template = match element.card_template.as_str() {
+        "icon_right" | "icon_left" | "centered" | "split" | "minimal" => {
+            element.card_template.as_str()
+        }
+        _ => "classic",
+    };
     let value_size = (element.font_size * 2.35).clamp(14.0, 40.0);
-    let detail = if element.card_detail.trim().is_empty() {
+    let label_span = format!(
+        "<span class=\"layout-card-label\" style=\"font-size:{:.1}pt;\">{}</span>",
+        element.font_size,
+        escape_html(&label)
+    );
+    let value_strong = format!(
+        "<strong class=\"layout-card-value\" style=\"font-size:{:.1}pt;color:{};\">{}</strong>",
+        value_size,
+        element.color,
+        escape_html(&value)
+    );
+    let unit_span = format!(
+        "<span class=\"layout-card-unit\" style=\"font-size:{:.1}pt;\">{}</span>",
+        element.font_size * 0.82,
+        escape_html(&unit)
+    );
+    let detail_html = if detail_text.trim().is_empty() {
         String::new()
     } else {
         format!(
             "<span class=\"layout-card-detail\" style=\"font-size:{:.1}pt;\">{}</span>",
             element.font_size * 0.78,
-            escape_html(&element.card_detail)
+            escape_html(&detail_text)
         )
     };
+
+    let min_side = element.width.min(element.height);
+    let icon_scale = (element.card_icon_scale / 100.0).clamp(0.3, 3.0);
+    let icon_size = match template {
+        "centered" => (min_side * 0.24).clamp(8.0, 14.0),
+        "icon_left" | "split" => (min_side * 0.34).clamp(9.0, 17.0),
+        _ => (min_side * 0.32).clamp(9.0, 18.0),
+    } * icon_scale;
+    let icon = card_icon_html(element, icon_size);
+
+    let body = match template {
+        "icon_right" => format!(
+            "<div style=\"display:flex;align-items:flex-start;justify-content:space-between;gap:2mm;width:100%;\"><div style=\"min-width:0;flex:1;\">{value_strong}{unit_span}</div>{icon}</div>{label_span}{detail_html}"
+        ),
+        "icon_left" => format!(
+            "<div style=\"display:flex;align-items:center;gap:3mm;width:100%;\">{icon}<div style=\"min-width:0;flex:1;\">{value_strong}{label_span}{unit_span}{detail_html}</div></div>"
+        ),
+        "centered" => format!(
+            "<div style=\"display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;width:100%;gap:.6mm;\">{icon}{value_strong}{label_span}{unit_span}{detail_html}</div>"
+        ),
+        "split" => format!(
+            "<div style=\"display:flex;align-items:stretch;width:100%;height:100%;\"><div style=\"width:32%;flex:0 0 auto;display:flex;align-items:center;justify-content:center;background:{};\">{icon}</div><div style=\"min-width:0;flex:1;display:flex;flex-direction:column;justify-content:center;padding:3mm 3.5mm;\">{value_strong}{label_span}{unit_span}{detail_html}</div></div>",
+            element.card_accent
+        ),
+        "minimal" => format!(
+            "<div style=\"display:flex;align-items:baseline;gap:2mm;\">{value_strong}{unit_span}</div>{label_span}{detail_html}"
+        ),
+        _ => format!("{label_span}{value_strong}{unit_span}{detail_html}"),
+    };
+
+    let outer = match template {
+        "icon_right" => format!(
+            "display:flex;flex-direction:column;box-sizing:border-box;padding:3mm 3.5mm;overflow:hidden;background:{};border-radius:{}mm;",
+            element.fill, element.radius
+        ),
+        "icon_left" => format!(
+            "display:flex;flex-direction:column;box-sizing:border-box;padding:3mm 3.5mm;overflow:hidden;background:{};border-radius:{}mm;",
+            element.fill, element.radius
+        ),
+        "centered" => format!(
+            "display:flex;flex-direction:column;box-sizing:border-box;padding:3mm;overflow:hidden;background:{};border:{}pt solid {};border-radius:{}mm;",
+            element.fill, element.border_width, element.card_accent, element.radius
+        ),
+        "split" => format!(
+            "display:flex;box-sizing:border-box;overflow:hidden;background:{};border-radius:{}mm;",
+            element.fill, element.radius
+        ),
+        "minimal" => format!(
+            "display:flex;flex-direction:column;box-sizing:border-box;padding:2mm 0;overflow:hidden;background:{};border-bottom:{}pt solid {};",
+            element.fill, element.border_width.max(1.0), element.card_accent
+        ),
+        _ => format!(
+            "display:flex;flex-direction:column;box-sizing:border-box;padding:3mm 3.5mm;overflow:hidden;background:{};border-left:{}pt solid {};border-radius:{}mm;",
+            element.fill, element.border_width, element.card_accent, element.radius
+        ),
+    };
+
     format!(
-        "<div class=\"layout-element layout-card\" data-element-id=\"{}\" style=\"{}display:flex;flex-direction:column;box-sizing:border-box;padding:3mm 3.5mm;overflow:hidden;background:{};border-left:{}pt solid {};border-radius:{}mm;\">\
-         <span class=\"layout-card-label\" style=\"font-size:{:.1}pt;\">{}</span>\
-         <strong class=\"layout-card-value\" style=\"font-size:{:.1}pt;color:{};\">{}</strong>\
-         <span class=\"layout-card-unit\" style=\"font-size:{:.1}pt;\">{}</span>{}</div>",
+        "<div class=\"layout-element layout-card\" data-element-id=\"{}\" data-card-template=\"{}\" style=\"{}{}\">{}</div>",
         escape_html(&element.id),
+        escape_html(template),
         style,
-        element.fill,
-        element.border_width,
-        element.card_accent,
-        element.radius,
-        element.font_size,
-        escape_html(&element.card_label),
-        value_size,
-        element.color,
-        escape_html(&element.card_value),
-        element.font_size * 0.82,
-        escape_html(&element.card_unit),
-        detail
+        outer,
+        body
+    )
+}
+
+fn card_icon_html(element: &LayoutElement, size_mm: f64) -> String {
+    if element.card_icon.trim().is_empty() {
+        return String::new();
+    }
+    let Some(icon) = icons::find(&element.card_icon) else {
+        return String::new();
+    };
+    format!(
+        "<span class=\"layout-card-icon\" style=\"display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:{size_mm:.1}mm;height:{size_mm:.1}mm;border-radius:50%;background:{};color:{};\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" preserveAspectRatio=\"xMidYMid meet\" style=\"width:56%;height:56%;\">{}</svg></span>",
+        element.card_icon_bg,
+        element.card_icon_color,
+        icon.svg
     )
 }
 
@@ -2428,25 +2538,44 @@ mod tests {
             pages: vec![crate::modules::reports::layout::PageLayout {
                 page: 2,
                 blocks: std::collections::BTreeMap::new(),
-                elements: vec![LayoutElement {
-                    id: "card-1".into(),
-                    kind: "card".into(),
-                    x: 10.0,
-                    y: 10.0,
-                    width: 48.0,
-                    height: 33.0,
-                    card_label: "Bibit ditanam".into(),
-                    card_value: "1.250".into(),
-                    card_unit: "bibit".into(),
-                    card_detail: "Sejak awal periode".into(),
-                    card_accent: "#b8894b".into(),
-                    fill: "#f6f8f5".into(),
-                    color: "#143d30".into(),
-                    border_width: 2.0,
-                    radius: 1.5,
-                    font_size: 9.0,
-                    ..Default::default()
-                }],
+                elements: vec![
+                    LayoutElement {
+                        id: "card-1".into(),
+                        kind: "card".into(),
+                        x: 10.0,
+                        y: 10.0,
+                        width: 48.0,
+                        height: 33.0,
+                        card_label: "Bibit ditanam".into(),
+                        card_value: "1.250".into(),
+                        card_unit: "bibit".into(),
+                        card_detail: "Sejak awal periode".into(),
+                        card_accent: "#b8894b".into(),
+                        fill: "#f6f8f5".into(),
+                        color: "#143d30".into(),
+                        border_width: 2.0,
+                        radius: 1.5,
+                        font_size: 9.0,
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "card-bound".into(),
+                        kind: "card".into(),
+                        binding: "card.green".into(),
+                        card_template: "icon_right".into(),
+                        card_icon: "sprout".into(),
+                        card_icon_color: "#ffffff".into(),
+                        card_icon_bg: "#2f6b55".into(),
+                        card_icon_scale: 150.0,
+                        x: 10.0,
+                        y: 50.0,
+                        width: 48.0,
+                        height: 33.0,
+                        card_label: "Nilai lama".into(),
+                        card_value: "0".into(),
+                        ..Default::default()
+                    },
+                ],
             }],
         };
 
@@ -2465,6 +2594,13 @@ mod tests {
         assert!(html.contains("data-text-id=\"card-1-label\""));
         assert!(html.contains("data-text-id=\"card-1-value\""));
         assert!(html.contains("data-text-id=\"cover-card-1-label\""));
+        assert!(html.contains("data-element-id=\"card-bound\""));
+        assert!(html.contains("data-card-template=\"icon_right\""));
+        assert!(html.contains("layout-card-icon"));
+        assert!(html.contains("width:15.8mm"));
+        assert!(html.contains("Green Policing"));
+        assert!(html.contains(">12<"));
+        assert!(!html.contains("Nilai lama"));
     }
 
     #[test]

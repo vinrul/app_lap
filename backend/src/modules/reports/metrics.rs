@@ -13,7 +13,8 @@ use crate::{
         },
     },
     shared::{
-        LabeledCount, extract_links, format_count, is_noise, parse_count, truncate,
+        LabeledCount, extract_links, format_count, is_noise, parse_count, satker_label, truncate,
+        unit_breakdown,
     },
 };
 
@@ -22,13 +23,23 @@ struct MetricRow {
     tanggal: String,
     satuan: String,
     tingkat: String,
+    level: String,
+    unit: String,
     polda: String,
     polres: String,
     polsek: String,
+    pejabat_pelaksana: String,
+    pelaksana: String,
     kode: String,
     kegiatan: String,
     quick_wins: String,
     status_penerimaan: String,
+    personel_count: i64,
+    bibit_count: i64,
+    area_m2: f64,
+    jamaah_count: i64,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
     fields: BTreeMap<String, String>,
     links: Vec<String>,
 }
@@ -44,27 +55,8 @@ pub async fn load_period(
     let (rows, duplicate_rows, source_count) =
         imports::service::load_period_rows(db, start, end).await?;
 
-    let metric_rows = rows
-        .into_iter()
-        .map(|row| MetricRow {
-            source_row: row.source_row,
-            tanggal: row.tanggal,
-            satuan: row.satuan,
-            tingkat: row.tingkat,
-            polda: row.polda,
-            polres: row.polres,
-            polsek: row.polsek,
-            kode: row.kode,
-            kegiatan: row.kegiatan,
-            quick_wins: row.quick_wins,
-            status_penerimaan: row.status_penerimaan,
-            fields: row.fields,
-            links: row.links,
-        })
-        .collect();
-
-    Ok(build(
-        metric_rows,
+    Ok(metrics_from_rows(
+        rows,
         duplicate_rows,
         source_count,
         source_filename,
@@ -73,6 +65,59 @@ pub async fn load_period(
         end,
         polda_name,
     ))
+}
+
+/// Membangun metrik dari sekumpulan baris yang sudah difilter, dipakai oleh
+/// drill-down per satker/polres.
+pub fn metrics_from_rows(
+    rows: Vec<crate::modules::imports::models::RecordView>,
+    duplicate_rows: i64,
+    source_count: i64,
+    source_filename: &str,
+    period_label: &str,
+    start: &str,
+    end: &str,
+    polda_name: &str,
+) -> ReportMetrics {
+    let metric_rows = rows
+        .into_iter()
+        .map(|row| MetricRow {
+            source_row: row.source_row,
+            tanggal: row.tanggal,
+            satuan: row.satuan,
+            tingkat: row.tingkat,
+            level: row.level,
+            unit: row.unit,
+            polda: row.polda,
+            polres: row.polres,
+            polsek: row.polsek,
+            pejabat_pelaksana: row.pejabat_pelaksana,
+            pelaksana: row.pelaksana,
+            kode: row.kode,
+            kegiatan: row.kegiatan,
+            quick_wins: row.quick_wins,
+            status_penerimaan: row.status_penerimaan,
+            personel_count: row.personel_count,
+            bibit_count: row.bibit_count,
+            area_m2: row.area_m2,
+            jamaah_count: row.jamaah_count,
+            latitude: row.latitude,
+            longitude: row.longitude,
+            fields: row.fields,
+            links: row.links,
+        })
+        .collect();
+
+    build(
+        metric_rows,
+        duplicate_rows,
+        source_count,
+        source_filename,
+        period_label,
+        start,
+        end,
+        polda_name,
+    )
 }
 
 fn build(
@@ -118,6 +163,51 @@ fn build(
     let aspirations = build_aspirations(&all);
     let follow_up = build_follow_up(&all);
     let media = build_media(&all);
+    let personel_total: i64 = all.iter().map(|row| row.personel_count).sum();
+    let bibit_total: i64 = all.iter().map(|row| row.bibit_count).sum();
+    let area_total: f64 = all.iter().map(|row| row.area_m2).sum();
+    let jamaah_total: i64 = all.iter().map(|row| row.jamaah_count).sum();
+    let rows_with_coordinates = all
+        .iter()
+        .filter(|row| row.latitude.is_some() && row.longitude.is_some())
+        .count() as i64;
+    let evidence_links: i64 = all.iter().map(|row| row.links.len() as i64).sum();
+    let by_satker = unit_breakdown(
+        all.iter().filter_map(|row| {
+            if !row_is_polda(row) {
+                return None;
+            }
+            let label = row_satker_label(row);
+            if is_noise(&label) {
+                return None;
+            }
+            Some((
+                label,
+                String::new(),
+                row.personel_count,
+                row.bibit_count,
+                row.area_m2,
+                row.jamaah_count,
+            ))
+        }),
+        100,
+    );
+    let by_polres_breakdown = unit_breakdown(
+        all.iter().filter_map(|row| {
+            if is_noise(&row.polres) {
+                return None;
+            }
+            Some((
+                row.polres.clone(),
+                row.polsek.clone(),
+                row.personel_count,
+                row.bibit_count,
+                row.area_m2,
+                row.jamaah_count,
+            ))
+        }),
+        100,
+    );
 
     let cards = build_cards(
         &narkoba,
@@ -150,6 +240,12 @@ fn build(
         total_rows: rows.len() as i64,
         outside_period: 0,
         duplicate_rows,
+        personel_total,
+        bibit_total,
+        area_total: (area_total * 100.0).round() / 100.0,
+        jamaah_total,
+        rows_with_coordinates,
+        evidence_links,
         cards,
         quick_wins: count_by(&all, |row| quick_win_of(row), 0),
         codes: count_by(&all, |row| row.kode.clone(), 20),
@@ -167,6 +263,8 @@ fn build(
         daily: daily_series(start, end, &all),
         by_polres: count_by(&all, |row| row.polres.clone(), 30),
         by_level: count_by(&all, |row| row.tingkat.clone(), 10),
+        by_satker,
+        by_polres_breakdown,
         narkoba,
         green_policing,
         jumat_keliling,
@@ -651,6 +749,32 @@ fn group_metrics(
     result
 }
 
+fn row_is_polda(row: &MetricRow) -> bool {
+    let level = if row.level.trim().is_empty() {
+        row.tingkat.trim()
+    } else {
+        row.level.trim()
+    };
+    level.eq_ignore_ascii_case("polda")
+}
+
+fn row_satker_label(row: &MetricRow) -> String {
+    for value in [
+        row.pejabat_pelaksana.as_str(),
+        row.pelaksana.as_str(),
+        row.unit.as_str(),
+        row.satuan.as_str(),
+    ] {
+        if !is_noise(value) {
+            let label = satker_label(value);
+            if !label.is_empty() {
+                return label;
+            }
+        }
+    }
+    String::new()
+}
+
 fn unique_count<F>(rows: &[&MetricRow], label: F) -> i64
 where
     F: Fn(&MetricRow) -> String,
@@ -1010,7 +1134,21 @@ mod tests {
         assert_eq!(metrics.jumat_keliling.people, 22_666);
         assert_eq!(metrics.subuh_keliling.people, 5_004);
         assert_eq!(metrics.minggu_kasih.people, 7_048);
+        assert!(metrics.bibit_total > 0);
+        assert!(metrics.jamaah_total > 0);
+        assert!(metrics.evidence_links > 0);
         assert!(metrics.media.publications > 0);
         assert!(!metrics.cards.is_empty());
+        assert!(!metrics.by_satker.is_empty());
+        assert!(!metrics.by_polres_breakdown.is_empty());
+        assert!(metrics.by_satker.iter().all(|item| !item.label.is_empty()));
+        assert!(
+            metrics
+                .by_polres_breakdown
+                .iter()
+                .map(|item| item.rows)
+                .sum::<i64>()
+                > 0
+        );
     }
 }

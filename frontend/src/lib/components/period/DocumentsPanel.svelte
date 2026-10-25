@@ -34,7 +34,7 @@
     <div>
       <span class="eyebrow">ARSIP DOKUMEN</span>
       <h2 class="panel-title mt-1">PDF yang dihasilkan</h2>
-      <p class="mt-1 text-xs text-ink-muted">Setiap dokumen menyimpan snapshot metrik dan editorial saat diterbitkan.</p>
+      <p class="mt-1 text-xs text-ink-muted">Setiap dokumen menyimpan snapshot metrik dan desain saat diterbitkan.</p>
     </div>
     <div class="flex items-center gap-2">
       <span class="badge badge-neutral">{reports.length} dokumen</span>
@@ -65,7 +65,7 @@
   {:else}
     <EmptyState
       title="Belum ada PDF"
-      description="Lengkapi editorial lalu terbitkan PDF. Dokumen yang dihasilkan akan muncul di sini beserta snapshot datanya."
+      description="Susun desain lalu terbitkan PDF. Dokumen yang dihasilkan akan muncul di sini beserta snapshot datanya."
     />
   {/if}
 </section>

@@ -20,6 +20,8 @@
   import EmptyState from '../ui/EmptyState.svelte'
   import BarList from '../charts/BarList.svelte'
   import DailyBars from '../charts/DailyBars.svelte'
+  import UnitBreakdownSections from './UnitBreakdownSections.svelte'
+  import UnitDetailModal from './UnitDetailModal.svelte'
 
   type Props = {
     detail: PeriodDetail
@@ -34,6 +36,8 @@
     metricsLoading = false,
     onnavigate,
   }: Props = $props()
+
+  let drilldown = $state<{ scope: 'polres' | 'satker'; label: string } | null>(null)
 </script>
 
 {#if !metrics}
@@ -88,6 +92,12 @@
           <BarList items={metrics.by_polres} limit={10} barTone="gold" />
         </section>
       </div>
+
+      <UnitBreakdownSections
+        satker={metrics.by_satker ?? []}
+        polres={metrics.by_polres_breakdown ?? []}
+        onselect={(scope, item) => (drilldown = { scope, label: item.label })}
+      />
 
       <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div class="card p-4">
@@ -181,7 +191,7 @@
             <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full {detail.reports.length ? 'bg-forest-700 text-white' : 'border border-stone-300 bg-white text-ink-muted'}">
               {#if detail.reports.length}<Check size={13} />{:else}03{/if}
             </span>
-            <div><strong class="text-xs text-ink">Lengkapi narasi</strong><p class="text-[11px] text-ink-muted">Editorial dan penandatangan</p></div>
+            <div><strong class="text-xs text-ink">Susun desain</strong><p class="text-[11px] text-ink-muted">Template, halaman, dan tata letak</p></div>
           </li>
           <li class="flex gap-3 border-t border-stone-100 pt-4">
             <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full {detail.reports.length ? 'bg-forest-700 text-white' : 'border border-stone-300 bg-white text-ink-muted'}">
@@ -191,7 +201,7 @@
           </li>
         </ol>
         <div class="border-t border-line p-4">
-          <Button class="w-full" onclick={() => onnavigate('editorial')}><FileText size={15} /> Buka editorial</Button>
+          <Button class="w-full" onclick={() => onnavigate('design')}><FileText size={15} /> Buka desain</Button>
         </div>
       </section>
 
@@ -201,9 +211,18 @@
           <span class="text-[10px] font-bold tracking-[0.14em] text-ink-muted uppercase">Catatan periode</span>
         </div>
         <p class="mt-2 text-xs leading-relaxed text-ink-muted">
-          Angka pada laporan merupakan agregat baris sumber dan isian laporan. Tinjau kembali narasi editorial serta penandatangan sebelum PDF diterbitkan.
+          Angka pada laporan merupakan agregat baris sumber dan isian laporan. Tinjau kembali desain serta penandatangan sebelum PDF diterbitkan.
         </p>
       </section>
     </aside>
   </div>
 {/if}
+
+<UnitDetailModal
+  open={drilldown !== null}
+  periodId={detail.period.id}
+  scope={drilldown?.scope ?? 'polres'}
+  label={drilldown?.label ?? ''}
+  onclose={() => (drilldown = null)}
+  onopenunit={(scope, label) => (drilldown = { scope, label })}
+/>

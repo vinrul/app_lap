@@ -16,6 +16,8 @@
   import { formatDate, formatNumber } from '../../utils/format'
   import BarList from '../charts/BarList.svelte'
   import DailyBars from '../charts/DailyBars.svelte'
+  import UnitBreakdownSections from './UnitBreakdownSections.svelte'
+  import UnitDetailModal from './UnitDetailModal.svelte'
 
   type Props = { periodId: string }
   let { periodId }: Props = $props()
@@ -23,6 +25,7 @@
   let data = $state<AnalysisResponse | null>(null)
   let loading = $state(true)
   let error = $state('')
+  let drilldown = $state<{ scope: 'polres' | 'satker'; label: string } | null>(null)
 
   onMount(load)
 
@@ -81,7 +84,7 @@
       <DailyBars items={daily} />
     </section>
 
-    <div class="grid gap-4 xl:grid-cols-2">
+    <div class="grid gap-4 xl:grid-cols-3">
       <section class="card p-5">
         <div class="mb-4"><span class="eyebrow">KELOMPOK</span><h2 class="mt-1 font-display text-lg font-semibold text-forest-900">Quick Wins</h2></div>
         <BarList items={data.by_group} limit={12} />
@@ -94,10 +97,21 @@
         <div class="mb-4"><span class="eyebrow">DETAIL KODE</span><h2 class="mt-1 font-display text-lg font-semibold text-forest-900">Kode kegiatan</h2></div>
         <BarList items={data.by_code} limit={20} />
       </section>
-      <section class="card p-5">
-        <div class="mb-4"><span class="eyebrow">SATUAN</span><h2 class="mt-1 font-display text-lg font-semibold text-forest-900">Unit / wilayah</h2></div>
-        <BarList items={data.by_unit} limit={15} barTone="gold" />
-      </section>
     </div>
+
+    <UnitBreakdownSections
+      satker={data.by_satker ?? []}
+      polres={data.by_polres_breakdown ?? []}
+      onselect={(scope, item) => (drilldown = { scope, label: item.label })}
+    />
   </div>
 {/if}
+
+<UnitDetailModal
+  open={drilldown !== null}
+  periodId={periodId}
+  scope={drilldown?.scope ?? 'polres'}
+  label={drilldown?.label ?? ''}
+  onclose={() => (drilldown = null)}
+  onopenunit={(scope, label) => (drilldown = { scope, label })}
+/>

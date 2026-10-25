@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
 };
 
@@ -14,14 +14,16 @@ use crate::{
         imports::{
             analysis,
             models::{
-                EvidenceView, ImportPreview, ImportView, ParsedRow, RecordQuery, RecordView,
-                RecordsResponse,
+                EvidenceView, ImportPreview, ImportView, ParsedRow, QuickWinActivity,
+                QuickWinCodeCoverage, QuickWinDetailResponse, RecordQuery, RecordView,
+                RecordsResponse, UnitDetailResponse,
             },
             parser, qw,
         },
         periods,
+        reports,
     },
-    shared::{LabeledCount, audit, extract_links, parse_fields},
+    shared::{LabeledCount, audit, extract_links, is_noise, parse_fields, satker_label, unit_breakdown},
 };
 
 const DEFAULT_PAGE_SIZE: i64 = 25;
@@ -733,6 +735,264 @@ pub async fn analysis_for_period(
     Ok(build_analysis(&start, &end, source_count, duplicate_rows, &rows))
 }
 
+pub async fn unit_detail_for_period(
+    db: &SqlitePool,
+    config: &Config,
+    period_id: &str,
+    scope: &str,
+    label: &str,
+) -> ApiResult<UnitDetailResponse> {
+    let scope = scope.trim().to_ascii_lowercase();
+    if !matches!(scope.as_str(), "polres" | "satker") {
+        return Err(ApiError::bad_request(
+            "Scope breakdown harus 'polres' atau 'satker'.",
+        ));
+    }
+    let label = label.trim();
+    if label.is_empty() {
+        return Err(ApiError::bad_request("Nama unit wajib diisi."));
+    }
+
+    let (start, end, period_label) = periods::service::dates(db, period_id).await?;
+    let (rows, _, _) = load_period_rows(db, &start, &end).await?;
+    let filtered: Vec<RecordView> = rows
+        .into_iter()
+        .filter(|row| {
+            if scope == "polres" {
+                row.polres.trim().eq_ignore_ascii_case(label)
+            } else {
+                record_is_polda(row) && record_satker_label(row).eq_ignore_ascii_case(label)
+            }
+        })
+        .collect();
+    if filtered.is_empty() {
+        return Err(ApiError::not_found(
+            "Tidak ada data untuk unit ini pada periode tersebut.",
+        ));
+    }
+
+    let mut polsek = BTreeSet::new();
+    let mut imports = BTreeSet::new();
+    for row in &filtered {
+        if !is_noise(&row.polsek) {
+            polsek.insert(row.polsek.trim().to_ascii_lowercase());
+        }
+        imports.insert(row.import_id.clone());
+    }
+    let polsek_count = polsek.len() as i64;
+    let source_count = imports.len() as i64;
+
+    let by_polsek = unit_breakdown(
+        filtered.iter().map(|row| {
+            let label = if is_noise(&row.polsek) {
+                "Tingkat Polres".to_string()
+            } else {
+                row.polsek.trim().to_string()
+            };
+            (
+                label,
+                String::new(),
+                row.personel_count,
+                row.bibit_count,
+                row.area_m2,
+                row.jamaah_count,
+            )
+        }),
+        100,
+    );
+    let metrics = reports::metrics::metrics_from_rows(
+        filtered,
+        0,
+        source_count,
+        "",
+        &period_label,
+        &start,
+        &end,
+        &config.polda_name,
+    );
+
+    Ok(UnitDetailResponse {
+        scope,
+        label: label.to_string(),
+        date_start: start,
+        date_end: end,
+        polsek_count,
+        metrics,
+        by_polsek,
+    })
+}
+
+pub async fn quick_win_detail_for_period(
+    db: &SqlitePool,
+    period_id: &str,
+    code: &str,
+) -> ApiResult<QuickWinDetailResponse> {
+    let normalized = qw::normalize(code);
+    let group = qw::group_of(&normalized)
+        .ok_or_else(|| ApiError::bad_request("Kode Quick Wins tidak dikenali."))?;
+    let is_group = !normalized.contains('.');
+    if !is_group && qw::find(&normalized).is_none() {
+        return Err(ApiError::bad_request("Sub-kode Quick Wins tidak dikenali."));
+    }
+
+    let group_code = group.code;
+    let prefix = format!("{group_code}.");
+    let (start, end, _) = periods::service::dates(db, period_id).await?;
+    let (rows, _, _) = load_period_rows(db, &start, &end).await?;
+    let group_rows: Vec<&RecordView> = rows
+        .iter()
+        .filter(|row| {
+            let row_code = qw::normalize(&row.kode);
+            row_code == group_code || row_code.starts_with(&prefix)
+        })
+        .collect();
+    let matching: Vec<&RecordView> = if is_group {
+        group_rows.clone()
+    } else {
+        group_rows
+            .iter()
+            .copied()
+            .filter(|row| qw::normalize(&row.kode) == normalized)
+            .collect()
+    };
+
+    let by_polres = unit_breakdown(
+        matching.iter().filter_map(|row| {
+            if is_noise(&row.polres) {
+                return None;
+            }
+            Some((
+                row.polres.clone(),
+                row.polsek.clone(),
+                row.personel_count,
+                row.bibit_count,
+                row.area_m2,
+                row.jamaah_count,
+            ))
+        }),
+        200,
+    );
+    let by_satker = unit_breakdown(
+        matching.iter().filter_map(|row| {
+            if !record_is_polda(row) {
+                return None;
+            }
+            let label = record_satker_label(row);
+            if is_noise(&label) {
+                return None;
+            }
+            Some((
+                label,
+                String::new(),
+                row.personel_count,
+                row.bibit_count,
+                row.area_m2,
+                row.jamaah_count,
+            ))
+        }),
+        200,
+    );
+
+    let mut code_counts: BTreeMap<String, (i64, BTreeSet<String>, BTreeSet<String>)> =
+        BTreeMap::new();
+    for row in &group_rows {
+        let row_code = qw::normalize(&row.kode);
+        if row_code.is_empty() {
+            continue;
+        }
+        let entry = code_counts.entry(row_code).or_default();
+        entry.0 += 1;
+        if !is_noise(&row.polres) {
+            entry.1.insert(row.polres.trim().to_ascii_lowercase());
+        }
+        if record_is_polda(row) {
+            let satker = record_satker_label(row);
+            if !is_noise(&satker) {
+                entry.2.insert(satker.to_lowercase());
+            }
+        }
+    }
+    let codes: Vec<QuickWinCodeCoverage> = qw::CODES
+        .iter()
+        .filter(|item| item.group == group_code)
+        .map(|item| {
+            let (row_count, polres, satker) =
+                code_counts.get(item.code).cloned().unwrap_or_default();
+            QuickWinCodeCoverage {
+                code: item.code.to_string(),
+                title: item.title.to_string(),
+                rows: row_count,
+                polres: polres.len() as i64,
+                satker: satker.len() as i64,
+            }
+        })
+        .collect();
+
+    let mut activities: Vec<QuickWinActivity> = matching
+        .iter()
+        .map(|row| QuickWinActivity {
+            tanggal: row.tanggal.clone(),
+            kode: row.kode.clone(),
+            title: if row.qw_title.trim().is_empty() {
+                qw::title(&row.kode).to_string()
+            } else {
+                row.qw_title.clone()
+            },
+            polres: row.polres.clone(),
+            polsek: row.polsek.clone(),
+            satker: if record_is_polda(row) {
+                record_satker_label(row)
+            } else {
+                String::new()
+            },
+            kegiatan: row.kegiatan.clone(),
+            pelaksana: if is_noise(&row.pelaksana) {
+                row.pejabat_pelaksana.clone()
+            } else {
+                row.pelaksana.clone()
+            },
+            personel: row.personel_count,
+            bibit: row.bibit_count,
+            area_m2: row.area_m2,
+            jamaah: row.jamaah_count,
+            map_url: row.map_url.clone(),
+        })
+        .collect();
+    activities.sort_by(|left, right| {
+        right
+            .tanggal
+            .cmp(&left.tanggal)
+            .then_with(|| left.polres.cmp(&right.polres))
+    });
+    activities.truncate(100);
+
+    let title = if is_group {
+        group.title.to_string()
+    } else {
+        qw::title(&normalized).to_string()
+    };
+
+    Ok(QuickWinDetailResponse {
+        code: if is_group {
+            group_code.to_string()
+        } else {
+            normalized
+        },
+        group: group_code.to_string(),
+        title,
+        group_title: group.title.to_string(),
+        date_start: start,
+        date_end: end,
+        total_rows: matching.len() as i64,
+        polres_count: by_polres.len() as i64,
+        satker_count: by_satker.len() as i64,
+        by_polres,
+        by_satker,
+        codes,
+        activities,
+    })
+}
+
 fn build_analysis(
     start: &str,
     end: &str,
@@ -790,6 +1050,43 @@ fn build_analysis(
         *dates.entry(row.tanggal.clone()).or_default() += 1;
     }
 
+    let by_satker = unit_breakdown(
+        rows.iter().filter_map(|row| {
+            if !record_is_polda(row) {
+                return None;
+            }
+            let label = record_satker_label(row);
+            if is_noise(&label) {
+                return None;
+            }
+            Some((
+                label,
+                String::new(),
+                row.personel_count,
+                row.bibit_count,
+                row.area_m2,
+                row.jamaah_count,
+            ))
+        }),
+        100,
+    );
+    let by_polres_breakdown = unit_breakdown(
+        rows.iter().filter_map(|row| {
+            if is_noise(&row.polres) {
+                return None;
+            }
+            Some((
+                row.polres.clone(),
+                row.polsek.clone(),
+                row.personel_count,
+                row.bibit_count,
+                row.area_m2,
+                row.jamaah_count,
+            ))
+        }),
+        100,
+    );
+
     crate::modules::imports::models::AnalysisResponse {
         date_start: start.to_string(),
         date_end: end.to_string(),
@@ -806,8 +1103,36 @@ fn build_analysis(
         by_code: top_counts(codes, 50),
         by_level: top_counts(levels, 10),
         by_unit: top_counts(units, 30),
+        by_satker,
+        by_polres_breakdown,
         by_date: top_counts(dates, 400),
     }
+}
+
+fn record_is_polda(row: &RecordView) -> bool {
+    let level = if row.level.trim().is_empty() {
+        row.tingkat.trim()
+    } else {
+        row.level.trim()
+    };
+    level.eq_ignore_ascii_case("polda")
+}
+
+fn record_satker_label(row: &RecordView) -> String {
+    for value in [
+        row.pejabat_pelaksana.as_str(),
+        row.pelaksana.as_str(),
+        row.unit.as_str(),
+        row.satuan.as_str(),
+    ] {
+        if !is_noise(value) {
+            let label = satker_label(value);
+            if !label.is_empty() {
+                return label;
+            }
+        }
+    }
+    String::new()
 }
 
 fn top_counts(map: BTreeMap<String, i64>, limit: usize) -> Vec<LabeledCount> {
@@ -823,4 +1148,103 @@ fn top_counts(map: BTreeMap<String, i64>, limit: usize) -> Vec<LabeledCount> {
     });
     items.truncate(limit);
     items
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn analysis_breaks_down_satker_and_polres() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::test_config();
+        config.data_dir = dir.path().to_path_buf();
+        let db = crate::db::connect(&config).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO users(id,username,password_hash,role) VALUES('u1','tester','x','admin')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO report_periods(id,start_date,end_date,label,created_by)
+             VALUES('p1','2026-10-15','2026-10-19','15–19 Oktober 2026','u1')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let bytes = std::fs::read("../report-2026-10-19 (1).xlsx").unwrap();
+        super::commit(
+            &db,
+            &config,
+            "u1",
+            "report-2026-10-19.xlsx",
+            bytes,
+        )
+        .await
+        .unwrap();
+
+        let analysis = super::analysis_for_period(&db, "p1").await.unwrap();
+        assert_eq!(analysis.total_rows, 4554);
+        assert!(analysis.by_satker.len() > 1);
+        assert!(!analysis.by_polres_breakdown.is_empty());
+        assert!(analysis.by_satker.iter().all(|item| !item.label.is_empty()));
+        assert!(
+            analysis
+                .by_polres_breakdown
+                .iter()
+                .map(|item| item.rows)
+                .sum::<i64>()
+                > 0
+        );
+        assert!(
+            analysis
+                .by_polres_breakdown
+                .iter()
+                .any(|item| item.polsek > 0)
+        );
+
+        let polres = analysis.by_polres_breakdown.first().unwrap();
+        let polres_detail = super::unit_detail_for_period(
+            &db,
+            &config,
+            "p1",
+            "polres",
+            &polres.label,
+        )
+        .await
+        .unwrap();
+        assert_eq!(polres_detail.metrics.total_rows, polres.rows);
+        assert_eq!(polres_detail.metrics.cards.len(), 6);
+        assert!(polres_detail.polsek_count > 0);
+        assert!(!polres_detail.by_polsek.is_empty());
+
+        let satker = analysis.by_satker.first().unwrap();
+        let satker_detail = super::unit_detail_for_period(
+            &db,
+            &config,
+            "p1",
+            "satker",
+            &satker.label,
+        )
+        .await
+        .unwrap();
+        assert_eq!(satker_detail.metrics.total_rows, satker.rows);
+
+        let group = super::quick_win_detail_for_period(&db, "p1", "QW1")
+            .await
+            .unwrap();
+        assert_eq!(group.group, "QW1");
+        assert_eq!(group.codes.len(), 14);
+        assert!(group.total_rows > 0);
+        assert!(group.polres_count > 0);
+        assert!(!group.activities.is_empty());
+
+        let code = super::quick_win_detail_for_period(&db, "p1", "QW1.2")
+            .await
+            .unwrap();
+        assert_eq!(code.code, "QW1.2");
+        assert!(code.total_rows <= group.total_rows);
+        assert_eq!(code.codes.len(), 14);
+    }
 }

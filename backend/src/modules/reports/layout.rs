@@ -57,8 +57,9 @@ pub struct LayoutElement {
     pub rotation: f64,
     #[serde(default = "default_opacity")]
     pub opacity: f64,
-    pub z: i32,
+    pub z: i64,
     pub hidden: bool,
+    pub locked: bool,
     pub src: String,
     pub alt: String,
     pub object_fit: String,
@@ -100,6 +101,11 @@ pub struct LayoutElement {
     pub card_unit: String,
     pub card_detail: String,
     pub card_accent: String,
+    pub card_template: String,
+    pub card_icon: String,
+    pub card_icon_color: String,
+    pub card_icon_bg: String,
+    pub card_icon_scale: f64,
     pub icon_name: String,
     pub icon_color: String,
     pub icon_stroke: f64,
@@ -123,6 +129,27 @@ pub struct UploadedImage {
     pub url: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct MediaItem {
+    pub source: String,
+    pub id: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size_bytes: i64,
+    pub preview_url: String,
+    pub created_at: String,
+    pub period_id: String,
+    pub period_label: String,
+    pub import_filename: String,
+    pub context: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportMediaRequest {
+    pub source: String,
+    pub id: String,
+}
+
 impl Default for LayoutElement {
     fn default() -> Self {
         Self {
@@ -136,6 +163,7 @@ impl Default for LayoutElement {
             opacity: 1.0,
             z: 0,
             hidden: false,
+            locked: false,
             src: String::new(),
             alt: String::new(),
             object_fit: String::new(),
@@ -177,6 +205,11 @@ impl Default for LayoutElement {
             card_unit: String::new(),
             card_detail: String::new(),
             card_accent: String::new(),
+            card_template: "classic".to_string(),
+            card_icon: String::new(),
+            card_icon_color: String::new(),
+            card_icon_bg: String::new(),
+            card_icon_scale: 100.0,
             icon_name: String::new(),
             icon_color: String::new(),
             icon_stroke: 2.0,
@@ -496,6 +529,16 @@ impl LayoutElement {
                     160,
                 );
                 self.card_accent = safe_color(&self.card_accent, "#b8894b");
+                self.card_template = match self.card_template.trim() {
+                    "icon_right" | "icon_left" | "centered" | "split" | "minimal" => {
+                        self.card_template.trim().to_string()
+                    }
+                    _ => "classic".to_string(),
+                };
+                self.card_icon = truncate(&self.card_icon.trim(), 60);
+                self.card_icon_color = safe_color(&self.card_icon_color, "#b8894b");
+                self.card_icon_bg = safe_color(&self.card_icon_bg, "#f1e6d5");
+                self.card_icon_scale = clamp_num(self.card_icon_scale, 30.0, 300.0, 100.0);
                 self.fill = safe_color(&self.fill, "#f6f8f5");
                 self.color = safe_color(&self.color, "#143d30");
                 self.border_width = clamp_num(self.border_width, 0.0, 10.0, 2.0);
@@ -596,7 +639,14 @@ pub struct DesignSource {
     pub chart_labels: Vec<String>,
     pub chart_values: Vec<f64>,
     pub chart_title: String,
+    pub can_table: bool,
     pub can_chart: bool,
+    pub can_card: bool,
+    pub card_label: String,
+    pub card_value: String,
+    pub card_unit: String,
+    pub card_detail: String,
+    pub card_icon: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1106,6 +1156,12 @@ mod tests {
                     card_unit: "bibit".into(),
                     card_detail: "x".repeat(300),
                     card_accent: "not-a-color".into(),
+                    card_template: "unknown".into(),
+                    card_icon: " shield ".into(),
+                    card_icon_color: "bad".into(),
+                    card_icon_bg: "bad".into(),
+                    card_icon_scale: 999.0,
+                    locked: true,
                     fill: "nope".into(),
                     color: "bad".into(),
                     border_width: 99.0,
@@ -1124,6 +1180,12 @@ mod tests {
         assert_eq!(card.card_unit, "bibit");
         assert_eq!(card.card_detail.chars().count(), 160);
         assert_eq!(card.card_accent, "#b8894b");
+        assert_eq!(card.card_template, "classic");
+        assert_eq!(card.card_icon, "shield");
+        assert_eq!(card.card_icon_color, "#b8894b");
+        assert_eq!(card.card_icon_bg, "#f1e6d5");
+        assert_eq!(card.card_icon_scale, 300.0);
+        assert!(card.locked);
         assert_eq!(card.fill, "#f6f8f5");
         assert_eq!(card.color, "#143d30");
         assert_eq!(card.border_width, 10.0);

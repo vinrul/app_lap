@@ -8,14 +8,17 @@ import type {
   ImportPreview,
   ImportView,
   LayoutView,
+  MediaItem,
   Meta,
   Period,
   PeriodDetail,
+  QuickWinDetail,
   RecordsResponse,
   ReportContent,
   ReportLayout,
   ReportMetrics,
   ReportView,
+  UnitDetail,
   UploadedDesignImage,
   User,
 } from '../types'
@@ -80,6 +83,12 @@ export const importsApi = {
     request<AnalysisResponse>(`/periods/${periodId}/analysis`),
   retryEvidence: (importId: string) =>
     request<{ queued: number }>(`/imports/${importId}/evidence/retry`, { method: 'POST' }),
+  unitDetail: (periodId: string, scope: 'polres' | 'satker', label: string) =>
+    request<UnitDetail>(
+      `/periods/${periodId}/unit-detail${queryString({ scope, label })}`,
+    ),
+  quickWinDetail: (periodId: string, code: string) =>
+    request<QuickWinDetail>(`/periods/${periodId}/quick-wins/${encodeURIComponent(code)}`),
 }
 
 export interface RecordFilters {
@@ -150,6 +159,13 @@ export const designApi = {
     `/api/periods/${periodId}/layout/images/${imageId}`,
   sources: (periodId: string) =>
     request<DesignSource[]>(`/periods/${periodId}/design/sources`),
+  media: (periodId: string) =>
+    request<MediaItem[]>(`/periods/${periodId}/design/media`),
+  importMedia: (periodId: string, source: 'design' | 'evidence', id: string) =>
+    request<UploadedDesignImage>(`/periods/${periodId}/layout/images/from-media`, {
+      method: 'POST',
+      body: JSON.stringify({ source, id }),
+    }),
   templates: () => request<DesignTemplateView[]>('/design/templates'),
   saveTemplate: (name: string, layout: ReportLayout) =>
     request<DesignTemplateView>('/design/templates', {

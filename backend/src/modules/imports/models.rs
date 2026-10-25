@@ -3,7 +3,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::shared::LabeledCount;
+use crate::{
+    modules::reports::models::ReportMetrics,
+    shared::{LabeledCount, UnitBreakdown},
+};
 
 pub const HEADERS: [&str; 18] = [
     "Tanggal",
@@ -223,5 +226,61 @@ pub struct AnalysisResponse {
     pub by_code: Vec<LabeledCount>,
     pub by_level: Vec<LabeledCount>,
     pub by_unit: Vec<LabeledCount>,
+    pub by_satker: Vec<UnitBreakdown>,
+    pub by_polres_breakdown: Vec<UnitBreakdown>,
     pub by_date: Vec<LabeledCount>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UnitDetailResponse {
+    pub scope: String,
+    pub label: String,
+    pub date_start: String,
+    pub date_end: String,
+    pub polsek_count: i64,
+    pub metrics: ReportMetrics,
+    pub by_polsek: Vec<UnitBreakdown>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuickWinCodeCoverage {
+    pub code: String,
+    pub title: String,
+    pub rows: i64,
+    pub polres: i64,
+    pub satker: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuickWinActivity {
+    pub tanggal: String,
+    pub kode: String,
+    pub title: String,
+    pub polres: String,
+    pub polsek: String,
+    pub satker: String,
+    pub kegiatan: String,
+    pub pelaksana: String,
+    pub personel: i64,
+    pub bibit: i64,
+    pub area_m2: f64,
+    pub jamaah: i64,
+    pub map_url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuickWinDetailResponse {
+    pub code: String,
+    pub group: String,
+    pub title: String,
+    pub group_title: String,
+    pub date_start: String,
+    pub date_end: String,
+    pub total_rows: i64,
+    pub polres_count: i64,
+    pub satker_count: i64,
+    pub by_polres: Vec<UnitBreakdown>,
+    pub by_satker: Vec<UnitBreakdown>,
+    pub codes: Vec<QuickWinCodeCoverage>,
+    pub activities: Vec<QuickWinActivity>,
 }

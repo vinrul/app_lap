@@ -13,8 +13,8 @@ use crate::{
         auth::AuthUser,
         reports::{
             layout::{
-                DesignSource, DesignTemplateView, LayoutView, SaveLayoutRequest,
-                SaveTemplateRequest, UploadedImage,
+                DesignSource, DesignTemplateView, ImportMediaRequest, LayoutView, MediaItem,
+                SaveLayoutRequest, SaveTemplateRequest, UploadedImage,
             },
             models::{
                 DraftView, GenerateReportRequest, PreviewReportRequest, PreviewResponse,
@@ -188,6 +188,33 @@ pub async fn layout_image(
         HeaderValue::from_static("private, max-age=3600"),
     );
     Ok(response)
+}
+
+pub async fn design_media(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(period_id): Path<String>,
+) -> ApiResult<Json<Vec<MediaItem>>> {
+    Ok(Json(service::list_media(&state.db, &period_id).await?))
+}
+
+pub async fn import_media(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+    Json(input): Json<ImportMediaRequest>,
+) -> ApiResult<Json<UploadedImage>> {
+    Ok(Json(
+        service::import_media_image(
+            &state.db,
+            &state.config,
+            &user.id,
+            &period_id,
+            &input.source,
+            &input.id,
+        )
+        .await?,
+    ))
 }
 
 pub async fn generate(

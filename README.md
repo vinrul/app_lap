@@ -9,6 +9,7 @@ Aplikasi lokal untuk mengubah export Excel **Quick Wins / Qins Polri** menjadi l
 - Validasi berkas, tanggal, duplikasi dalam berkas, dan pratinjau sebelum penyimpanan; duplikasi lintas berkas dibuang otomatis saat periode dibaca (kunci: tanggal, waktu kirim, satuan, tingkat, polres, polsek, dan kode).
 - Periode harian (pilih tanggal), mingguan/rentang (pilih rentang tanggal), atau bulanan (pilih bulan dan tahun). Hierarki pelaksana diturunkan otomatis: Polres/Polsek kosong berarti Polda/satker Polda, Polsek kosong berarti Polres/satker Polres.
 - Analisis otomatis dari `Isian laporan`: jumlah personel, bibit, luas area, jemaah, titik koordinat, dan tautan peta; tersedia sebagai kartu ringkas, tren harian, dan sebaran kelompok/kode/tingkat/unit.
+- Drill-down pelaksana: klik satker Polda atau polres pada tabel breakdown untuk melihat ringkasan metrik, sebaran Quick Wins dan sub-kode, rincian polsek, serta kegiatan. Klik QW1/QW1.2 untuk melihat cakupan polres/satker dan kegiatan sampai tingkat unit.
 - Bukti dukung diunduh best-effort dari tautan gambar/PDF langsung, berkas Google Drive, dan ekspor Google Docs. Folder Drive, media sosial, dan tautan peta ditandai tidak dapat diunduh; pengguna dapat menjalankan ulang unduhan dari halaman Import data.
 - Perhitungan metrik otomatis dari kolom `Isian laporan`:
   - Berantas narkoba (orang ditangkap, kawasan, rehabilitasi, penyuluhan)
@@ -16,11 +17,11 @@ Aplikasi lokal untuk mengubah export Excel **Quick Wins / Qins Polri** menjadi l
   - Jumat Keliling, Subuh Keliling, Minggu Kasih (jemaah, lokasi ibadah, polres/polsek)
   - Aspirasi masyarakat dan bentuk tindak lanjut
   - Amplifikasi media (publikasi, dokumentasi, kanal, kegiatan)
-- Penyuntingan narasi laporan per bagian serta blok penandatangan.
-- Editor desain visual per laporan: tambah teks (perataan horizontal dan vertikal, pilihan font sistem dan Google Fonts yang dibundel offline), kotak dan bentuk lain (lingkaran/elips, segitiga, segitiga siku, belah ketupat, jajar genjang, trapesium, segi lima, segi enam, bintang, panah, plus, hati) dengan isi warna solid atau gradien linear/radial hingga 8 warna serta opsi tanpa isi dan tanpa garis, gambar (unggah atau URL), ikon Lucide (warna dan ketebalan garis dapat diubah), kartu, tabel manual, dan grafik bar, bar horizontal, line, pie, atau donut; tabel/grafik dapat diikat ke sumber data metrik; kartu KPI dapat diedit langsung atau di-detach menjadi kartu mandiri; geser/resize/style blok laporan; editor menampilkan satu halaman dalam satu waktu dengan navigasi Sebelumnya/Berikutnya serta zoom −/+ (Ctrl +/−); edit teks blok langsung di kanvas; detach tabel/grafik lama menjadi objek manual dengan tombol Reset ke data; panel layer untuk sembunyikan dan urutkan objek; gabungkan objek agar bergerak bersama; mode dokumen blank dengan orientasi portrait/landscape dan jumlah halaman yang bisa ditambah atau dikurangi; simpan dan terapkan template desain lintas periode (mode, orientasi, jumlah halaman, dan gambar ikut disimpan); lalu terapkan layout ke pratinjau dan PDF.
+- Editor desain visual per laporan: saat desain periode belum pernah disimpan, tab Desain menampilkan pilihan blank template dan seluruh template desain; setelah desain disimpan, kanvas terakhir langsung ditampilkan. Editor mendukung teks (perataan horizontal dan vertikal, pilihan font sistem dan Google Fonts yang dibundel offline), kotak dan bentuk lain (lingkaran/elips, segitiga, segitiga siku, belah ketupat, jajar genjang, trapesium, segi lima, segi enam, bintang, panah, plus, hati) dengan isi warna solid atau gradien linear/radial hingga 8 warna serta opsi tanpa isi dan tanpa garis, gambar (media library atau URL), ikon Lucide (warna dan ketebalan garis dapat diubah), kartu, tabel manual, dan grafik bar, bar horizontal, line, pie, atau donut; tabel/grafik dapat diikat ke sumber data metrik; kartu KPI dapat diikat ke indikator Ringkasan/Analisis (narkoba, green policing, personel, bibit, luas, jemaah, koordinat, bukti dukung, jumlah polres/satker, periode), memakai enam template visual (klasik, ikon kiri, ikon kanan, tengah, panel ikon, minimal) dengan ikon Lucide yang bisa diganti warna dan latarnya, diedit langsung, atau di-detach menjadi kartu mandiri; geser/resize/style blok laporan; editor menampilkan satu halaman dalam satu waktu dengan navigasi Sebelumnya/Berikutnya serta zoom −/+ (Ctrl +/−); edit teks blok langsung di kanvas; detach tabel/grafik lama menjadi objek manual dengan tombol Reset ke data; panel layer untuk sembunyikan, kunci posisi, urutkan, atau gabungkan objek; menu klik kanan pada kanvas untuk menaikkan/menurunkan layer, menyembunyikan, mengunci, menduplikasi, menyalin, menempel (termasuk saat tidak ada objek terpilih), dan menghapus objek; pintasan Ctrl+C/Ctrl+V; gabungkan objek agar bergerak bersama; mode dokumen blank dengan orientasi portrait/landscape dan jumlah halaman yang bisa ditambah atau dikurangi; simpan dan terapkan template desain lintas periode (mode, orientasi, jumlah halaman, dan gambar ikut disimpan); lalu terapkan layout ke pratinjau dan PDF.
+- Media library desain: gambar yang pernah diunggah dari periode mana pun dan bukti dukung gambar pada periode aktif tersedia dalam satu panel; gambar dipilih dulu sebelum masuk kanvas, dan unggahan baru disimpan ke library tanpa langsung ditempatkan.
 - Pratinjau HTML sebelum penerbitan.
 - Pembuatan PDF laporan resmi 9 halaman dengan penomoran halaman, tabel sebaran wilayah, dan grafik batang, atau dokumen blank sesuai orientasi dan jumlah halaman yang disimpan.
-- Arsip PDF dengan snapshot metrik dan konten editorial.
+- Arsip PDF dengan snapshot metrik dan desain.
 - Autentikasi sesi, peran `admin`/`operator`, audit event, dan pembatasan koneksi loopback.
 - Antarmuka Svelte 5 responsif, modular, dan menggunakan Tailwind CSS v4.
 
@@ -58,11 +59,10 @@ Secara default aplikasi hanya mendengarkan koneksi loopback. Frontend dibangun o
 3. Buat periode pada menu **Periode** dan pilih jenisnya: harian, mingguan/rentang, atau bulanan. Periode otomatis mengambil baris dari seluruh import yang mencakup rentang tanggalnya.
 4. Buka tab **Ringkasan** untuk memeriksa metrik, berkas impor, duplikat, dan sebaran wilayah.
 5. Buka tab **Analisis** untuk personel, bibit, luas, jemaah, koordinat, tren harian, serta sebaran kode/unit. Tab **Data** memuat daftar baris beserta bukti dukung.
-6. Buka tab **Editorial** untuk melengkapi ringkasan, narasi per bagian, serta penandatangan.
-7. Gunakan tab **Desain** untuk menyusun layout, lalu **Pratinjau** dan **Buat PDF**.
-8. Unduh atau tinjau PDF pada tab **Dokumen**.
+6. Buka tab **Desain**. Jika desain periode belum pernah disimpan, pilih blank template atau salah satu template desain; jika sudah ada, kanvas terakhir langsung tampil. Susun layout, lalu **Pratinjau** dan **Buat PDF**.
+7. Unduh atau tinjau PDF pada tab **Dokumen**.
 
-Metrik dihitung dari baris sumber dan isian terstruktur. Angka yang tidak tersedia di workbook (misalnya narasi kebijakan) tetap perlu diisi operator. Tinjau kembali angka agregat dan narasi sebelum menerbitkan PDF.
+Metrik dihitung dari baris sumber dan isian terstruktur. Angka yang tidak tersedia di workbook (misalnya narasi kebijakan) tetap perlu diisi operator. Tinjau kembali angka agregat dan desain sebelum menerbitkan PDF.
 
 ## Struktur proyek
 
@@ -90,7 +90,7 @@ app_lap/
 │           ├── users/           # Pengelolaan akun & peran
 │           ├── periods/         # Periode laporan
 │           ├── imports/         # Import mandiri, parser Excel, dedupe, analisis, bukti dukung
-│           ├── reports/         # Metrik, render PDF, draft editorial, layout desain
+│           ├── reports/         # Metrik, render PDF, layout desain
 │           └── dashboard/       # Ringkasan lintas periode
 └── frontend/                    # Bun + Svelte 5 SPA + Tailwind CSS v4
     └── src/
@@ -101,7 +101,7 @@ app_lap/
         │   │   ├── layout/      # AppShell, sidebar, topbar
         │   │   ├── ui/          # Button, modal, badge, tabel, dll.
         │   │   ├── charts/      # Bar list & grafik harian
-        │           └── period/      # Panel ringkasan, analisis, data, editorial, desain, dokumen
+        │           └── period/      # Panel ringkasan, analisis, data, desain, dokumen
         │   ├── stores/          # Auth, router, toast, meta
         │   ├── types/           # Tipe API
         │   └── utils/           # Format tanggal/angka & konstanta

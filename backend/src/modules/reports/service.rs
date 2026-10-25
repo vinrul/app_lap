@@ -16,14 +16,15 @@ use crate::{
         imports, periods,
         reports::{
             layout::{
-                DesignTemplateView, LayoutView, ReportLayout, UploadedImage, image_id_from_src,
+                DesignTemplateView, LayoutView, MediaItem, ReportLayout, UploadedImage,
+                image_id_from_src,
             },
             metrics,
             models::{DraftView, ReportContent, ReportMetrics, ReportView},
             render,
         },
     },
-    shared::audit,
+    shared::{audit, truncate},
 };
 
 pub async fn list_for_period(db: &SqlitePool, period_id: &str) -> ApiResult<Vec<ReportView>> {
@@ -489,6 +490,173 @@ pub async fn layout_image(
     ))
 }
 
+pub async fn list_media(db: &SqlitePool, period_id: &str) -> ApiResult<Vec<MediaItem>> {
+    periods::service::get(db, period_id).await?;
+    let (start, end, _) = periods::service::dates(db, period_id).await?;
+    let mut items = Vec::new();
+
+    let design_rows = sqlx::query(
+        "SELECT d.id, d.filename, d.content_type, d.size_bytes, d.created_at,
+                d.period_id, COALESCE(p.label, '') AS period_label
+         FROM design_images d
+         LEFT JOIN report_periods p ON p.id = d.period_id
+         ORDER BY d.created_at DESC, d.id DESC
+         LIMIT 200",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(ApiError::internal)?;
+    for row in design_rows {
+        let id: String = row.get("id");
+        let origin_period: String = row.get("period_id");
+        let period_label: String = row.get("period_label");
+        items.push(MediaItem {
+            source: "design".to_string(),
+            preview_url: format!("/api/periods/{origin_period}/layout/images/{id}"),
+            id,
+            filename: row.get("filename"),
+            content_type: row.get("content_type"),
+            size_bytes: row.get("size_bytes"),
+            created_at: row.get("created_at"),
+            period_id: origin_period,
+            period_label: period_label.clone(),
+            import_filename: String::new(),
+            context: if period_label.is_empty() {
+                "Gambar desain".to_string()
+            } else {
+                format!("Desain · {period_label}")
+            },
+        });
+    }
+
+    let evidence_rows = sqlx::query(
+        "SELECT e.id, e.filename, e.content_type, e.size_bytes, e.created_at,
+                e.stored_path, i.filename AS import_filename, r.unit, r.polres, r.kegiatan
+         FROM import_evidence e
+         JOIN import_rows r ON r.id = e.row_id
+         JOIN imports i ON i.id = e.import_id
+         WHERE e.status = 'ready'
+           AND e.content_type IN ('image/png', 'image/jpeg')
+           AND r.tanggal BETWEEN ? AND ?
+         ORDER BY e.created_at DESC, e.id DESC
+         LIMIT 400",
+    )
+    .bind(&start)
+    .bind(&end)
+    .fetch_all(db)
+    .await
+    .map_err(ApiError::internal)?;
+    let mut seen_paths = HashSet::new();
+    for row in evidence_rows {
+        let stored_path: String = row.get("stored_path");
+        if !seen_paths.insert(stored_path) {
+            continue;
+        }
+        let id: String = row.get("id");
+        let unit: String = row.get("unit");
+        let polres: String = row.get("polres");
+        let kegiatan: String = row.get("kegiatan");
+        let location = if !unit.trim().is_empty() {
+            unit
+        } else {
+            polres
+        };
+        let context = if kegiatan.trim().is_empty() {
+            location
+        } else {
+            format!("{location} · {}", truncate(&kegiatan, 80))
+        };
+        items.push(MediaItem {
+            source: "evidence".to_string(),
+            preview_url: format!("/api/evidence/{id}"),
+            id,
+            filename: row.get("filename"),
+            content_type: row.get("content_type"),
+            size_bytes: row.get("size_bytes"),
+            created_at: row.get("created_at"),
+            period_id: String::new(),
+            period_label: String::new(),
+            import_filename: row.get("import_filename"),
+            context,
+        });
+    }
+
+    items.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    items.truncate(300);
+    Ok(items)
+}
+
+pub async fn import_media_image(
+    db: &SqlitePool,
+    config: &Config,
+    user_id: &str,
+    period_id: &str,
+    source: &str,
+    media_id: &str,
+) -> ApiResult<UploadedImage> {
+    periods::service::get(db, period_id).await?;
+    match source {
+        "design" => {
+            let row = sqlx::query(
+                "SELECT period_id, filename, stored_path FROM design_images WHERE id = ?",
+            )
+            .bind(media_id)
+            .fetch_optional(db)
+            .await
+            .map_err(ApiError::internal)?
+            .ok_or_else(|| ApiError::not_found("Gambar media tidak ditemukan."))?;
+            let origin_period: String = row.get("period_id");
+            if origin_period == period_id {
+                return Ok(UploadedImage {
+                    id: media_id.to_string(),
+                    url: format!("/api/periods/{period_id}/layout/images/{media_id}"),
+                });
+            }
+            let filename: String = row.get("filename");
+            let stored_path: String = row.get("stored_path");
+            let bytes = tokio::fs::read(&stored_path)
+                .await
+                .map_err(|_| ApiError::not_found("Berkas gambar media tidak ditemukan."))?;
+            save_layout_image(db, config, user_id, period_id, &filename, &bytes).await
+        }
+        "evidence" => {
+            let (start, end, _) = periods::service::dates(db, period_id).await?;
+            let row = sqlx::query(
+                "SELECT e.filename, e.stored_path, e.content_type, e.status
+                 FROM import_evidence e
+                 JOIN import_rows r ON r.id = e.row_id
+                 WHERE e.id = ? AND r.tanggal BETWEEN ? AND ?",
+            )
+            .bind(media_id)
+            .bind(&start)
+            .bind(&end)
+            .fetch_optional(db)
+            .await
+            .map_err(ApiError::internal)?
+            .ok_or_else(|| ApiError::not_found("Bukti dukung tidak ditemukan pada periode ini."))?;
+            let status: String = row.get("status");
+            if status != "ready" {
+                return Err(ApiError::bad_request(
+                    "Bukti dukung belum berhasil diunduh.",
+                ));
+            }
+            let content_type: String = row.get("content_type");
+            if !matches!(content_type.as_str(), "image/png" | "image/jpeg") {
+                return Err(ApiError::bad_request(
+                    "Hanya bukti dukung PNG/JPEG yang dapat dipakai di desain.",
+                ));
+            }
+            let filename: String = row.get("filename");
+            let stored_path: String = row.get("stored_path");
+            let bytes = tokio::fs::read(&stored_path)
+                .await
+                .map_err(|_| ApiError::not_found("Berkas bukti dukung tidak ditemukan."))?;
+            save_layout_image(db, config, user_id, period_id, &filename, &bytes).await
+        }
+        _ => Err(ApiError::bad_request("Sumber media tidak dikenali.")),
+    }
+}
+
 pub async fn load_design(
     db: &SqlitePool,
     period_id: &str,
@@ -793,4 +961,103 @@ pub async fn download_path(
         .collect();
     let filename = format!("laporan-{}.pdf", sanitized.trim_matches('-'));
     Ok((path, filename))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn media_library_lists_and_copies_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::test_config();
+        config.data_dir = dir.path().to_path_buf();
+        let db = crate::db::connect(&config).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO users(id,username,password_hash,role) VALUES('u1','tester','x','admin')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO report_periods(id,start_date,end_date,label,created_by)
+             VALUES('p1','2026-10-19','2026-10-25','19–25 Oktober 2026','u1'),
+                   ('p2','2026-10-26','2026-11-01','26 Oktober–1 November 2026','u1')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let png = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        let uploaded =
+            super::save_layout_image(&db, &config, "u1", "p1", "desain.png", &png)
+                .await
+                .unwrap();
+
+        let evidence_dir = config.data_dir.join("evidence").join("imp1");
+        tokio::fs::create_dir_all(&evidence_dir).await.unwrap();
+        let evidence_path = evidence_dir.join("ev1.png");
+        tokio::fs::write(&evidence_path, png).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO imports(id,filename,file_hash,stored_path,parser_version,row_count,
+                skipped_rows,duplicate_rows,date_start,date_end,warnings_json,imported_by)
+             VALUES('imp1','bukti.xlsx','hash','berkas.xlsx','3',1,0,0,
+                '2026-10-19','2026-10-25','[]','u1')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let row_id = sqlx::query(
+            "INSERT INTO import_rows(import_id,source_row,tanggal,unit,polres,kegiatan,raw_json)
+             VALUES('imp1',2,'2026-10-20','Polsek Kuta','Polresta Denpasar','Patroli','{}')",
+        )
+        .execute(&db)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+        sqlx::query(
+            "INSERT INTO import_evidence(id,import_id,row_id,source_url,filename,content_type,
+                stored_path,size_bytes,status)
+             VALUES('ev1','imp1',?,'https://contoh/foto.png','foto.png','image/png',?,?,'ready')",
+        )
+        .bind(row_id)
+        .bind(evidence_path.to_string_lossy().to_string())
+        .bind(png.len() as i64)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let media = super::list_media(&db, "p1").await.unwrap();
+        assert_eq!(media.len(), 2);
+        assert!(media.iter().any(|item| item.source == "design"));
+        let evidence = media.iter().find(|item| item.source == "evidence").unwrap();
+        assert_eq!(evidence.id, "ev1");
+        assert_eq!(evidence.preview_url, "/api/evidence/ev1");
+        assert_eq!(evidence.context, "Polsek Kuta · Patroli");
+
+        let same = super::import_media_image(&db, &config, "u1", "p1", "design", &uploaded.id)
+            .await
+            .unwrap();
+        assert_eq!(same.id, uploaded.id);
+
+        let copied = super::import_media_image(&db, &config, "u1", "p1", "evidence", "ev1")
+            .await
+            .unwrap();
+        assert_ne!(copied.id, uploaded.id);
+        assert!(tokio::fs::try_exists(dir.path().join("design/p1")).await.unwrap());
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM design_images WHERE period_id = 'p1'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(count, 2);
+
+        let cross = super::import_media_image(&db, &config, "u1", "p2", "design", &uploaded.id)
+            .await
+            .unwrap();
+        assert_ne!(cross.id, uploaded.id);
+    }
 }

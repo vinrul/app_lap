@@ -12,7 +12,8 @@ use crate::{
         imports::{
             evidence,
             models::{
-                AnalysisResponse, ImportPreview, ImportView, RecordQuery, RecordsResponse,
+                AnalysisResponse, ImportPreview, ImportView, QuickWinDetailResponse, RecordQuery,
+                RecordsResponse, UnitDetailResponse,
             },
             service,
         },
@@ -76,7 +77,7 @@ pub async fn evidence_file(
         })
         .collect();
     let disposition = format!(
-        "attachment; filename=\"{}\"",
+        "inline; filename=\"{}\"",
         if safe_name.is_empty() { "bukti-dukung" } else { &safe_name }
     );
     let headers = [
@@ -115,6 +116,40 @@ pub async fn analysis(
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<AnalysisResponse>> {
     Ok(Json(service::analysis_for_period(&state.db, &period_id).await?))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct UnitDetailQuery {
+    pub scope: String,
+    pub label: String,
+}
+
+pub async fn unit_detail(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(period_id): Path<String>,
+    Query(query): Query<UnitDetailQuery>,
+) -> ApiResult<Json<UnitDetailResponse>> {
+    Ok(Json(
+        service::unit_detail_for_period(
+            &state.db,
+            &state.config,
+            &period_id,
+            &query.scope,
+            &query.label,
+        )
+        .await?,
+    ))
+}
+
+pub async fn quick_win_detail(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path((period_id, code)): Path<(String, String)>,
+) -> ApiResult<Json<QuickWinDetailResponse>> {
+    Ok(Json(
+        service::quick_win_detail_for_period(&state.db, &period_id, &code).await?,
+    ))
 }
 
 async fn read_workbook(mut multipart: Multipart, max_bytes: usize) -> ApiResult<(String, Vec<u8>)> {

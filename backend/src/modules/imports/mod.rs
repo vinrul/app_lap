@@ -30,5 +30,13 @@ pub fn routes() -> Router<AppState> {
 pub fn period_routes() -> Router<AppState> {
     Router::new()
         .route("/periods/{period_id}/analysis", get(handlers::analysis))
+        .route(
+            "/periods/{period_id}/unit-detail",
+            get(handlers::unit_detail),
+        )
+        .route(
+            "/periods/{period_id}/quick-wins/{code}",
+            get(handlers::quick_win_detail),
+        )
         .route("/periods/{period_id}/records", get(handlers::period_records))
 }

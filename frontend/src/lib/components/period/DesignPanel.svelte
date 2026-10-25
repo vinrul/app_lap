@@ -18,6 +18,8 @@
     ImagePlus,
     Layers,
     Link2,
+    Lock,
+    LockOpen,
     Maximize2,
     Minus,
     Plus,
@@ -41,17 +43,21 @@
     PeriodDetail,
     ReportContent,
     ReportLayout,
+    UploadedDesignImage,
   } from '../../types'
   import { iconByName, iconCatalog, type IconDefinition } from '../../icons/catalog'
   import { fontOptions, fontStack } from '../../fonts/catalog'
   import { shapeCatalog, shapeDefinition, shapeLabel, type ShapeDefinition } from '../../shapes/catalog'
   import { emptyContent } from '../../utils/constants'
+  import { cardTemplate, type CardTemplateId } from '../../utils/cardTemplates'
   import { formatDateTime } from '../../utils/format'
   import { toast } from '../../stores/toast.svelte'
   import { dialog } from '../../stores/dialog.svelte'
   import Button from '../ui/Button.svelte'
   import EmptyState from '../ui/EmptyState.svelte'
   import Modal from '../ui/Modal.svelte'
+  import CardTemplatePicker from './CardTemplatePicker.svelte'
+  import MediaLibrary from './MediaLibrary.svelte'
 
   type Props = {
     periodId: string
@@ -63,6 +69,14 @@
     | { kind: 'element'; page: number; id: string }
     | { kind: 'block'; page: number; id: string }
     | null
+
+  type ContextMenuState = {
+    x: number
+    y: number
+    page: number
+    kind: 'element' | 'block' | 'canvas'
+    id: string | null
+  }
 
   type DragState = {
     type: 'block' | 'block-resize' | 'element' | 'resize'
@@ -98,13 +112,14 @@
 
   let iframeEl = $state<HTMLIFrameElement | null>(null)
   let canvasAreaEl = $state<HTMLDivElement | null>(null)
+  let asideEl = $state<HTMLElement | null>(null)
+  let panelOpen = $state(false)
   let iframeHtml = $state('')
   let canvasWidth = $state(PAGE_PORTRAIT_WIDTH_PX)
   let canvasHeight = $state(PAGE_PORTRAIT_HEIGHT_PX)
   let canvasZoom = $state(1)
   let fitZoom = $state(1)
   let zoomOverride = $state<number | null>(null)
-  let fileInput = $state<HTMLInputElement | null>(null)
   let textAreaEl = $state<HTMLTextAreaElement | null>(null)
 
   let content = $state<ReportContent>({ ...emptyContent })
@@ -120,14 +135,19 @@
   let savedJson = $state('')
   let updatedAt = $state<string | null>(null)
   let updatedBy = $state<string | null>(null)
+  let hasSavedDesign = $state(false)
+  let choosingTemplate = $state(false)
   let loading = $state(true)
   let saving = $state(false)
   let generating = $state(false)
   let previewing = $state(false)
-  let uploading = $state(false)
+  let mediaOpen = $state(false)
+  let mediaTarget = $state<'new' | 'replace'>('new')
   let error = $state('')
   let currentPage = $state(1)
   let selected = $state<Selection>(null)
+  let contextMenu = $state<ContextMenuState | null>(null)
+  let clipboard = $state<LayoutElement | null>(null)
   let checkedIds = $state<string[]>([])
   let history = $state<ReportLayout[]>([])
   let redoStack = $state<ReportLayout[]>([])
@@ -137,7 +157,7 @@
   let templateBusy = $state(false)
   let iconPickerOpen = $state(false)
   let shapePickerOpen = $state(false)
-  let iconPickerTarget = $state<'new' | 'replace'>('new')
+  let iconPickerTarget = $state<'new' | 'replace' | 'card'>('new')
   let iconSearch = $state('')
   let iconCategory = $state('Semua')
 
@@ -158,7 +178,13 @@
   const systemFontOptions = fontOptions.filter((font) => font.category === 'Sistem')
   const sansFontOptions = fontOptions.filter((font) => font.category === 'Sans')
   const serifFontOptions = fontOptions.filter((font) => font.category === 'Serif')
-  const iconPickerTitle = $derived(iconPickerTarget === 'replace' ? 'Ganti ikon' : 'Tambah ikon')
+  const iconPickerTitle = $derived(
+    iconPickerTarget === 'replace'
+      ? 'Ganti ikon'
+      : iconPickerTarget === 'card'
+        ? 'Ikon kartu'
+        : 'Tambah ikon',
+  )
   const filteredIcons = $derived.by(() => {
     const query = iconSearch.trim().toLowerCase()
     return iconCatalog.filter((icon) => {
@@ -171,9 +197,23 @@
     if (!selected || selected.kind !== 'element') return null
     return getElement(selected.page, selected.id)
   })
+  const activeCardTemplate = $derived(
+    cardTemplate(activeElement?.type === 'card' ? activeElement.card_template : undefined),
+  )
+  const activeCardIcon = $derived(
+    activeElement?.type === 'card' ? iconByName.get(activeElement.card_icon ?? '') : undefined,
+  )
   const activeBlock = $derived.by(() => {
     if (!selected || selected.kind !== 'block') return null
     return getPage(selected.page)?.blocks[selected.id] ?? { dx: 0, dy: 0, hidden: false }
+  })
+  const contextElement = $derived.by(() => {
+    if (!contextMenu || contextMenu.kind !== 'element' || !contextMenu.id) return null
+    return getElement(contextMenu.page, contextMenu.id) ?? null
+  })
+  const contextBlock = $derived.by(() => {
+    if (!contextMenu || contextMenu.kind !== 'block' || !contextMenu.id) return null
+    return getPage(contextMenu.page)?.blocks[contextMenu.id] ?? { dx: 0, dy: 0, hidden: false }
   })
   const rectNoFill = $derived(
     activeElement?.type === 'rect' && isTransparentColor(activeElement.fill),
@@ -200,8 +240,9 @@
     if (blockEl.querySelector('.bar-row')) return 'chart'
     return ''
   })
-  const tableSourceGroups = $derived(groupSources(sources))
+  const tableSourceGroups = $derived(groupSources(sources.filter((source) => source.can_table !== false)))
   const chartSourceGroups = $derived(groupSources(sources.filter((source) => source.can_chart)))
+  const cardSourceGroups = $derived(groupSources(sources.filter((source) => source.can_card === true)))
   const pageElements = $derived.by(() => {
     const page = getPage(currentPage)
     if (!page) return []
@@ -209,6 +250,9 @@
   })
   const checkedHasGroup = $derived.by(() =>
     pageElements.some((element) => checkedIds.includes(element.id) && Boolean(element.group)),
+  )
+  const selectionKey = $derived(
+    selected ? `${selected.kind}:${selected.page}:${selected.id}` : '',
   )
 
   $effect(() => {
@@ -225,6 +269,13 @@
     observer.observe(node)
     updateCanvasSize()
     return () => observer.disconnect()
+  })
+
+  $effect(() => {
+    const key = selectionKey
+    if (!key) return
+    panelOpen = true
+    untrack(() => asideEl?.scrollTo({ top: 0, behavior: 'smooth' }))
   })
 
   $effect(() => {
@@ -324,6 +375,16 @@
         (_, index) => colors[index] ?? CHART_PALETTE[index % CHART_PALETTE.length],
       )
       if (!element.chart_title?.trim()) element.chart_title = source.chart_title
+      return
+    }
+    if (element.type === 'card' && source.can_card) {
+      element.card_label = source.card_label ?? element.card_label
+      element.card_value = source.card_value ?? element.card_value
+      element.card_unit = source.card_unit ?? element.card_unit
+      element.card_detail = source.card_detail ?? element.card_detail
+      if (!element.card_icon?.trim() && source.card_icon) {
+        element.card_icon = source.card_icon
+      }
     }
   }
 
@@ -401,6 +462,174 @@
     renderSelection()
   }
 
+  function closeContextMenu(): void {
+    contextMenu = null
+  }
+
+  function handleWindowPointerDown(event: PointerEvent): void {
+    if (!contextMenu) return
+    const target = event.target
+    if (target instanceof Element && target.closest('[data-design-context-menu]')) return
+    closeContextMenu()
+  }
+
+  function onContextMenu(event: MouseEvent): void {
+    const doc = iframeEl?.contentDocument
+    if (!doc) return
+    const target = event.target as HTMLElement | null
+    if (!target) return
+    if (target.isContentEditable || target.closest('[contenteditable="true"]')) return
+    const pageEl = target.closest<HTMLElement>('.page')
+    if (!pageEl) {
+      closeContextMenu()
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+
+    const page = pageIndexOf(pageEl)
+    if (page !== currentPage) checkedIds = []
+    currentPage = page
+
+    const handleEl = target.closest<HTMLElement>('[data-handle]')
+    let kind: ContextMenuState['kind'] = 'canvas'
+    let id: string | null = null
+    if (handleEl) {
+      if (selected?.kind === 'element' && selected.page === page) {
+        kind = 'element'
+        id = selected.id
+      } else if (selected?.kind === 'block' && selected.page === page) {
+        kind = 'block'
+        id = selected.id
+      }
+    }
+    if (kind === 'canvas') {
+      const elementEl = target.closest<HTMLElement>('[data-element-id]')
+      const elementId = elementEl?.dataset.elementId
+      if (elementId) {
+        kind = 'element'
+        id = elementId
+      } else {
+        const blockEl = target.closest<HTMLElement>('[data-block]')
+        const blockId = blockEl?.dataset.block
+        if (blockId) {
+          kind = 'block'
+          id = blockId
+        }
+      }
+    }
+
+    selected =
+      (kind === 'element' || kind === 'block') && id
+        ? { kind, page, id }
+        : null
+    applyPageVisibility()
+    renderSelection()
+
+    const frameRect = iframeEl?.getBoundingClientRect()
+    const anchorX = (frameRect?.left ?? 0) + event.clientX
+    const anchorY = (frameRect?.top ?? 0) + event.clientY
+    const menuWidth = 256
+    const menuHeight = kind === 'element' ? 382 : kind === 'block' ? 186 : 128
+    const margin = 8
+    contextMenu = {
+      x: Math.round(clamp(anchorX, margin, Math.max(margin, window.innerWidth - menuWidth - margin))),
+      y: Math.round(clamp(anchorY, margin, Math.max(margin, window.innerHeight - menuHeight - margin))),
+      page,
+      kind,
+      id,
+    }
+  }
+
+  function copySelected(silent = false): boolean {
+    if (!selected || selected.kind !== 'element') return false
+    const element = getElement(selected.page, selected.id)
+    if (!element) return false
+    clipboard = JSON.parse(JSON.stringify(element)) as LayoutElement
+    if (!silent) toast.success('Objek disalin. Tekan Ctrl+V untuk menempel.')
+    return true
+  }
+
+  function pasteClipboard(): void {
+    if (!clipboard) return
+    const page = getPage(currentPage)
+    if (!page) return
+    pushHistory()
+    const copy: LayoutElement = {
+      ...(JSON.parse(JSON.stringify(clipboard)) as LayoutElement),
+      id: newId(),
+      x: clipboard.x + 8,
+      y: clipboard.y + 8,
+      z: clipboard.z + 1,
+      source_block: '',
+      group: '',
+    }
+    clampElement(copy)
+    page.elements.push(copy)
+    selected = { kind: 'element', page: currentPage, id: copy.id }
+    closeContextMenu()
+    applyLayoutToDom()
+  }
+
+  function contextMoveLayer(delta: number): void {
+    const menu = contextMenu
+    if (!menu || menu.kind !== 'element' || !menu.id) return
+    moveLayerOf(menu.id, delta)
+    closeContextMenu()
+  }
+
+  function contextToggleHidden(): void {
+    const menu = contextMenu
+    if (!menu || menu.kind !== 'element' || !menu.id) return
+    toggleElementHidden(menu.id)
+    closeContextMenu()
+  }
+
+  function contextToggleLocked(): void {
+    const menu = contextMenu
+    if (!menu || menu.kind !== 'element' || !menu.id) return
+    toggleElementLocked(menu.id)
+    closeContextMenu()
+  }
+
+  function contextDuplicate(): void {
+    if (!contextElement) return
+    duplicateSelected()
+    closeContextMenu()
+  }
+
+  function contextCopy(): void {
+    if (!copySelected()) return
+    closeContextMenu()
+  }
+
+  function contextDelete(): void {
+    if (!contextElement) return
+    deleteSelected()
+    closeContextMenu()
+  }
+
+  function contextToggleBlockHidden(): void {
+    const menu = contextMenu
+    if (!menu || menu.kind !== 'block' || !menu.id) return
+    const page = getPage(menu.page)
+    if (!page) return
+    pushHistory()
+    const block = page.blocks[menu.id] ?? { dx: 0, dy: 0, hidden: false }
+    block.hidden = !block.hidden
+    page.blocks[menu.id] = block
+    if (block.hidden) selected = null
+    closeContextMenu()
+    applyLayoutToDom()
+  }
+
+  function contextResetBlock(): void {
+    if (!contextBlock) return
+    resetBlock()
+    closeContextMenu()
+  }
+
   function toggleElementHidden(id: string): void {
     const element = getElement(currentPage, id)
     if (!element) return
@@ -412,6 +641,26 @@
   function toggleSelectedHidden(): void {
     if (!selected || selected.kind !== 'element') return
     toggleElementHidden(selected.id)
+  }
+
+  function toggleElementLocked(id: string): void {
+    const element = getElement(currentPage, id)
+    if (!element) return
+    pushHistory()
+    element.locked = !element.locked
+    applyLayoutToDom()
+    renderSelection()
+  }
+
+  function toggleSelectedLocked(): void {
+    if (!selected || selected.kind !== 'element') return
+    toggleElementLocked(selected.id)
+  }
+
+  function elementOrGroupLocked(page: LayoutPage, element: LayoutElement): boolean {
+    if (element.locked) return true
+    if (!element.group) return false
+    return page.elements.some((item) => item.group === element.group && item.locked)
   }
 
   function moveLayerOf(id: string, delta: number): void {
@@ -494,6 +743,8 @@
       savedJson = JSON.stringify(layout)
       updatedAt = view.updated_at
       updatedBy = view.updated_by
+      hasSavedDesign = true
+      choosingTemplate = false
       selected = null
       checkedIds = []
       applyLayoutToDom()
@@ -563,6 +814,7 @@
       opacity: 1,
       z: 10,
       hidden: false,
+      locked: false,
       src: '',
       alt: '',
       object_fit: 'contain',
@@ -608,6 +860,11 @@
       card_unit: 'unit',
       card_detail: '',
       card_accent: '#b8894b',
+      card_template: type === 'card' ? 'classic' : '',
+      card_icon: '',
+      card_icon_color: type === 'card' ? '#b8894b' : '',
+      card_icon_bg: type === 'card' ? '#f1e6d5' : '',
+      card_icon_scale: 100,
       icon_name: '',
       icon_color: '#143d30',
       icon_stroke: 2,
@@ -618,6 +875,8 @@
     loading = true
     error = ''
     selected = null
+    contextMenu = null
+    clipboard = null
     drag = null
     currentPage = 1
     history = []
@@ -632,6 +891,8 @@
       savedJson = ''
       updatedAt = null
       updatedBy = null
+      hasSavedDesign = false
+      choosingTemplate = false
       iframeHtml = ''
       loading = false
       return
@@ -647,11 +908,17 @@
       layout = normalizeLayout(layoutView.layout)
       sources = sourceList
       templates = templateList
-      savedJson = JSON.stringify(layout)
+      hasSavedDesign = layoutView.updated_at !== null
+      choosingTemplate = !hasSavedDesign
+      savedJson = hasSavedDesign ? JSON.stringify(layout) : ''
       updatedAt = layoutView.updated_at
       updatedBy = layoutView.updated_by
-      const preview = await reportsApi.preview(periodId, content, layout)
-      iframeHtml = preview.html
+      if (hasSavedDesign) {
+        const preview = await reportsApi.preview(periodId, content, layout)
+        iframeHtml = preview.html
+      } else {
+        iframeHtml = ''
+      }
     } catch (caught) {
       error = errorMessage(caught)
     } finally {
@@ -715,6 +982,7 @@
       doc.addEventListener('pointerdown', onPointerDown)
       doc.addEventListener('dblclick', onDoubleClick)
       doc.addEventListener('keydown', handleKeydown)
+      doc.addEventListener('contextmenu', onContextMenu)
     }
     applyLayoutToDom()
     updateCanvasSize()
@@ -861,6 +1129,37 @@
     return svg
   }
 
+  function createCardIconNode(
+    doc: Document,
+    element: LayoutElement,
+    sizeMm: number,
+  ): HTMLElement | null {
+    const icon = iconByName.get(element.card_icon ?? '')
+    if (!icon) return null
+    const badge = doc.createElement('span')
+    badge.style.display = 'inline-flex'
+    badge.style.alignItems = 'center'
+    badge.style.justifyContent = 'center'
+    badge.style.flex = '0 0 auto'
+    badge.style.width = `${sizeMm}mm`
+    badge.style.height = `${sizeMm}mm`
+    badge.style.borderRadius = '50%'
+    badge.style.background = element.card_icon_bg ?? '#f1e6d5'
+    badge.style.color = element.card_icon_color ?? '#b8894b'
+    const svg = doc.createElementNS(SVG_NS, 'svg')
+    svg.setAttribute('viewBox', '0 0 24 24')
+    svg.setAttribute('fill', 'none')
+    svg.setAttribute('stroke', 'currentColor')
+    svg.setAttribute('stroke-width', '2')
+    svg.setAttribute('stroke-linecap', 'round')
+    svg.setAttribute('stroke-linejoin', 'round')
+    svg.style.width = '56%'
+    svg.style.height = '56%'
+    svg.innerHTML = icon.svg
+    badge.appendChild(svg)
+    return badge
+  }
+
   function createElementNode(doc: Document, element: LayoutElement): HTMLElement {
     let node: HTMLElement
     if (element.type === 'image') {
@@ -967,34 +1266,135 @@
       }
       node = wrapper
     } else if (element.type === 'card') {
-      const card = doc.createElement('div')
-      card.style.display = 'flex'
-      card.style.flexDirection = 'column'
-      card.style.padding = '3mm 3.5mm'
-      card.style.background = element.fill ?? '#f6f8f5'
-      card.style.borderLeft = `${element.border_width ?? 2}pt solid ${element.card_accent ?? '#b8894b'}`
-      card.style.borderRadius = `${element.radius ?? 1.5}mm`
-      card.style.overflow = 'hidden'
+      const bound = element.binding ? sourceFor(element.binding) : undefined
+      const template = cardTemplate(element.card_template)
+      const cardLabel = bound?.can_card ? (bound.card_label ?? '') : (element.card_label ?? '')
+      const cardValue = bound?.can_card ? (bound.card_value ?? '') : (element.card_value ?? '')
+      const cardUnit = bound?.can_card ? (bound.card_unit ?? '') : (element.card_unit ?? '')
+      const cardDetail = bound?.can_card ? (bound.card_detail ?? '') : (element.card_detail ?? '')
+      const accent = element.card_accent ?? template.accent
+      const fill = element.fill ?? template.fill
+      const color = element.color ?? template.color
+      const minSide = Math.min(element.width, element.height)
+      const iconSize =
+        Math.max(
+          8,
+          Math.min(
+            template.id === 'centered' ? 14 : 18,
+            minSide * (template.id === 'centered' ? 0.24 : 0.34),
+          ),
+        ) * ((element.card_icon_scale ?? 100) / 100)
+      const iconNode = createCardIconNode(doc, element, iconSize)
       const label = doc.createElement('span')
       label.className = 'layout-card-label'
-      label.textContent = element.card_label ?? ''
+      label.textContent = cardLabel
       label.style.fontSize = `${element.font_size ?? 9}pt`
       const value = doc.createElement('strong')
       value.className = 'layout-card-value'
-      value.textContent = element.card_value ?? ''
+      value.textContent = cardValue
       value.style.fontSize = `${Math.min(40, Math.max(14, (element.font_size ?? 9) * 2.35))}pt`
-      value.style.color = element.color ?? '#143d30'
+      value.style.color = color
       const unit = doc.createElement('span')
       unit.className = 'layout-card-unit'
-      unit.textContent = element.card_unit ?? ''
+      unit.textContent = cardUnit
       unit.style.fontSize = `${(element.font_size ?? 9) * 0.82}pt`
-      card.append(label, value, unit)
-      if (element.card_detail?.trim()) {
+      const card = doc.createElement('div')
+      card.style.boxSizing = 'border-box'
+      card.style.overflow = 'hidden'
+      card.style.background = fill
+      card.style.color = color
+      card.style.display = 'flex'
+      const appendDetail = (parent: HTMLElement) => {
+        if (!cardDetail.trim()) return
         const detail = doc.createElement('span')
         detail.className = 'layout-card-detail'
-        detail.textContent = element.card_detail
+        detail.textContent = cardDetail
         detail.style.fontSize = `${(element.font_size ?? 9) * 0.78}pt`
-        card.appendChild(detail)
+        parent.appendChild(detail)
+      }
+
+      if (template.id === 'icon_right') {
+        card.style.flexDirection = 'column'
+        card.style.padding = '3mm 3.5mm'
+        card.style.borderRadius = `${element.radius ?? template.radius}mm`
+        const top = doc.createElement('div')
+        top.style.display = 'flex'
+        top.style.alignItems = 'flex-start'
+        top.style.justifyContent = 'space-between'
+        top.style.gap = '2mm'
+        top.style.width = '100%'
+        const content = doc.createElement('div')
+        content.style.minWidth = '0'
+        content.style.flex = '1'
+        content.append(value, unit)
+        top.appendChild(content)
+        if (iconNode) top.appendChild(iconNode)
+        card.append(top, label)
+        appendDetail(card)
+      } else if (template.id === 'icon_left') {
+        card.style.flexDirection = 'row'
+        card.style.alignItems = 'center'
+        card.style.gap = '3mm'
+        card.style.padding = '3mm 3.5mm'
+        card.style.borderRadius = `${element.radius ?? template.radius}mm`
+        if (iconNode) card.appendChild(iconNode)
+        const content = doc.createElement('div')
+        content.style.minWidth = '0'
+        content.style.flex = '1'
+        content.append(value, label, unit)
+        appendDetail(content)
+        card.appendChild(content)
+      } else if (template.id === 'centered') {
+        card.style.flexDirection = 'column'
+        card.style.alignItems = 'center'
+        card.style.justifyContent = 'center'
+        card.style.textAlign = 'center'
+        card.style.padding = '3mm'
+        card.style.border = `${element.border_width ?? template.borderWidth}pt solid ${accent}`
+        card.style.borderRadius = `${element.radius ?? template.radius}mm`
+        if (iconNode) card.appendChild(iconNode)
+        card.append(value, label, unit)
+        appendDetail(card)
+      } else if (template.id === 'split') {
+        card.style.flexDirection = 'row'
+        card.style.alignItems = 'stretch'
+        card.style.borderRadius = `${element.radius ?? template.radius}mm`
+        const panel = doc.createElement('div')
+        panel.style.width = '32%'
+        panel.style.flex = '0 0 auto'
+        panel.style.display = 'flex'
+        panel.style.alignItems = 'center'
+        panel.style.justifyContent = 'center'
+        panel.style.background = accent
+        if (iconNode) panel.appendChild(iconNode)
+        const content = doc.createElement('div')
+        content.style.minWidth = '0'
+        content.style.flex = '1'
+        content.style.display = 'flex'
+        content.style.flexDirection = 'column'
+        content.style.justifyContent = 'center'
+        content.style.padding = '3mm 3.5mm'
+        content.append(value, label, unit)
+        appendDetail(content)
+        card.append(panel, content)
+      } else if (template.id === 'minimal') {
+        card.style.flexDirection = 'column'
+        card.style.padding = '2mm 0'
+        card.style.borderBottom = `${Math.max(element.border_width ?? template.borderWidth, 1)}pt solid ${accent}`
+        const row = doc.createElement('div')
+        row.style.display = 'flex'
+        row.style.alignItems = 'baseline'
+        row.style.gap = '2mm'
+        row.append(value, unit)
+        card.append(row, label)
+        appendDetail(card)
+      } else {
+        card.style.flexDirection = 'column'
+        card.style.padding = '3mm 3.5mm'
+        card.style.borderLeft = `${element.border_width ?? template.borderWidth}pt solid ${accent}`
+        card.style.borderRadius = `${element.radius ?? template.radius}mm`
+        card.append(label, value, unit)
+        appendDetail(card)
       }
       node = card
     } else if (element.type === 'icon') {
@@ -1061,6 +1461,10 @@
       node.style.overflow = 'hidden'
     }
     if (element.rotation) node.style.transform = `rotate(${element.rotation}deg)`
+    if (element.locked) {
+      node.dataset.locked = 'true'
+      node.style.cursor = 'not-allowed'
+    }
     return node
   }
 
@@ -1526,14 +1930,19 @@
       sw: ['-5px', 'calc(100% - 5px)'],
       se: ['calc(100% - 5px)', 'calc(100% - 5px)'],
     }
-    for (const [handle, [left, top]] of Object.entries(handles)) {
-      const node = doc.createElement('div')
-      node.className = 'editor-handle'
-      node.dataset.handle = handle
-      node.style.left = left
-      node.style.top = top
-      node.style.cursor = handle === 'nw' || handle === 'se' ? 'nwse-resize' : 'nesw-resize'
-      frame.appendChild(node)
+    if (element.locked) {
+      frame.dataset.locked = 'true'
+      frame.style.cursor = 'not-allowed'
+    } else {
+      for (const [handle, [left, top]] of Object.entries(handles)) {
+        const node = doc.createElement('div')
+        node.className = 'editor-handle'
+        node.dataset.handle = handle
+        node.style.left = left
+        node.style.top = top
+        node.style.cursor = handle === 'nw' || handle === 'se' ? 'nwse-resize' : 'nesw-resize'
+        frame.appendChild(node)
+      }
     }
     pageEl.appendChild(frame)
   }
@@ -1632,6 +2041,7 @@
 
   function onPointerDown(event: PointerEvent) {
     if (event.button !== 0) return
+    closeContextMenu()
     const doc = iframeEl?.contentDocument
     if (!doc) return
     const target = event.target as HTMLElement | null
@@ -1674,6 +2084,7 @@
       const element = getElement(selected.page, selected.id)
       if (!element) return
       event.preventDefault()
+      if (element.locked) return
       beginDrag({
         type: 'resize',
         page: selected.page,
@@ -1701,15 +2112,16 @@
       const element = getElement(page, id)
       if (!element) return
       const pageData = getPage(page)
+      selected = { kind: 'element', page, id }
+      renderSelection()
+      event.preventDefault()
+      if (pageData && elementOrGroupLocked(pageData, element)) return
       const groupStarts =
         element.group && pageData
           ? pageData.elements
               .filter((item) => item.group === element.group)
               .map((item) => ({ id: item.id, x: item.x, y: item.y }))
           : []
-      selected = { kind: 'element', page, id }
-      renderSelection()
-      event.preventDefault()
       beginDrag({
         type: 'element',
         page,
@@ -1958,6 +2370,57 @@
     void refreshCanvasStructure()
   }
 
+  function chooseBlank() {
+    const pages = Math.round(clamp(blankPageCount, 1, MAX_BLANK_PAGES))
+    layout = {
+      version: 1,
+      mode: 'blank',
+      orientation: blankOrientation,
+      pages: Array.from({ length: pages }, (_, index) => ({
+        page: index + 1,
+        blocks: {},
+        elements: [],
+      })),
+    }
+    currentPage = 1
+    selected = null
+    checkedIds = []
+    history = []
+    redoStack = []
+    savedJson = ''
+    choosingTemplate = false
+    toast.success('Dokumen kosong siap disusun.')
+    void refreshCanvasStructure()
+  }
+
+  async function useTemplateFromChooser(templateId: string) {
+    if (!hasImport || templateBusy) return
+    const template = templates.find((item) => item.id === templateId)
+    templateBusy = true
+    selectedTemplateId = templateId
+    error = ''
+    try {
+      const view = await designApi.applyTemplate(periodId, templateId)
+      layout = normalizeLayout(view.layout)
+      savedJson = JSON.stringify(layout)
+      updatedAt = view.updated_at
+      updatedBy = view.updated_by
+      hasSavedDesign = true
+      choosingTemplate = false
+      selected = null
+      checkedIds = []
+      history = []
+      redoStack = []
+      applyLayoutToDom()
+      void refreshCanvasStructure()
+      toast.success(`Template "${template?.name ?? 'desain'}" diterapkan.`)
+    } catch (caught) {
+      error = errorMessage(caught)
+    } finally {
+      templateBusy = false
+    }
+  }
+
   function setDocumentOrientation(orientation: 'portrait' | 'landscape') {
     if (!isBlank) {
       blankOrientation = orientation
@@ -2133,7 +2596,38 @@
     iconPickerOpen = true
   }
 
+  function openCardIconPicker() {
+    if (!activeElement || activeElement.type !== 'card') return
+    iconPickerTarget = 'card'
+    iconSearch = ''
+    iconPickerOpen = true
+  }
+
+  function applyCardTemplate(templateId: CardTemplateId) {
+    if (!activeElement || activeElement.type !== 'card') return
+    const template = cardTemplate(templateId)
+    const patch: Partial<LayoutElement> = {
+      card_template: template.id,
+      fill: template.fill,
+      card_accent: template.accent,
+      color: template.color,
+      card_icon_color: template.iconColor,
+      card_icon_bg: template.iconBg,
+      border_width: template.borderWidth,
+      radius: template.radius,
+    }
+    if (template.icon && !activeElement.card_icon?.trim()) {
+      patch.card_icon = template.icon
+    }
+    updateElement(patch, true)
+  }
+
   function chooseIcon(icon: IconDefinition) {
+    if (iconPickerTarget === 'card' && activeElement?.type === 'card') {
+      updateElement({ card_icon: icon.name }, true)
+      iconPickerOpen = false
+      return
+    }
     if (iconPickerTarget === 'replace' && activeElement?.type === 'icon') {
       updateElement({ icon_name: icon.name }, true)
     } else {
@@ -2247,36 +2741,27 @@
     applyLayoutToDom()
   }
 
-  function pickImage() {
-    fileInput?.click()
+  function openMediaLibrary() {
+    mediaTarget = 'new'
+    mediaOpen = true
   }
 
-  async function handleFile(event: Event) {
-    const input = event.currentTarget as HTMLInputElement
-    const file = input.files?.[0]
-    input.value = ''
-    if (!file) return
-    if (!['image/png', 'image/jpeg'].includes(file.type)) {
-      toast.error('Gambar harus PNG atau JPEG.')
+  function openMediaReplace() {
+    mediaTarget = 'replace'
+    mediaOpen = true
+  }
+
+  function insertMediaImage(uploaded: UploadedDesignImage, filename: string) {
+    if (mediaTarget === 'replace' && activeElement?.type === 'image') {
+      updateElement({ src: `upload:${uploaded.id}`, alt: filename }, true)
+      toast.success('Gambar berhasil diganti.')
       return
     }
-    if (file.size > 8 * 1024 * 1024) {
-      toast.error('Ukuran gambar maksimal 8 MB.')
-      return
-    }
-    uploading = true
-    try {
-      const uploaded = await designApi.uploadImage(periodId, file)
-      const element = baseElement('image')
-      element.src = `upload:${uploaded.id}`
-      element.alt = file.name
-      addElement(element)
-      toast.success('Gambar ditambahkan ke halaman.')
-    } catch (caught) {
-      toast.error(errorMessage(caught))
-    } finally {
-      uploading = false
-    }
+    const element = baseElement('image')
+    element.src = `upload:${uploaded.id}`
+    element.alt = filename
+    addElement(element)
+    toast.success('Gambar ditambahkan ke halaman.')
   }
 
   async function addImageUrl() {
@@ -2684,6 +3169,7 @@
       savedJson = JSON.stringify(layout)
       updatedAt = view.updated_at
       updatedBy = view.updated_by
+      hasSavedDesign = true
       if (previous?.kind === 'element' && !getElement(previous.page, previous.id)) {
         selected = null
       } else {
@@ -2747,6 +3233,7 @@
       const element = getElement(selected.page, selected.id)
       if (!page || !element) return
       const members = groupMembers(page, element)
+      if (members.some((member) => member.locked)) return
       let deltaX = dx
       let deltaY = dy
       for (const member of members) {
@@ -2773,6 +3260,12 @@
     const tag = target?.tagName?.toLowerCase()
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable) return
     const mod = event.ctrlKey || event.metaKey
+    if (event.key === 'Escape' && contextMenu) {
+      event.preventDefault()
+      closeContextMenu()
+      return
+    }
+    if (contextMenu) closeContextMenu()
     if (mod && event.key.toLowerCase() === 's') {
       event.preventDefault()
       void save()
@@ -2782,6 +3275,16 @@
       event.preventDefault()
       if (event.shiftKey) redo()
       else undo()
+      return
+    }
+    if (mod && event.key.toLowerCase() === 'c' && selected?.kind === 'element') {
+      event.preventDefault()
+      copySelected(true)
+      return
+    }
+    if (mod && event.key.toLowerCase() === 'v' && clipboard) {
+      event.preventDefault()
+      pasteClipboard()
       return
     }
     if (mod && (event.key === '+' || event.key === '=')) {
@@ -2834,7 +3337,12 @@
   }
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window
+  onkeydown={handleKeydown}
+  onpointerdown={handleWindowPointerDown}
+  onblur={closeContextMenu}
+  onresize={closeContextMenu}
+/>
 
 {#if !hasImport}
   <section class="card">
@@ -2842,8 +3350,103 @@
       title="Belum ada versi data"
       description="Impor workbook terlebih dahulu sebelum menata desain laporan."
     >
-      <Button onclick={() => (window.location.hash = `/periods/${periodId}/imports`)}>Impor workbook</Button>
+      <Button onclick={() => (window.location.hash = '/imports')}>Impor workbook</Button>
     </EmptyState>
+  </section>
+{:else if loading}
+  <section class="card p-6">
+    <div class="space-y-3">
+      <div class="skeleton h-7 w-56"></div>
+      <div class="skeleton h-4 w-80"></div>
+      <div class="grid gap-4 sm:grid-cols-2">
+        <div class="skeleton h-48"></div>
+        <div class="skeleton h-48"></div>
+      </div>
+    </div>
+  </section>
+{:else if choosingTemplate}
+  <section class="card overflow-hidden">
+    <div class="panel-heading">
+      <div>
+        <span class="eyebrow">MULAI DESAIN</span>
+        <h2 class="panel-title mt-1">Pilih titik awal desain</h2>
+        <p class="mt-1 text-xs text-ink-muted">Belum ada desain tersimpan untuk periode ini. Mulai dari halaman kosong atau gunakan template desain yang sudah dibuat.</p>
+      </div>
+      <Layers size={18} class="text-gold-500" />
+    </div>
+
+    {#if error}
+      <div class="m-5 flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+        <AlertCircle size={17} class="mt-0.5 shrink-0" /> <span>{error}</span>
+      </div>
+    {/if}
+
+    <div class="grid gap-4 border-b border-line p-5 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.6fr)]">
+      <div class="rounded-2xl border border-line bg-stone-50/60 p-5">
+        <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-forest-700 shadow-sm"><FilePlus2 size={18} /></span>
+        <h3 class="mt-3 font-display text-lg font-semibold text-forest-900">Blank template</h3>
+        <p class="mt-1 text-[11px] leading-relaxed text-ink-muted">Mulai dari halaman kosong tanpa blok laporan otomatis. Atur orientasi dan jumlah halaman sesuai kebutuhan.</p>
+        <div class="mt-4 grid gap-3 sm:grid-cols-2">
+          <label class="block">
+            <span class="label">Orientasi</span>
+            <select class="input py-1.5 text-xs" bind:value={blankOrientation}>
+              <option value="portrait">Portrait (A4)</option>
+              <option value="landscape">Landscape (A4)</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="label">Jumlah halaman</span>
+            <input class="input py-1.5 text-xs" type="number" min="1" max={MAX_BLANK_PAGES}
+              value={blankPageCount}
+              oninput={(event) => (blankPageCount = Math.round(clamp(numberValue((event.currentTarget as HTMLInputElement).value), 1, MAX_BLANK_PAGES)))} />
+          </label>
+        </div>
+        <Button class="mt-4 w-full" onclick={chooseBlank}><FilePlus2 size={14} /> Mulai dari blank</Button>
+      </div>
+
+      <div>
+        <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h3 class="text-xs font-bold tracking-[0.12em] text-ink-muted uppercase">Template desain</h3>
+            <p class="mt-0.5 text-[11px] text-ink-muted">Template yang pernah disimpan dari desain laporan.</p>
+          </div>
+          <span class="badge badge-neutral">{templates.length} template</span>
+        </div>
+        {#if templates.length}
+          <div class="grid gap-3 sm:grid-cols-2">
+            {#each templates as template}
+              <article class="flex flex-col rounded-2xl border border-line bg-white p-4">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <span class="badge {template.layout.mode === 'blank' ? 'badge-neutral' : 'badge-progress'}">
+                    {template.layout.mode === 'blank' ? 'Blank' : 'Laporan'}
+                  </span>
+                  <span class="text-[10px] text-ink-muted">{template.layout.pages.length} halaman · {template.layout.orientation === 'landscape' ? 'Landscape' : 'Portrait'}</span>
+                </div>
+                <h4 class="mt-2 text-sm font-semibold text-ink">{template.name}</h4>
+                <p class="mt-1 text-[10px] text-ink-muted">Dibuat {formatDateTime(template.created_at)}{#if template.created_by} oleh {template.created_by}{/if}</p>
+                <div class="mt-auto pt-3">
+                  <Button variant="secondary" size="sm" class="w-full" loading={templateBusy && selectedTemplateId === template.id}
+                    disabled={templateBusy && selectedTemplateId !== template.id}
+                    onclick={() => useTemplateFromChooser(template.id)}>
+                    Gunakan template
+                  </Button>
+                </div>
+              </article>
+            {/each}
+          </div>
+        {:else}
+          <div class="flex min-h-40 flex-col items-center justify-center rounded-2xl border border-dashed border-line px-5 py-8 text-center">
+            <Layers size={24} class="text-ink-muted" />
+            <p class="mt-2 text-xs font-semibold text-ink">Belum ada template desain</p>
+            <p class="mt-1 max-w-sm text-[11px] text-ink-muted">Mulai dari blank, lalu simpan desain sebagai template agar bisa dipakai pada periode berikutnya.</p>
+          </div>
+        {/if}
+      </div>
+    </div>
+
+    <div class="bg-stone-50/60 px-5 py-3 text-[11px] leading-relaxed text-ink-muted">
+      Pilihan ini hanya muncul selama desain periode belum pernah disimpan. Setelah disimpan, tab Desain akan langsung menampilkan kanvas terakhir.
+    </div>
   </section>
 {:else}
   <section class="card mb-4 flex flex-wrap items-center justify-between gap-3 px-5 py-4">
@@ -2877,12 +3480,12 @@
     </div>
   {/if}
 
-  <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+  <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[minmax(0,1fr)_340px]">
     <section class="card overflow-hidden">
       <div class="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2.5">
         <Button variant="secondary" size="sm" onclick={addText}><Type size={14} /> Teks</Button>
         <Button variant="secondary" size="sm" onclick={openShapePicker}><Star size={14} /> Bentuk</Button>
-        <Button variant="secondary" size="sm" loading={uploading} onclick={pickImage}><ImagePlus size={14} /> Gambar</Button>
+        <Button variant="secondary" size="sm" onclick={openMediaLibrary}><ImagePlus size={14} /> Gambar</Button>
         <Button variant="secondary" size="sm" onclick={addImageUrl}><Link2 size={14} /> URL</Button>
         <Button variant="secondary" size="sm" onclick={addTable}><Table2 size={14} /> Tabel</Button>
         <Button variant="secondary" size="sm" onclick={addChart}><BarChart3 size={14} /> Grafik</Button>
@@ -2892,7 +3495,6 @@
         <span class="mx-1 h-6 w-px bg-line"></span>
         <Button variant="ghost" size="sm" disabled={!history.length} onclick={undo}><Undo2 size={14} /> Undo</Button>
         <Button variant="ghost" size="sm" disabled={!redoStack.length} onclick={redo}><Redo2 size={14} /> Redo</Button>
-        <input bind:this={fileInput} class="hidden" type="file" accept="image/png,image/jpeg" onchange={handleFile} />
       </div>
 
       <div class="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-stone-50/60 px-3 py-2">
@@ -2926,7 +3528,7 @@
         </div>
       </div>
 
-      <div bind:this={canvasAreaEl} data-canvas-area class="h-[calc(100vh-230px)] min-h-[480px] overflow-auto bg-stone-100">
+      <div bind:this={canvasAreaEl} data-canvas-area class="h-[calc(100vh-230px)] min-h-[480px] overflow-auto bg-stone-100" onscroll={closeContextMenu}>
         <div class="flex min-h-full w-max min-w-full items-center justify-center p-3">
           {#if loading}
             <div class="text-sm text-ink-muted">Menyiapkan kanvas laporan…</div>
@@ -2945,11 +3547,12 @@
 
       <div class="border-t border-line bg-stone-50/60 px-4 py-2.5 text-[10px] leading-relaxed text-ink-muted">
         Satu halaman ditampilkan pada satu waktu. Gunakan Sebelumnya/Berikutnya atau Page Up/Page Down untuk berpindah halaman.
-        Tombol −/+ atau Ctrl +/− untuk zoom, dan Pas untuk kembali menampilkan satu halaman penuh. Perubahan baru masuk ke PDF setelah disimpan.
+        Tombol −/+ atau Ctrl +/− untuk zoom, dan Pas untuk kembali menampilkan satu halaman penuh. Klik kanan pada objek atau kanvas untuk menu layer, sembunyikan, kunci, salin, dan tempel. Perubahan baru masuk ke PDF setelah disimpan.
       </div>
     </section>
 
-    <aside class="space-y-4 self-start xl:sticky xl:top-24">
+    <aside bind:this={asideEl} class="space-y-4 self-start lg:sticky lg:top-24 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:pr-1 max-lg:fixed max-lg:inset-y-20 max-lg:right-3 max-lg:z-40 max-lg:w-[min(92vw,340px)] max-lg:overflow-y-auto max-lg:rounded-2xl max-lg:bg-canvas max-lg:p-2 max-lg:shadow-2xl {panelOpen ? '' : 'max-lg:hidden'}">
+      <button class="btn btn-secondary btn-sm w-full lg:hidden" onclick={() => (panelOpen = false)}>Tutup panel properti</button>
       {#if activeElement}
         <section class="card overflow-hidden">
           <div class="panel-heading">
@@ -2962,6 +3565,7 @@
             <div class="flex flex-col items-end gap-1">
               <span class="badge badge-neutral">Halaman {selected?.page}</span>
               {#if activeElement.hidden}<span class="badge badge-neutral">Tersembunyi</span>{/if}
+              {#if activeElement.locked}<span class="badge badge-progress">Terkunci</span>{/if}
               {#if activeElement.binding}<span class="badge badge-success">Data</span>{/if}
               {#if activeElement.source_block}<span class="badge badge-progress">Hasil detach</span>{/if}
             </div>
@@ -2972,30 +3576,35 @@
               <label class="block">
                 <span class="label">X (mm)</span>
                 <input class="input py-1.5 text-xs" type="number" step="0.5" value={activeElement.x}
+                  disabled={activeElement.locked}
                   onfocus={pushHistory}
                   oninput={(event) => updateElement({ x: numberValue((event.currentTarget as HTMLInputElement).value) })} />
               </label>
               <label class="block">
                 <span class="label">Y (mm)</span>
                 <input class="input py-1.5 text-xs" type="number" step="0.5" value={activeElement.y}
+                  disabled={activeElement.locked}
                   onfocus={pushHistory}
                   oninput={(event) => updateElement({ y: numberValue((event.currentTarget as HTMLInputElement).value) })} />
               </label>
               <label class="block">
                 <span class="label">Lebar (mm)</span>
                 <input class="input py-1.5 text-xs" type="number" step="0.5" value={activeElement.width}
+                  disabled={activeElement.locked}
                   onfocus={pushHistory}
                   oninput={(event) => updateElement({ width: numberValue((event.currentTarget as HTMLInputElement).value) })} />
               </label>
               <label class="block">
                 <span class="label">Tinggi (mm)</span>
                 <input class="input py-1.5 text-xs" type="number" step="0.5" value={activeElement.height}
+                  disabled={activeElement.locked}
                   onfocus={pushHistory}
                   oninput={(event) => updateElement({ height: numberValue((event.currentTarget as HTMLInputElement).value) })} />
               </label>
               <label class="block">
                 <span class="label">Rotasi (°)</span>
                 <input class="input py-1.5 text-xs" type="number" step="1" value={activeElement.rotation}
+                  disabled={activeElement.locked}
                   onfocus={pushHistory}
                   oninput={(event) => updateElement({ rotation: numberValue((event.currentTarget as HTMLInputElement).value) })} />
               </label>
@@ -3241,6 +3850,93 @@
               </div>
               <p class="text-[10px] leading-relaxed text-ink-muted">Ukuran ikon mengikuti kotak elemen. Atur lebar/tinggi pada kolom di atas.</p>
             {:else if activeElement.type === 'card'}
+              <div>
+                <span class="label">Template kartu</span>
+                <div class="mt-1.5">
+                  <CardTemplatePicker value={activeElement.card_template ?? 'classic'} onselect={applyCardTemplate} />
+                </div>
+              </div>
+              {#if activeCardTemplate.layout !== 'none'}
+                <div class="rounded-xl border border-line p-3">
+                  <div class="flex items-center gap-3">
+                    <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
+                      style:background={activeElement.card_icon_bg ?? activeCardTemplate.iconBg}
+                      style:color={activeElement.card_icon_color ?? activeCardTemplate.iconColor}>
+                      {#if activeCardIcon}
+                        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{@html activeCardIcon.svg}</svg>
+                      {:else}
+                        <Shapes size={15} />
+                      {/if}
+                    </span>
+                    <div class="min-w-0 flex-1">
+                      <p class="truncate text-xs font-semibold text-ink">{activeCardIcon?.label ?? 'Belum ada ikon'}</p>
+                      <p class="truncate text-[10px] text-ink-muted">{activeElement.card_icon || 'Pilih ikon untuk template ini.'}</p>
+                    </div>
+                    <Button variant="secondary" size="sm" onclick={openCardIconPicker}>{activeElement.card_icon ? 'Ganti' : 'Pilih'}</Button>
+                    {#if activeElement.card_icon}
+                      <button class="btn btn-ghost btn-sm" onclick={() => updateElement({ card_icon: '' }, true)}>Hapus</button>
+                    {/if}
+                  </div>
+                  <div class="mt-3 grid grid-cols-2 gap-3">
+                    <label class="block">
+                      <span class="label">Warna ikon</span>
+                      <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.card_icon_color ?? activeCardTemplate.iconColor)}
+                        onfocus={pushHistory}
+                        oninput={(event) => updateElement({ card_icon_color: (event.currentTarget as HTMLInputElement).value })} />
+                    </label>
+                    <label class="block">
+                      <span class="label">Latar ikon</span>
+                      <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.card_icon_bg ?? activeCardTemplate.iconBg)}
+                        onfocus={pushHistory}
+                        oninput={(event) => updateElement({ card_icon_bg: (event.currentTarget as HTMLInputElement).value })} />
+                    </label>
+                  </div>
+                  <div class="mt-3">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="label mb-0">Skala ikon</span>
+                      <span class="text-[11px] font-semibold text-forest-800">{Math.round(activeElement.card_icon_scale ?? 100)}%</span>
+                    </div>
+                    <input class="mt-1 w-full accent-forest-700" type="range" min="30" max="300" step="5"
+                      value={activeElement.card_icon_scale ?? 100}
+                      aria-label="Skala ikon kartu"
+                      onfocus={pushHistory}
+                      oninput={(event) => updateElement({ card_icon_scale: numberValue((event.currentTarget as HTMLInputElement).value) })} />
+                    <div class="flex justify-between text-[9px] text-ink-muted"><span>Kecil</span><span>Besar</span></div>
+                  </div>
+                </div>
+              {/if}
+              <label class="block">
+                <span class="label">Sumber data</span>
+                <select class="input py-1.5 text-xs" value={activeElement.binding ?? ''}
+                  data-card-source
+                  onchange={(event) => bindSource((event.currentTarget as HTMLSelectElement).value)}>
+                  <option value="">Manual — tidak terhubung</option>
+                  {#each cardSourceGroups as group}
+                    <optgroup label={group.category}>
+                      {#each group.items as source}
+                        <option value={source.key}>{source.label}</option>
+                      {/each}
+                    </optgroup>
+                  {/each}
+                </select>
+              </label>
+              {#if activeElement.binding}
+                <div class="rounded-xl border border-forest-200 bg-forest-50 p-3.5 text-[11px] leading-relaxed text-forest-800">
+                  <p>
+                    Terhubung ke <strong>{sourceFor(activeElement.binding)?.label ?? activeElement.binding}</strong>.
+                    Nilai kartu mengikuti data Ringkasan/Analisis terbaru dan tidak bisa diedit manual.
+                  </p>
+                  <p class="mt-2 text-forest-700">
+                    {sourceFor(activeElement.binding)?.card_label ?? ''}:
+                    <strong>{sourceFor(activeElement.binding)?.card_value ?? '—'}</strong>
+                    {sourceFor(activeElement.binding)?.card_unit ?? ''}
+                  </p>
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <Button variant="secondary" size="sm" onclick={() => bindSource('')}>Lepas ikatan</Button>
+                    <Button variant="ghost" size="sm" onclick={() => void refreshSources()}>Muat ulang data</Button>
+                  </div>
+                </div>
+              {:else}
               <label class="block">
                 <span class="label">Label</span>
                 <input class="input py-1.5 text-xs" value={activeElement.card_label ?? ''}
@@ -3271,6 +3967,7 @@
                   onfocus={pushHistory}
                   oninput={(event) => updateElement({ card_detail: (event.currentTarget as HTMLInputElement).value })} />
               </label>
+              {/if}
               <div class="grid grid-cols-2 gap-3">
                 <label class="block">
                   <span class="label">Warna aksen</span>
@@ -3520,6 +4217,9 @@
                   onfocus={pushHistory}
                   onchange={(event) => updateElement({ src: (event.currentTarget as HTMLInputElement).value }, true)} />
               </label>
+              <Button variant="secondary" size="sm" class="w-full" onclick={openMediaReplace}>
+                <ImagePlus size={14} /> Pilih dari media library
+              </Button>
               <div class="grid grid-cols-2 gap-3">
                 <label class="block">
                   <span class="label">Object fit</span>
@@ -3545,6 +4245,9 @@
               {/if}
               <Button variant="secondary" size="sm" onclick={toggleSelectedHidden}>
                 {#if activeElement.hidden}<Eye size={14} /> Tampilkan{:else}<EyeOff size={14} /> Sembunyikan{/if}
+              </Button>
+              <Button variant="secondary" size="sm" onclick={toggleSelectedLocked}>
+                {#if activeElement.locked}<LockOpen size={14} /> Buka kunci{:else}<Lock size={14} /> Kunci posisi{/if}
               </Button>
               <Button variant="secondary" size="sm" onclick={duplicateSelected}><Copy size={14} /> Duplikat</Button>
               <Button variant="secondary" size="sm" onclick={() => moveLayer(1)}>Naik</Button>
@@ -3650,7 +4353,7 @@
             <li>3. Tarik elemen untuk menggeser; tarik sudut untuk mengubah ukuran.</li>
             <li>4. Klik blok laporan untuk geser; tarik sudut kanan bawah untuk resize.</li>
             <li>5. Klik dua kali teks blok untuk mengeditnya.</li>
-            <li>6. Gunakan panel Layer untuk menyembunyikan, mengurutkan, atau menggabungkan objek.</li>
+            <li>6. Gunakan panel Layer untuk menyembunyikan, mengunci posisi, mengurutkan, atau menggabungkan objek.</li>
             <li>7. Simpan desain sebagai template untuk dipakai pada periode lain.</li>
             <li>8. Simpan, lalu Buat PDF.</li>
           </ul>
@@ -3756,12 +4459,17 @@
                     onchange={() => toggleChecked(element.id)} />
                   <button type="button" class="min-w-0 flex-1 text-left" data-layer-select={element.id} onclick={() => selectLayer(element.id)}>
                     <span class="block truncate text-[11px] font-semibold text-ink">{elementLabel(element)}</span>
-                    <span class="block text-[10px] text-ink-muted">z {element.z}{#if element.group} · grup{/if}</span>
+                    <span class="block text-[10px] text-ink-muted">z {element.z}{#if element.group} · grup{/if}{#if element.locked} · terkunci{/if}</span>
                   </button>
                   <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title={element.hidden ? 'Tampilkan' : 'Sembunyikan'}
                     data-layer-hide={element.id}
                     onclick={() => toggleElementHidden(element.id)}>
                     {#if element.hidden}<Eye size={13} />{:else}<EyeOff size={13} />{/if}
+                  </button>
+                  <button type="button" class="rounded p-1 hover:bg-stone-100 {element.locked ? 'text-gold-700' : 'text-ink-muted'}" title={element.locked ? 'Buka kunci posisi' : 'Kunci posisi'}
+                    data-layer-lock={element.id}
+                    onclick={() => toggleElementLocked(element.id)}>
+                    {#if element.locked}<Lock size={13} />{:else}<LockOpen size={13} />{/if}
                   </button>
                   <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Naikkan layer"
                     data-layer-up={element.id}
@@ -3795,6 +4503,79 @@
     </aside>
   </div>
 
+  <MediaLibrary
+    open={mediaOpen}
+    {periodId}
+    onclose={() => (mediaOpen = false)}
+    onuse={insertMediaImage}
+  />
+
+  {#if contextMenu}
+    <div use:portal>
+      <div
+        class="fixed z-[70] max-h-[calc(100vh-16px)] w-64 max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl border border-line bg-white py-1.5 shadow-2xl"
+        style={`left:${contextMenu.x}px;top:${contextMenu.y}px`}
+        data-design-context-menu
+        role="menu"
+      >
+        {#if contextMenu.kind === 'element' && contextElement}
+          <p class="truncate px-3 pt-1 pb-1.5 text-[9px] font-bold tracking-[0.16em] text-ink-muted uppercase">{elementLabel(contextElement)}</p>
+          <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-stone-100" onclick={() => contextMoveLayer(1)}>
+            <ArrowUp size={14} class="shrink-0 text-ink-muted" /> Naikkan layer
+          </button>
+          <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-stone-100" onclick={() => contextMoveLayer(-1)}>
+            <ArrowDown size={14} class="shrink-0 text-ink-muted" /> Turunkan layer
+          </button>
+          <div class="my-1 h-px bg-line"></div>
+          <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-stone-100" onclick={contextToggleHidden}>
+            {#if contextElement.hidden}<Eye size={14} class="shrink-0 text-ink-muted" /> Tampilkan objek{:else}<EyeOff size={14} class="shrink-0 text-ink-muted" /> Sembunyikan objek{/if}
+          </button>
+          <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-stone-100" onclick={contextToggleLocked}>
+            {#if contextElement.locked}<LockOpen size={14} class="shrink-0 text-ink-muted" /> Buka kunci posisi{:else}<Lock size={14} class="shrink-0 text-ink-muted" /> Kunci posisi{/if}
+          </button>
+          <div class="my-1 h-px bg-line"></div>
+          <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-stone-100" onclick={contextDuplicate}>
+            <Layers size={14} class="shrink-0 text-ink-muted" /> Duplikat
+          </button>
+          <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-stone-100" onclick={contextCopy}>
+            <Copy size={14} class="shrink-0 text-ink-muted" /> <span class="flex-1">Salin</span><span class="text-[10px] text-ink-muted">Ctrl+C</span>
+          </button>
+          <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40" disabled={!clipboard} onclick={pasteClipboard}>
+            <FilePlus2 size={14} class="shrink-0 text-ink-muted" /> <span class="flex-1">Tempel</span><span class="text-[10px] text-ink-muted">Ctrl+V</span>
+          </button>
+          <div class="my-1 h-px bg-line"></div>
+          <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-red-700 hover:bg-red-50" onclick={contextDelete}>
+            <Trash2 size={14} class="shrink-0" /> Hapus objek
+          </button>
+        {:else if contextMenu.kind === 'block' && contextBlock}
+          <p class="px-3 pt-1 pb-1.5 text-[9px] font-bold tracking-[0.16em] text-ink-muted uppercase">Blok laporan</p>
+          <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-stone-100" onclick={contextResetBlock}>
+            <Undo2 size={14} class="shrink-0 text-ink-muted" /> Reset ukuran & gaya
+          </button>
+          <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-stone-100" onclick={contextToggleBlockHidden}>
+            {#if contextBlock.hidden}<Eye size={14} class="shrink-0 text-ink-muted" /> Tampilkan blok{:else}<EyeOff size={14} class="shrink-0 text-ink-muted" /> Sembunyikan blok{/if}
+          </button>
+          <div class="my-1 h-px bg-line"></div>
+          <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40" disabled={!clipboard} onclick={pasteClipboard}>
+            <FilePlus2 size={14} class="shrink-0 text-ink-muted" /> Tempel objek
+          </button>
+        {:else}
+          <p class="px-3 pt-1 pb-1.5 text-[9px] font-bold tracking-[0.16em] text-ink-muted uppercase">Kanvas</p>
+          <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40" disabled={!clipboard} onclick={pasteClipboard}>
+            <FilePlus2 size={14} class="shrink-0 text-ink-muted" /> <span class="flex-1">Tempel objek</span><span class="text-[10px] text-ink-muted">Ctrl+V</span>
+          </button>
+          {#if !clipboard}
+            <p class="px-3 pt-1 pb-1.5 text-[10px] leading-relaxed text-ink-muted">Salin objek terlebih dahulu untuk menempelkannya di sini.</p>
+          {/if}
+        {/if}
+      </div>
+    </div>
+  {/if}
+
+  {#if !panelOpen}
+    <button class="btn btn-primary fixed right-5 bottom-5 z-40 shadow-lift lg:hidden" onclick={() => (panelOpen = true)}>Properti</button>
+  {/if}
+
   {#if shapePickerOpen}
     <div use:portal>
       <Modal open={true} title="Pilih bentuk" description="Klik bentuk untuk memasukkannya ke halaman aktif. Isi, garis, dan ukuran dapat diubah setelah ditambahkan." onclose={() => (shapePickerOpen = false)} width="max-w-2xl">
@@ -3824,7 +4605,7 @@
 
   {#if iconPickerOpen}
     <div use:portal>
-      <Modal open={true} title={iconPickerTitle} description="Klik ikon untuk memasukkannya ke halaman aktif. Warna dapat diubah setelah ikon ditambahkan." onclose={() => (iconPickerOpen = false)} width="max-w-4xl">
+      <Modal open={true} title={iconPickerTitle} description={iconPickerTarget === 'card' ? 'Pilih ikon untuk kartu terpilih. Warna ikon dan latar bulat dapat diubah di panel kartu.' : 'Klik ikon untuk memasukkannya ke halaman aktif. Warna dapat diubah setelah ikon ditambahkan.'} onclose={() => (iconPickerOpen = false)} width="max-w-4xl">
     <div class="flex flex-wrap gap-2">
       <input class="input min-w-0 flex-1 py-2 text-sm" placeholder="Cari ikon…" data-icon-search bind:value={iconSearch} />
       <select class="input max-w-[220px] py-2 text-sm" data-icon-category bind:value={iconCategory}>

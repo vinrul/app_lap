@@ -70,6 +70,7 @@ export interface LayoutElement {
   opacity: number
   z: number
   hidden?: boolean
+  locked?: boolean
   src?: string
   alt?: string
   object_fit?: 'contain' | 'cover' | 'fill'
@@ -111,6 +112,11 @@ export interface LayoutElement {
   card_unit?: string
   card_detail?: string
   card_accent?: string
+  card_template?: string
+  card_icon?: string
+  card_icon_color?: string
+  card_icon_bg?: string
+  card_icon_scale?: number
   icon_name?: string
   icon_color?: string
   icon_stroke?: number
@@ -140,6 +146,20 @@ export interface UploadedDesignImage {
   url: string
 }
 
+export interface MediaItem {
+  source: 'design' | 'evidence'
+  id: string
+  filename: string
+  content_type: string
+  size_bytes: number
+  preview_url: string
+  created_at: string
+  period_id: string
+  period_label: string
+  import_filename: string
+  context: string
+}
+
 export interface DesignSource {
   key: string
   label: string
@@ -150,6 +170,13 @@ export interface DesignSource {
   chart_values: number[]
   chart_title: string
   can_chart: boolean
+  can_table?: boolean
+  can_card?: boolean
+  card_label?: string
+  card_value?: string
+  card_unit?: string
+  card_detail?: string
+  card_icon?: string
 }
 
 export interface DesignTemplateView {
@@ -204,6 +231,16 @@ export interface PeriodDetail {
 export interface LabeledCount {
   label: string
   count: number
+}
+
+export interface UnitBreakdown {
+  label: string
+  rows: number
+  polsek: number
+  personel: number
+  bibit: number
+  area_m2: number
+  jamaah: number
 }
 
 export interface MetricCard {
@@ -308,6 +345,12 @@ export interface ReportMetrics {
   total_rows: number
   outside_period: number
   duplicate_rows: number
+  personel_total: number
+  bibit_total: number
+  area_total: number
+  jamaah_total: number
+  rows_with_coordinates: number
+  evidence_links: number
   cards: MetricCard[]
   quick_wins: LabeledCount[]
   codes: LabeledCount[]
@@ -315,6 +358,8 @@ export interface ReportMetrics {
   daily: DailyCount[]
   by_polres: LabeledCount[]
   by_level: LabeledCount[]
+  by_satker: UnitBreakdown[]
+  by_polres_breakdown: UnitBreakdown[]
   narkoba: NarkobaMetrics
   green_policing: GreenMetrics
   jumat_keliling: ReligiousMetrics
@@ -439,7 +484,59 @@ export interface AnalysisResponse {
   by_code: LabeledCount[]
   by_level: LabeledCount[]
   by_unit: LabeledCount[]
+  by_satker: UnitBreakdown[]
+  by_polres_breakdown: UnitBreakdown[]
   by_date: LabeledCount[]
+}
+
+export interface UnitDetail {
+  scope: 'polres' | 'satker'
+  label: string
+  date_start: string
+  date_end: string
+  polsek_count: number
+  metrics: ReportMetrics
+  by_polsek: UnitBreakdown[]
+}
+
+export interface QuickWinCodeCoverage {
+  code: string
+  title: string
+  rows: number
+  polres: number
+  satker: number
+}
+
+export interface QuickWinActivity {
+  tanggal: string
+  kode: string
+  title: string
+  polres: string
+  polsek: string
+  satker: string
+  kegiatan: string
+  pelaksana: string
+  personel: number
+  bibit: number
+  area_m2: number
+  jamaah: number
+  map_url: string
+}
+
+export interface QuickWinDetail {
+  code: string
+  group: string
+  title: string
+  group_title: string
+  date_start: string
+  date_end: string
+  total_rows: number
+  polres_count: number
+  satker_count: number
+  by_polres: UnitBreakdown[]
+  by_satker: UnitBreakdown[]
+  codes: QuickWinCodeCoverage[]
+  activities: QuickWinActivity[]
 }
 
 export interface DashboardCounts {

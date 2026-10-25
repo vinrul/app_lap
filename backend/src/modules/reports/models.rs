@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{modules::reports::layout::ReportLayout, shared::types::LabeledCount};
+use crate::{modules::reports::layout::ReportLayout, shared::types::{LabeledCount, UnitBreakdown}};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -168,6 +168,7 @@ pub struct MediaMetrics {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ReportMetrics {
     pub source_count: i64,
     pub source_filename: String,
@@ -179,6 +180,12 @@ pub struct ReportMetrics {
     pub total_rows: i64,
     pub outside_period: i64,
     pub duplicate_rows: i64,
+    pub personel_total: i64,
+    pub bibit_total: i64,
+    pub area_total: f64,
+    pub jamaah_total: i64,
+    pub rows_with_coordinates: i64,
+    pub evidence_links: i64,
     pub cards: Vec<MetricCard>,
     pub quick_wins: Vec<LabeledCount>,
     pub codes: Vec<LabeledCount>,
@@ -186,6 +193,8 @@ pub struct ReportMetrics {
     pub daily: Vec<DailyCount>,
     pub by_polres: Vec<LabeledCount>,
     pub by_level: Vec<LabeledCount>,
+    pub by_satker: Vec<UnitBreakdown>,
+    pub by_polres_breakdown: Vec<UnitBreakdown>,
     pub narkoba: NarkobaMetrics,
     pub green_policing: GreenMetrics,
     pub jumat_keliling: ReligiousMetrics,

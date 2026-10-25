@@ -61,6 +61,23 @@ pub fn is_noise(value: &str) -> bool {
         || value.starts_with("tidak ada")
 }
 
+/// Merapikan label satker dari nama pejabat pelaksana, misalnya
+/// `Ka SPKT` menjadi `SPKT` dan `Kabid Propam` menjadi `Propam`.
+pub fn satker_label(value: &str) -> String {
+    let value = value.trim();
+    let lower = value.to_ascii_lowercase();
+    let stripped = if lower.starts_with("kabid ") {
+        &value["kabid ".len()..]
+    } else if lower.starts_with("ka ") {
+        &value["ka ".len()..]
+    } else if lower.starts_with("dir ") {
+        &value["dir ".len()..]
+    } else {
+        value
+    };
+    stripped.trim().to_string()
+}
+
 /// Memecah `Isian laporan` menjadi pasangan label/nilai.
 ///
 /// Format sumber menggunakan baris seperti `c. Kegiatan: QW5.3 Gelar perkara`.
@@ -175,5 +192,14 @@ mod tests {
             escape_html("<script>alert('x')</script>"),
             "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"
         );
+    }
+
+    #[test]
+    fn cleans_satker_titles() {
+        assert_eq!(satker_label("Ka SPKT"), "SPKT");
+        assert_eq!(satker_label("Kabid Propam"), "Propam");
+        assert_eq!(satker_label("Dir PPA dan PPO"), "PPA dan PPO");
+        assert_eq!(satker_label("Dirreskrimum"), "Dirreskrimum");
+        assert_eq!(satker_label("  "), "");
     }
 }

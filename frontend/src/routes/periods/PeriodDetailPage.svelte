@@ -13,7 +13,6 @@
   import PeriodOverview from '../../lib/components/period/PeriodOverview.svelte'
   import AnalysisPanel from '../../lib/components/period/AnalysisPanel.svelte'
   import RecordsPanel from '../../lib/components/period/RecordsPanel.svelte'
-  import EditorialPanel from '../../lib/components/period/EditorialPanel.svelte'
   import DesignPanel from '../../lib/components/period/DesignPanel.svelte'
   import DocumentsPanel from '../../lib/components/period/DocumentsPanel.svelte'
 
@@ -28,7 +27,7 @@
   let error = $state('')
 
   const activeTab = $derived(
-    ['overview', 'analysis', 'records', 'editorial', 'design', 'documents'].includes(tab)
+    ['overview', 'analysis', 'records', 'design', 'documents'].includes(tab)
       ? tab
       : 'overview',
   )
@@ -81,7 +80,6 @@
     { id: 'overview', label: 'Ringkasan' },
     { id: 'analysis', label: 'Analisis' },
     { id: 'records', label: 'Data sumber' },
-    { id: 'editorial', label: 'Editorial' },
     { id: 'design', label: 'Desain' },
     { id: 'documents', label: 'Dokumen', count: detail?.reports.length ?? 0 },
   ])
@@ -121,8 +119,8 @@
         <Button variant="secondary" size="sm" onclick={() => navigate('/imports')}>
           <CloudUpload size={14} /> Import data
         </Button>
-        <Button size="sm" onclick={() => navigate(`/periods/${periodId}/editorial`)}>
-          <PenLine size={14} /> Susun laporan
+        <Button size="sm" onclick={() => navigate(`/periods/${periodId}/design`)}>
+          <PenLine size={14} /> Susun desain
         </Button>
       </div>
     </div>
@@ -161,8 +159,6 @@
     <AnalysisPanel {periodId} />
   {:else if activeTab === 'records'}
     <RecordsPanel {periodId} />
-  {:else if activeTab === 'editorial'}
-    <EditorialPanel {periodId} {detail} {metrics} ongenerated={handleGenerated} />
   {:else if activeTab === 'design'}
     <DesignPanel {periodId} {detail} ongenerated={handleGenerated} />
   {:else if activeTab === 'documents'}
