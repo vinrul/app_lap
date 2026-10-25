@@ -1,6 +1,7 @@
 const numberFormatter = new Intl.NumberFormat('id-ID')
 const dateFormatter = new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })
 const shortDateFormatter = new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+const monthYearFormatter = new Intl.DateTimeFormat('id-ID', { month: 'long', year: 'numeric' })
 const dateTimeFormatter = new Intl.DateTimeFormat('id-ID', {
   day: 'numeric',
   month: 'short',
@@ -31,6 +32,13 @@ export const formatDateTime = (value: string | null | undefined): string => {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return dateTimeFormatter.format(date)
+}
+
+export const formatMonthYear = (value: string | null | undefined): string => {
+  if (!value) return '—'
+  const date = new Date(`${value.slice(0, 10)}T12:00:00`)
+  if (Number.isNaN(date.getTime())) return value
+  return monthYearFormatter.format(date)
 }
 
 export const formatRange = (start: string, end: string): string =>

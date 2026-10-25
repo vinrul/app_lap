@@ -6,6 +6,7 @@
     ArrowDown,
     ArrowUp,
     BarChart3,
+    CalendarDays,
     Check,
     ChevronLeft,
     ChevronRight,
@@ -15,6 +16,7 @@
     EyeOff,
     FileDown,
     FilePlus2,
+    FileText,
     ImagePlus,
     Layers,
     Link2,
@@ -52,7 +54,7 @@
   import { shapeCatalog, shapeDefinition, shapeLabel, type ShapeDefinition } from '../../shapes/catalog'
   import { emptyContent } from '../../utils/constants'
   import { cardTemplate, type CardTemplateId } from '../../utils/cardTemplates'
-  import { formatDateTime } from '../../utils/format'
+  import { formatDate, formatDateTime, formatMonthYear, formatRange } from '../../utils/format'
   import { toast } from '../../stores/toast.svelte'
   import { dialog } from '../../stores/dialog.svelte'
   import Button from '../ui/Button.svelte'
@@ -162,6 +164,7 @@
   let templateBusy = $state(false)
   let iconPickerOpen = $state(false)
   let shapePickerOpen = $state(false)
+  let textPickerOpen = $state(false)
   let iconPickerTarget = $state<'new' | 'replace' | 'card'>('new')
   let iconSearch = $state('')
   let iconCategory = $state('Semua')
@@ -175,6 +178,14 @@
   const hasImport = $derived(detail.imports.length > 0)
   const dirty = $derived(JSON.stringify(layout) !== savedJson)
   const pageNumbers = $derived(Array.from({ length: layout.pages.length }, (_, index) => index + 1))
+  const periodDateText = $derived.by(() => {
+    const period = detail.period
+    if (period.period_type === 'monthly') return formatMonthYear(period.start_date)
+    if (period.period_type === 'daily' || period.start_date === period.end_date) {
+      return formatDate(period.start_date)
+    }
+    return formatRange(period.start_date, period.end_date)
+  })
   const zoomPercent = $derived(Math.round((zoomOverride ?? fitZoom) * 100))
   const atFitZoom = $derived(zoomOverride === null)
   const canZoomOut = $derived((zoomOverride ?? fitZoom) > MIN_ZOOM + 0.001)
@@ -2553,11 +2564,30 @@
     applyLayoutToDom()
   }
 
-  function addText() {
+  function addText(kind: 'period' | 'date' | 'plain') {
     const element = baseElement('text')
-    element.text = 'Teks baru'
-    element.width = 80
-    element.height = 15
+    if (kind === 'period') {
+      element.text = detail.period.label
+      element.width = 160
+      element.height = 18
+      element.font_size = 16
+      element.bold = true
+      element.align = 'center'
+      element.valign = 'middle'
+    } else if (kind === 'date') {
+      element.text = periodDateText
+      element.width = 150
+      element.height = 12
+      element.font_size = 11
+      element.align = 'center'
+      element.valign = 'middle'
+      element.color = '#52635b'
+    } else {
+      element.text = 'Teks baru'
+      element.width = 80
+      element.height = 15
+    }
+    textPickerOpen = false
     addElement(element)
     void tick().then(() => textAreaEl?.focus())
   }
@@ -3539,7 +3569,7 @@
   <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[minmax(0,1fr)_340px]">
     <section class="card overflow-hidden">
       <div class="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2.5">
-        <Button variant="secondary" size="sm" onclick={addText}><Type size={14} /> Teks</Button>
+        <Button variant="secondary" size="sm" onclick={() => (textPickerOpen = true)}><Type size={14} /> Teks</Button>
         <Button variant="secondary" size="sm" onclick={openShapePicker}><Star size={14} /> Bentuk</Button>
         <Button variant="secondary" size="sm" onclick={openMediaLibrary}><ImagePlus size={14} /> Gambar</Button>
         <Button variant="secondary" size="sm" onclick={addImageUrl}><Link2 size={14} /> URL</Button>
@@ -4637,6 +4667,53 @@
 
   {#if !panelOpen}
     <button class="btn btn-primary fixed right-5 bottom-5 z-40 shadow-lift lg:hidden" onclick={() => (panelOpen = true)}>Properti</button>
+  {/if}
+
+  {#if textPickerOpen}
+    <div use:portal>
+      <Modal
+        open={true}
+        title="Tambah teks"
+        description="Pilih jenis teks yang akan ditempatkan di halaman aktif. Isi dan gaya tetap bisa diedit setelah ditambahkan."
+        onclose={() => (textPickerOpen = false)}
+        width="max-w-2xl"
+      >
+        <div class="grid gap-2 sm:grid-cols-3">
+          <button
+            type="button"
+            class="flex h-full flex-col items-start rounded-2xl border border-line bg-white p-4 text-left transition-colors hover:border-gold-300 hover:bg-gold-50/40"
+            data-text-option="period"
+            onclick={() => addText('period')}
+          >
+            <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-forest-50 text-forest-700"><FileText size={17} /></span>
+            <span class="mt-3 text-sm font-semibold text-ink">Judul periode</span>
+            <span class="mt-1 line-clamp-2 break-words text-[10px] leading-relaxed text-ink-muted">{detail.period.label}</span>
+          </button>
+
+          <button
+            type="button"
+            class="flex h-full flex-col items-start rounded-2xl border border-line bg-white p-4 text-left transition-colors hover:border-gold-300 hover:bg-gold-50/40"
+            data-text-option="date"
+            onclick={() => addText('date')}
+          >
+            <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-gold-50 text-gold-700"><CalendarDays size={17} /></span>
+            <span class="mt-3 text-sm font-semibold text-ink">Tanggal laporan</span>
+            <span class="mt-1 line-clamp-2 break-words text-[10px] leading-relaxed text-ink-muted">{periodDateText}</span>
+          </button>
+
+          <button
+            type="button"
+            class="flex h-full flex-col items-start rounded-2xl border border-line bg-white p-4 text-left transition-colors hover:border-gold-300 hover:bg-gold-50/40"
+            data-text-option="plain"
+            onclick={() => addText('plain')}
+          >
+            <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-stone-100 text-ink-soft"><Type size={17} /></span>
+            <span class="mt-3 text-sm font-semibold text-ink">Teks biasa</span>
+            <span class="mt-1 text-[10px] leading-relaxed text-ink-muted">Tambah teks kosong untuk diisi dan diatur secara bebas.</span>
+          </button>
+        </div>
+      </Modal>
+    </div>
   {/if}
 
   {#if shapePickerOpen}
