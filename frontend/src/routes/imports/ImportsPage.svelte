@@ -24,6 +24,7 @@
   import Button from '../../lib/components/ui/Button.svelte'
   import EmptyState from '../../lib/components/ui/EmptyState.svelte'
   import EvidenceList from '../../lib/components/ui/EvidenceList.svelte'
+  import LocationMap from '../../lib/components/ui/LocationMap.svelte'
   import Modal from '../../lib/components/ui/Modal.svelte'
 
   let fileInput: HTMLInputElement
@@ -428,7 +429,24 @@
           <div class="rounded-lg border border-line bg-stone-50 px-3 py-2"><p class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">{label}</p><strong class="text-sm text-forest-900">{value}</strong></div>
         {/each}
       </div>
-      {#if selectedRecord.map_url}
+      {#if selectedRecord.latitude !== null && selectedRecord.longitude !== null}
+        <div>
+          <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Lokasi kegiatan</p>
+          <div class="mt-1.5">
+            <LocationMap
+              latitude={selectedRecord.latitude}
+              longitude={selectedRecord.longitude}
+              label={selectedRecord.kegiatan || 'Lokasi kegiatan'}
+              detail={[selectedRecord.kode, selectedRecord.satuan].filter(Boolean).join(' · ')}
+            />
+          </div>
+          {#if selectedRecord.map_url}
+            <a class="mt-2 inline-flex items-center gap-1.5 text-[11px] font-medium text-forest-700 hover:underline" href={selectedRecord.map_url} target="_blank" rel="noopener noreferrer">
+              <MapPin size={13} /> Buka tautan peta dari laporan
+            </a>
+          {/if}
+        </div>
+      {:else if selectedRecord.map_url}
         <a class="inline-flex items-center gap-1.5 text-[11px] font-medium text-forest-700 hover:underline" href={selectedRecord.map_url} target="_blank" rel="noopener noreferrer">
           <MapPin size={13} /> {selectedRecord.map_url}
         </a>

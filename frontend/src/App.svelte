@@ -15,6 +15,7 @@
   import AppShell from './lib/components/layout/AppShell.svelte'
   import Toast from './lib/components/ui/Toast.svelte'
   import ConfirmDialog from './lib/components/ui/ConfirmDialog.svelte'
+  import EvidencePreview from './lib/components/ui/EvidencePreview.svelte'
   import Button from './lib/components/ui/Button.svelte'
   import EmptyState from './lib/components/ui/EmptyState.svelte'
 
@@ -123,3 +124,4 @@
 
 <Toast />
 <ConfirmDialog />
+<EvidencePreview />

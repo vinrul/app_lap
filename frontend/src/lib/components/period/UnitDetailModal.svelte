@@ -4,7 +4,7 @@
   import { importsApi } from '../../api'
   import { errorMessage } from '../../api/client'
   import type { QuickWinDetail, UnitDetail } from '../../types'
-  import { qwGroupTitles } from '../../utils/constants'
+  import { isQuickWinCode, qwGroupTitles, quickWinCodeParts } from '../../utils/constants'
   import { formatDate, formatNumber, formatRange } from '../../utils/format'
   import Modal from '../ui/Modal.svelte'
   import UnitBreakdownTable from './UnitBreakdownTable.svelte'
@@ -116,7 +116,9 @@
       })),
   )
   const knownCodes = $derived(
-    (data?.metrics.codes ?? []).filter((item) => /^QW\d+\.\d+$/.test(item.label)),
+    (data?.metrics.codes ?? [])
+      .filter((item) => isQuickWinCode(item.label))
+      .map((item) => ({ ...item, ...quickWinCodeParts(item.label) })),
   )
 </script>
 
@@ -336,9 +338,14 @@
               {#if knownCodes.length}
                 <div class="space-y-1.5">
                   {#each knownCodes as item}
-                    <button class="flex w-full items-center justify-between gap-3 rounded-lg border border-line px-3 py-2 text-left hover:border-gold-300 hover:bg-gold-50/40" onclick={() => openQuickWin(item.label)}>
-                      <span class="rounded-md bg-forest-50 px-1.5 py-0.5 text-[10px] font-bold text-forest-700">{item.label}</span>
-                      <span class="flex items-center gap-1 text-xs font-semibold text-forest-900">{formatNumber(item.count)} <ChevronRight size={12} class="text-ink-muted" /></span>
+                    <button class="flex w-full items-start justify-between gap-3 rounded-lg border border-line px-3 py-2 text-left hover:border-gold-300 hover:bg-gold-50/40" onclick={() => openQuickWin(item.code)}>
+                      <span class="min-w-0 flex-1">
+                        <span class="inline-block rounded-md bg-forest-50 px-1.5 py-0.5 text-[10px] font-bold text-forest-700">{item.code}</span>
+                        {#if item.title}
+                          <span class="mt-1 block text-[10px] leading-snug text-ink-muted" title={item.title}>{item.title}</span>
+                        {/if}
+                      </span>
+                      <span class="flex shrink-0 items-center gap-1 pt-0.5 text-xs font-semibold text-forest-900">{formatNumber(item.count)} <ChevronRight size={12} class="text-ink-muted" /></span>
                     </button>
                   {/each}
                 </div>

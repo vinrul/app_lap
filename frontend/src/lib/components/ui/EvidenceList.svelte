@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { AlertCircle, Clock3, Download } from 'lucide-svelte'
+  import { AlertCircle, Clock3, Download, Eye, FileText } from 'lucide-svelte'
+  import { evidencePreview } from '../../stores/evidencePreview.svelte'
   import type { EvidenceItem } from '../../types'
   import { formatBytes } from '../../utils/format'
 
@@ -10,15 +11,33 @@
 <div class="space-y-1.5">
   {#each items as item}
     {#if item.status === 'ready'}
-      <a
-        class="flex items-center gap-1.5 truncate text-[11px] font-medium text-forest-700 hover:underline"
-        href={item.url}
-        download
-      >
-        <Download size={12} class="shrink-0" />
-        <span class="truncate">{item.filename || item.source_url}</span>
-        {#if item.size_bytes}<span class="shrink-0 text-[10px] font-normal text-ink-muted">({formatBytes(item.size_bytes)})</span>{/if}
-      </a>
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-line bg-white px-2.5 py-1.5" data-evidence-ready={item.id}>
+        <span class="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] font-medium text-ink">
+          <FileText size={12} class="shrink-0 text-forest-600" />
+          <span class="truncate">{item.filename || item.source_url}</span>
+          {#if item.size_bytes}<span class="shrink-0 text-[10px] font-normal text-ink-muted">({formatBytes(item.size_bytes)})</span>{/if}
+        </span>
+        <div class="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[10px] font-semibold text-forest-700 hover:bg-forest-50"
+            title="Pratinjau langsung"
+            data-evidence-preview={item.id}
+            onclick={() => evidencePreview.open(item)}
+          >
+            <Eye size={12} /> Pratinjau
+          </button>
+          <a
+            class="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[10px] font-semibold text-forest-700 hover:bg-forest-50"
+            href={item.url}
+            download
+            title="Unduh berkas"
+            data-evidence-download={item.id}
+          >
+            <Download size={12} /> Unduh
+          </a>
+        </div>
+      </div>
     {:else if item.status === 'pending'}
       <p class="flex items-center gap-1.5 truncate text-[11px] text-ink-muted">
         <Clock3 size={12} class="shrink-0" />

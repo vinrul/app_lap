@@ -15,6 +15,7 @@
   import { formatDate, formatNumber } from '../../utils/format'
   import Button from '../ui/Button.svelte'
   import EvidenceList from '../ui/EvidenceList.svelte'
+  import LocationMap from '../ui/LocationMap.svelte'
   import Modal from '../ui/Modal.svelte'
 
   type Props = {
@@ -241,15 +242,33 @@
             </div>
           {/each}
         </div>
-        {#if selected.latitude !== null && selected.longitude !== null}
-          <p class="mt-2 text-xs text-ink-soft">Koordinat: {selected.latitude}, {selected.longitude}</p>
-        {/if}
-        {#if selected.map_url}
-          <a class="mt-1 inline-flex items-center gap-1.5 text-[11px] font-medium text-forest-700 hover:underline" href={selected.map_url} target="_blank" rel="noopener noreferrer">
-            <ExternalLink size={12} /> Buka tautan peta
-          </a>
-        {/if}
       </div>
+
+      {#if selected.latitude !== null && selected.longitude !== null}
+        <div>
+          <h3 class="text-xs font-bold tracking-[0.12em] text-ink-muted uppercase">Lokasi kegiatan</h3>
+          <div class="mt-2">
+            <LocationMap
+              latitude={selected.latitude}
+              longitude={selected.longitude}
+              label={selected.kegiatan || 'Lokasi kegiatan'}
+              detail={[selected.kode, selected.satuan].filter(Boolean).join(' · ')}
+            />
+          </div>
+          {#if selected.map_url}
+            <a class="mt-2 inline-flex items-center gap-1.5 text-[11px] font-medium text-forest-700 hover:underline" href={selected.map_url} target="_blank" rel="noopener noreferrer">
+              <ExternalLink size={12} /> Buka tautan peta dari laporan
+            </a>
+          {/if}
+        </div>
+      {:else if selected.map_url}
+        <div>
+          <h3 class="text-xs font-bold tracking-[0.12em] text-ink-muted uppercase">Lokasi kegiatan</h3>
+          <a class="mt-2 inline-flex items-center gap-1.5 text-[11px] font-medium text-forest-700 hover:underline" href={selected.map_url} target="_blank" rel="noopener noreferrer">
+            <ExternalLink size={12} /> Buka tautan peta dari laporan
+          </a>
+        </div>
+      {/if}
 
       {#if Object.keys(selected.fields).length}
         <div>
@@ -287,6 +306,7 @@
       {#if selected.evidence.length}
         <div>
           <h3 class="text-xs font-bold tracking-[0.12em] text-ink-muted uppercase">Bukti terunduh</h3>
+          <p class="mt-1 text-[10px] text-ink-muted">Pratinjau gambar atau PDF langsung di aplikasi, atau unduh berkas aslinya.</p>
           <div class="mt-2">
             <EvidenceList items={selected.evidence} />
           </div>

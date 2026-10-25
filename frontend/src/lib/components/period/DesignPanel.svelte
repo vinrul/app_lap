@@ -2453,6 +2453,39 @@
     void refreshCanvasStructure()
   }
 
+  function duplicateBlankPage() {
+    if (!isBlank || layout.pages.length >= MAX_BLANK_PAGES) return
+    const source = getPage(currentPage)
+    if (!source) return
+    pushHistory()
+    const groups = new Map<string, string>()
+    const elements = source.elements.map((element) => {
+      const copy = JSON.parse(JSON.stringify(element)) as LayoutElement
+      copy.id = newId()
+      copy.source_block = ''
+      if (copy.group) {
+        let group = groups.get(copy.group)
+        if (!group) {
+          group = newId()
+          groups.set(copy.group, group)
+        }
+        copy.group = group
+      }
+      return copy
+    })
+    layout.pages.splice(currentPage, 0, {
+      page: currentPage + 1,
+      blocks: {},
+      elements,
+    })
+    layout.pages = layout.pages.map((page, index) => ({ ...page, page: index + 1 }))
+    currentPage += 1
+    selected = null
+    checkedIds = []
+    void refreshCanvasStructure()
+    toast.success('Halaman diduplikasi.')
+  }
+
   async function removeBlankPage() {
     if (!isBlank || layout.pages.length <= 1) return
     const page = layout.pages.find((item) => item.page === currentPage)
@@ -4410,6 +4443,7 @@
           {#if isBlank}
             <div class="flex flex-wrap gap-2">
               <span data-blank-add-page><Button variant="secondary" size="sm" disabled={layout.pages.length >= MAX_BLANK_PAGES} onclick={addBlankPage}><Plus size={13} /> Tambah halaman</Button></span>
+              <span data-blank-duplicate-page><Button variant="secondary" size="sm" disabled={layout.pages.length >= MAX_BLANK_PAGES} onclick={duplicateBlankPage}><Copy size={13} /> Duplikat halaman</Button></span>
               <span data-blank-remove-page><Button variant="secondary" size="sm" disabled={layout.pages.length <= 1} onclick={removeBlankPage}><Minus size={13} /> Kurangi halaman</Button></span>
             </div>
             <span data-blank-back><Button variant="ghost" size="sm" onclick={backToReport}>Kembali ke laporan</Button></span>

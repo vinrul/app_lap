@@ -23,6 +23,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(modules::periods::routes())
         .merge(modules::imports::routes())
         .merge(modules::imports::period_routes())
+        .merge(modules::map::routes())
         .merge(modules::reports::period_routes())
         .merge(modules::reports::routes())
         .merge(modules::users::routes())

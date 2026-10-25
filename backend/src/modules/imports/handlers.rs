@@ -45,6 +45,7 @@ pub async fn commit(
         evidence::spawn_import_downloads(
             state.db.clone(),
             state.config.clone(),
+            state.evidence_downloads.clone(),
             view.id.clone(),
         );
     }
@@ -56,7 +57,13 @@ pub async fn retry_evidence(
     _user: AuthUser,
     Path(import_id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let queued = evidence::retry_import(&state.db, state.config.clone(), &import_id).await?;
+    let queued = evidence::retry_import(
+        &state.db,
+        state.config.clone(),
+        state.evidence_downloads.clone(),
+        &import_id,
+    )
+    .await?;
     Ok(Json(serde_json::json!({ "queued": queued })))
 }
 

@@ -13,6 +13,7 @@
   import { importsApi } from '../../api'
   import { errorMessage } from '../../api/client'
   import type { AnalysisResponse } from '../../types'
+  import { quickWinCodeParts } from '../../utils/constants'
   import { formatDate, formatNumber } from '../../utils/format'
   import BarList from '../charts/BarList.svelte'
   import DailyBars from '../charts/DailyBars.svelte'
@@ -94,8 +95,17 @@
         <BarList items={data.by_level} limit={10} barTone="gold" />
       </section>
       <section class="card p-5">
-        <div class="mb-4"><span class="eyebrow">DETAIL KODE</span><h2 class="mt-1 font-display text-lg font-semibold text-forest-900">Kode kegiatan</h2></div>
-        <BarList items={data.by_code} limit={20} />
+        <div class="mb-4">
+          <span class="eyebrow">DETAIL KODE</span>
+          <h2 class="mt-1 font-display text-lg font-semibold text-forest-900">Kode kegiatan</h2>
+          <p class="mt-1 text-[10px] text-ink-muted">Kode sub-kegiatan beserta deskripsinya.</p>
+        </div>
+        <BarList
+          items={data.by_code}
+          limit={20}
+          formatLabel={(label) => quickWinCodeParts(label).code}
+          formatDetail={(label) => quickWinCodeParts(label).title}
+        />
       </section>
     </div>
 

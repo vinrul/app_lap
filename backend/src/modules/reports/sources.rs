@@ -1,7 +1,10 @@
 use crate::{
-    modules::reports::{
-        layout::DesignSource,
-        models::{GroupMetrics, ReportMetrics},
+    modules::{
+        imports::qw,
+        reports::{
+            layout::DesignSource,
+            models::{GroupMetrics, ReportMetrics},
+        },
     },
     shared::{LabeledCount, format_count},
 };
@@ -15,19 +18,21 @@ const MAX_CHART_POINTS: usize = 20;
 pub fn design_sources(metrics: &ReportMetrics) -> Vec<DesignSource> {
     let mut sources = vec![
         cards_source(metrics),
-        labeled_source(
+        described_labeled_source(
             "quick_wins",
             "Quick Wins",
             "Ringkasan",
             "Jumlah Quick Wins",
             &metrics.quick_wins,
+            qw::group_title,
         ),
-        labeled_source(
+        described_labeled_source(
             "codes",
             "Kode kegiatan",
             "Ringkasan",
             "Kode kegiatan",
             &metrics.codes,
+            qw::title,
         ),
         labeled_source(
             "statuses",
@@ -457,6 +462,64 @@ fn labeled_source(
     }
 }
 
+fn described_labeled_source(
+    key: &str,
+    label: &str,
+    category: &str,
+    chart_title: &str,
+    items: &[LabeledCount],
+    describe: fn(&str) -> &'static str,
+) -> DesignSource {
+    let items = items.iter().take(MAX_TABLE_ROWS - 1).collect::<Vec<_>>();
+    let columns = vec![
+        "Kode".to_string(),
+        "Deskripsi".to_string(),
+        "Jumlah".to_string(),
+    ];
+    let mut rows = vec![columns.clone()];
+    for item in &items {
+        rows.push(vec![
+            item.label.clone(),
+            describe(&item.label).to_string(),
+            item.count.to_string(),
+        ]);
+    }
+    let chart_items = items
+        .iter()
+        .take(MAX_CHART_POINTS)
+        .copied()
+        .collect::<Vec<_>>();
+    let chart_labels = chart_items
+        .iter()
+        .map(|item| {
+            let description = describe(&item.label);
+            if description.is_empty() {
+                item.label.clone()
+            } else {
+                format!("{} · {}", item.label, description)
+            }
+        })
+        .collect();
+    DesignSource {
+        key: key.to_string(),
+        label: label.to_string(),
+        category: category.to_string(),
+        table_columns: columns,
+        table_rows: rows,
+        chart_labels,
+        chart_values: chart_items.iter().map(|item| item.count as f64).collect(),
+        chart_title: chart_title.to_string(),
+        can_table: true,
+        can_chart: !chart_items.is_empty(),
+        can_card: false,
+        card_label: String::new(),
+        card_value: String::new(),
+        card_unit: String::new(),
+        card_detail: String::new(),
+        card_icon: String::new(),
+    }
+}
+
 fn daily_source(metrics: &ReportMetrics) -> DesignSource {
     let items = metrics
         .daily
@@ -632,8 +695,12 @@ mod tests {
             detail: "89 kegiatan".into(),
         }];
         metrics.quick_wins = vec![
-            LabeledCount::new("Gelar perkara", 12),
-            LabeledCount::new("Patroli", 8),
+            LabeledCount::new("QW1", 12),
+            LabeledCount::new("QW2", 8),
+        ];
+        metrics.codes = vec![
+            LabeledCount::new("QW1.10", 9),
+            LabeledCount::new("QW2.1", 2),
         ];
         metrics.daily = vec![
             DailyCount {
@@ -696,12 +763,30 @@ mod tests {
             .iter()
             .find(|source| source.key == "quick_wins")
             .unwrap();
-        assert_eq!(quick_wins.table_rows[0], vec!["Kategori", "Jumlah"]);
-        assert_eq!(quick_wins.table_rows[1], vec!["Gelar perkara", "12"]);
-        assert_eq!(quick_wins.chart_labels, vec!["Gelar perkara", "Patroli"]);
+        assert_eq!(
+            quick_wins.table_rows[0],
+            vec!["Kode", "Deskripsi", "Jumlah"]
+        );
+        assert_eq!(
+            quick_wins.table_rows[1],
+            vec!["QW1", "Ruang Publik Aman", "12"]
+        );
+        assert_eq!(
+            quick_wins.chart_labels,
+            vec!["QW1 · Ruang Publik Aman", "QW2 · Pemulihan Kawasan Narkoba"]
+        );
         assert_eq!(quick_wins.chart_values, vec![12.0, 8.0]);
         assert_eq!(quick_wins.chart_title, "Jumlah Quick Wins");
         assert!(quick_wins.can_chart);
+
+        let codes = sources.iter().find(|source| source.key == "codes").unwrap();
+        assert_eq!(codes.table_rows[0], vec!["Kode", "Deskripsi", "Jumlah"]);
+        assert_eq!(
+            codes.table_rows[1],
+            vec!["QW1.10", "Patroli Sabhara", "9"]
+        );
+        assert_eq!(codes.chart_labels[0], "QW1.10 · Patroli Sabhara");
+        assert_eq!(codes.table_rows[2], vec!["QW2.1", "Pemberantasan dan pemulihan kawasan narkoba", "2"]);
 
         let cards = sources.iter().find(|source| source.key == "cards").unwrap();
         assert!(cards.can_table);

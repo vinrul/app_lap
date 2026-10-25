@@ -20,23 +20,62 @@ use uuid::Uuid;
 use crate::{
     config::Config,
     error::{ApiError, ApiResult},
+    state::EvidenceDownloadLocks,
 };
 
 const MAX_EVIDENCE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CONCURRENT_DOWNLOADS: usize = 4;
 const REQUEST_TIMEOUT_SECS: u64 = 25;
 
-pub fn spawn_import_downloads(db: SqlitePool, config: Arc<Config>, import_id: String) {
+pub fn spawn_import_downloads(
+    db: SqlitePool,
+    config: Arc<Config>,
+    locks: Arc<EvidenceDownloadLocks>,
+    import_id: String,
+) -> bool {
+    if !locks.claim(&import_id) {
+        return false;
+    }
     tokio::spawn(async move {
-        if let Err(error) = process_import(&db, &config, &import_id).await {
-            tracing::warn!(%error, %import_id, "unduhan bukti dukung gagal diproses");
+        loop {
+            if let Err(error) = process_import(&db, &config, &import_id).await {
+                tracing::warn!(%error, %import_id, "unduhan bukti dukung gagal diproses");
+            }
+            if !locks.continue_or_finish(&import_id) {
+                break;
+            }
         }
     });
+    true
+}
+
+pub async fn resume_pending_downloads(
+    db: &SqlitePool,
+    config: Arc<Config>,
+    locks: Arc<EvidenceDownloadLocks>,
+) -> ApiResult<usize> {
+    let import_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT import_id FROM import_evidence
+         WHERE status = 'pending'
+         ORDER BY import_id",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(ApiError::internal)?;
+
+    let mut started = 0;
+    for import_id in import_ids {
+        if spawn_import_downloads(db.clone(), config.clone(), locks.clone(), import_id) {
+            started += 1;
+        }
+    }
+    Ok(started)
 }
 
 pub async fn retry_import(
     db: &SqlitePool,
     config: Arc<Config>,
+    locks: Arc<EvidenceDownloadLocks>,
     import_id: &str,
 ) -> ApiResult<u64> {
     ensure_evidence_rows(db, import_id).await?;
@@ -59,8 +98,10 @@ pub async fn retry_import(
     .await
     .map_err(ApiError::internal)?;
 
-    if queued > 0 {
-        spawn_import_downloads(db.clone(), config, import_id.to_string());
+    if queued > 0
+        && !spawn_import_downloads(db.clone(), config, locks, import_id.to_string())
+    {
+        tracing::debug!(%import_id, "worker unduhan sudah berjalan; permintaan rerun dicatat");
     }
     Ok(queued.max(0) as u64)
 }
