@@ -14,9 +14,11 @@ import type {
   PeriodDetail,
   QuickWinDetail,
   RecordsResponse,
+  PublicShareView,
   ReportContent,
   ReportLayout,
   ReportMetrics,
+  ReportShareView,
   ReportView,
   UnitDetail,
   UploadedDesignImage,
@@ -137,6 +139,19 @@ export const reportsApi = {
     }),
   downloadUrl: (reportId: string) => `/api/reports/${reportId}/pdf`,
   previewUrl: (reportId: string) => `/api/reports/${reportId}/preview`,
+  share: (reportId: string) =>
+    request<ReportShareView>(`/reports/${reportId}/share`, { method: 'POST' }),
+  remove: (reportId: string) =>
+    request<void>(`/reports/${reportId}`, { method: 'DELETE' }),
+}
+
+export const publicShareApi = {
+  info: (token: string) =>
+    request<PublicShareView>(`/public/shares/${encodeURIComponent(token)}`),
+  previewUrl: (token: string) =>
+    `/api/public/shares/${encodeURIComponent(token)}/preview`,
+  pdfUrl: (token: string) =>
+    `/api/public/shares/${encodeURIComponent(token)}/pdf`,
 }
 
 export const designApi = {

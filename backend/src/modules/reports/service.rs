@@ -20,7 +20,10 @@ use crate::{
                 image_id_from_src,
             },
             metrics,
-            models::{DraftView, ReportContent, ReportMetrics, ReportView},
+            models::{
+                DraftView, PublicShareView, ReportContent, ReportMetrics, ReportShareView,
+                ReportView,
+            },
             render,
         },
     },
@@ -730,15 +733,7 @@ pub async fn metrics_for(
 ) -> ApiResult<ReportMetrics> {
     let (start, end, label) = periods::service::dates(db, period_id).await?;
     let filename = source_summary(db, &start, &end).await?;
-    metrics::load_period(
-        db,
-        &filename,
-        &label,
-        &start,
-        &end,
-        &config.polda_name,
-    )
-    .await
+    metrics::load_period(db, &filename, &label, &start, &end, &config.polda_name).await
 }
 
 pub async fn preview_html(
@@ -946,6 +941,14 @@ pub async fn report_paths(
     ))
 }
 
+fn report_filename(label: &str) -> String {
+    let sanitized: String = label
+        .chars()
+        .map(|ch| if ch.is_alphanumeric() { ch } else { '-' })
+        .collect();
+    format!("laporan-{}.pdf", sanitized.trim_matches('-'))
+}
+
 pub async fn download_path(
     db: &SqlitePool,
     _config: &Config,
@@ -955,12 +958,203 @@ pub async fn download_path(
     if !path.exists() {
         return Err(ApiError::not_found("Berkas PDF tidak ditemukan."));
     }
-    let sanitized: String = label
-        .chars()
-        .map(|ch| if ch.is_alphanumeric() { ch } else { '-' })
-        .collect();
-    let filename = format!("laporan-{}.pdf", sanitized.trim_matches('-'));
-    Ok((path, filename))
+    Ok((path, report_filename(&label)))
+}
+
+pub async fn delete_report(
+    db: &SqlitePool,
+    config: &Config,
+    user_id: &str,
+    report_id: &str,
+) -> ApiResult<()> {
+    let mut tx = db.begin().await.map_err(ApiError::internal)?;
+    let row = sqlx::query("SELECT pdf_path, html_path FROM report_runs WHERE id = ?")
+        .bind(report_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("Dokumen laporan tidak ditemukan."))?;
+    let pdf_path: String = row.get("pdf_path");
+    let html_path: String = row.get("html_path");
+
+    sqlx::query("DELETE FROM report_shares WHERE report_id = ?")
+        .bind(report_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::internal)?;
+    sqlx::query("DELETE FROM report_runs WHERE id = ?")
+        .bind(report_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::internal)?;
+
+    audit::record_tx(
+        &mut tx,
+        Some(user_id),
+        "report.delete",
+        "report",
+        report_id,
+        serde_json::json!({ "pdf_path": &pdf_path, "html_path": &html_path }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::internal)?;
+
+    for raw_path in [pdf_path, html_path] {
+        if raw_path.trim().is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(&raw_path);
+        if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            continue;
+        }
+        if !managed_report_file(config, &path) {
+            tracing::warn!(path = %path.display(), "melewati berkas laporan di luar direktori reports");
+            continue;
+        }
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "gagal menghapus berkas laporan");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn managed_report_file(config: &Config, path: &Path) -> bool {
+    let Ok(base) = config.data_dir.join("reports").canonicalize() else {
+        return false;
+    };
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    path.starts_with(base)
+}
+
+pub async fn create_share(
+    db: &SqlitePool,
+    user_id: &str,
+    report_id: &str,
+) -> ApiResult<ReportShareView> {
+    let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM report_runs WHERE id = ?")
+        .bind(report_id)
+        .fetch_one(db)
+        .await
+        .map_err(ApiError::internal)?;
+    if exists == 0 {
+        return Err(ApiError::not_found("Dokumen laporan tidak ditemukan."));
+    }
+
+    if let Some(row) = sqlx::query(
+        "SELECT token, created_at FROM report_shares
+         WHERE report_id = ? AND revoked_at IS NULL
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(report_id)
+    .fetch_optional(db)
+    .await
+    .map_err(ApiError::internal)?
+    {
+        return Ok(ReportShareView {
+            token: row.get("token"),
+            created_at: row.get("created_at"),
+        });
+    }
+
+    let token = Uuid::new_v4().simple().to_string();
+    let created_at = chrono::Utc::now().to_rfc3339();
+    let result = sqlx::query(
+        "INSERT OR IGNORE INTO report_shares(id, report_id, token, created_by, created_at)
+         VALUES(?,?,?,?,?)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(report_id)
+    .bind(&token)
+    .bind(user_id)
+    .bind(&created_at)
+    .execute(db)
+    .await
+    .map_err(ApiError::internal)?;
+
+    let row = sqlx::query(
+        "SELECT token, created_at FROM report_shares
+         WHERE report_id = ? AND revoked_at IS NULL
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(report_id)
+    .fetch_optional(db)
+    .await
+    .map_err(ApiError::internal)?
+    .ok_or_else(|| ApiError::internal("Tautan publik gagal dibuat."))?;
+
+    if result.rows_affected() > 0 {
+        audit::record(
+            db,
+            Some(user_id),
+            "report.share",
+            "report",
+            report_id,
+            serde_json::json!({ "token": token }),
+        )
+        .await?;
+    }
+
+    Ok(ReportShareView {
+        token: row.get("token"),
+        created_at: row.get("created_at"),
+    })
+}
+
+async fn public_share_row(db: &SqlitePool, token: &str) -> ApiResult<sqlx::sqlite::SqliteRow> {
+    sqlx::query(
+        "SELECT r.pdf_path, r.html_path,
+                COALESCE(NULLIF(r.period_label, ''), p.label) AS period_label,
+                s.created_at AS shared_at
+         FROM report_shares s
+         JOIN report_runs r ON r.id = s.report_id
+         JOIN report_periods p ON p.id = r.period_id
+         WHERE s.token = ? AND s.revoked_at IS NULL",
+    )
+    .bind(token)
+    .fetch_optional(db)
+    .await
+    .map_err(ApiError::internal)?
+    .ok_or_else(|| ApiError::not_found("Tautan laporan tidak ditemukan atau sudah tidak aktif."))
+}
+
+pub async fn public_share(db: &SqlitePool, token: &str) -> ApiResult<PublicShareView> {
+    let row = public_share_row(db, token).await?;
+    let period_label: String = row.get("period_label");
+    Ok(PublicShareView {
+        token: token.to_string(),
+        title: period_label.clone(),
+        period_label,
+        created_at: row.get("shared_at"),
+    })
+}
+
+pub async fn public_preview(db: &SqlitePool, token: &str) -> ApiResult<String> {
+    let row = public_share_row(db, token).await?;
+    let html_path: String = row.get("html_path");
+    if html_path.trim().is_empty() || !Path::new(&html_path).exists() {
+        return Err(ApiError::not_found(
+            "Pratinjau presentasi tidak tersedia. Buat ulang PDF.",
+        ));
+    }
+    tokio::fs::read_to_string(&html_path)
+        .await
+        .map_err(ApiError::internal)
+}
+
+pub async fn public_download_path(db: &SqlitePool, token: &str) -> ApiResult<(PathBuf, String)> {
+    let row = public_share_row(db, token).await?;
+    let path = PathBuf::from(row.get::<String, _>("pdf_path"));
+    if !path.exists() {
+        return Err(ApiError::not_found("Berkas PDF tidak ditemukan."));
+    }
+    let label: String = row.get("period_label");
+    Ok((path, report_filename(&label)))
 }
 
 #[cfg(test)]
@@ -990,10 +1184,9 @@ mod tests {
         .unwrap();
 
         let png = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
-        let uploaded =
-            super::save_layout_image(&db, &config, "u1", "p1", "desain.png", &png)
-                .await
-                .unwrap();
+        let uploaded = super::save_layout_image(&db, &config, "u1", "p1", "desain.png", &png)
+            .await
+            .unwrap();
 
         let evidence_dir = config.data_dir.join("evidence").join("imp1");
         tokio::fs::create_dir_all(&evidence_dir).await.unwrap();
@@ -1046,7 +1239,11 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(copied.id, uploaded.id);
-        assert!(tokio::fs::try_exists(dir.path().join("design/p1")).await.unwrap());
+        assert!(
+            tokio::fs::try_exists(dir.path().join("design/p1"))
+                .await
+                .unwrap()
+        );
 
         let count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM design_images WHERE period_id = 'p1'")
@@ -1059,5 +1256,84 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(cross.id, uploaded.id);
+    }
+
+    #[tokio::test]
+    async fn shares_and_deletes_report_with_public_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::test_config();
+        config.data_dir = dir.path().to_path_buf();
+        let db = crate::db::connect(&config).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO users(id,username,password_hash,role) VALUES('u1','tester','x','admin')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO report_periods(id,start_date,end_date,label,created_by)
+             VALUES('p1','2026-10-19','2026-10-25','19–25 Oktober 2026','u1')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let report_dir = dir.path().join("reports").join("p1");
+        tokio::fs::create_dir_all(&report_dir).await.unwrap();
+        let html_path = report_dir.join("r1.html");
+        let pdf_path = report_dir.join("r1.pdf");
+        tokio::fs::write(
+            &html_path,
+            "<html><body><section class=\"page\">Halaman presentasi</section></body></html>",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(&pdf_path, b"%PDF-1.4").await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO report_runs(
+                id, period_id, content_json, metrics_json, layout_json, pdf_path, html_path,
+                polda_name, source_filename, period_label, created_by
+             ) VALUES('r1','p1','{}','{}','{}',?,?,'POLDA BALI','data.xlsx','19–25 Oktober 2026','u1')",
+        )
+        .bind(pdf_path.to_string_lossy().to_string())
+        .bind(html_path.to_string_lossy().to_string())
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let share = super::create_share(&db, "u1", "r1").await.unwrap();
+        assert_eq!(share.token.len(), 32);
+        let again = super::create_share(&db, "u1", "r1").await.unwrap();
+        assert_eq!(again.token, share.token);
+
+        let metadata = super::public_share(&db, &share.token).await.unwrap();
+        assert_eq!(metadata.period_label, "19–25 Oktober 2026");
+        assert_eq!(metadata.title, "19–25 Oktober 2026");
+
+        let preview = super::public_preview(&db, &share.token).await.unwrap();
+        assert!(preview.contains("Halaman presentasi"));
+
+        let (path, filename) = super::public_download_path(&db, &share.token)
+            .await
+            .unwrap();
+        assert!(path.exists());
+        assert_eq!(filename, "laporan-19-25-Oktober-2026.pdf");
+        assert!(super::public_share(&db, "tidak-ada").await.is_err());
+
+        super::delete_report(&db, &config, "u1", "r1")
+            .await
+            .unwrap();
+        assert!(!html_path.exists());
+        assert!(!pdf_path.exists());
+        let shares: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM report_shares WHERE report_id = 'r1'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(shares, 0);
+        assert!(super::public_share(&db, &share.token).await.is_err());
+        assert!(super::delete_report(&db, &config, "u1", "r1").await.is_err());
     }
 }

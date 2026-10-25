@@ -1,4 +1,4 @@
-export type RouteName = 'dashboard' | 'periods' | 'period' | 'imports' | 'users'
+export type RouteName = 'dashboard' | 'periods' | 'period' | 'imports' | 'users' | 'present'
 export type PeriodTab = 'overview' | 'analysis' | 'records' | 'design' | 'documents'
 
 export interface Route {
@@ -20,6 +20,7 @@ function parseRoute(): Route {
     return { name: 'period', id: parts[1], tab, path }
   }
   if (parts[0] === 'periods') return { name: 'periods', path }
+  if (parts[0] === 'present' && parts[1]) return { name: 'present', id: parts[1], path }
   if (parts[0] === 'imports') return { name: 'imports', path }
   if (parts[0] === 'users') return { name: 'users', path }
   return { name: 'dashboard', path: '/dashboard' }

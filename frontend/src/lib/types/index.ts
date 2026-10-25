@@ -197,6 +197,18 @@ export interface ReportView {
   preview_url: string
 }
 
+export interface ReportShareView {
+  token: string
+  created_at: string
+}
+
+export interface PublicShareView {
+  token: string
+  title: string
+  period_label: string
+  created_at: string
+}
+
 export interface ReportContent {
   summary: string
   narkoba: string

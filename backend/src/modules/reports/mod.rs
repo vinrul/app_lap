@@ -71,9 +71,20 @@ pub fn routes() -> Router<AppState> {
             "/design/templates/{template_id}",
             delete(handlers::delete_template),
         )
+        .route(
+            "/reports/{report_id}",
+            delete(handlers::delete_report),
+        )
         .route("/reports/{report_id}/pdf", get(handlers::download))
         .route(
             "/reports/{report_id}/preview",
             get(handlers::preview_stored),
         )
+        .route("/reports/{report_id}/share", post(handlers::create_share))
+        .route("/public/shares/{token}", get(handlers::public_share))
+        .route(
+            "/public/shares/{token}/preview",
+            get(handlers::public_preview),
+        )
+        .route("/public/shares/{token}/pdf", get(handlers::public_download))
 }

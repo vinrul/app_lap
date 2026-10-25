@@ -18,7 +18,7 @@ use crate::{
             },
             models::{
                 DraftView, GenerateReportRequest, PreviewReportRequest, PreviewResponse,
-                ReportContent, ReportMetrics, ReportView,
+                PublicShareView, ReportContent, ReportMetrics, ReportShareView, ReportView,
             },
             service, sources,
         },
@@ -123,14 +123,8 @@ pub async fn apply_template(
     Path((period_id, template_id)): Path<(String, String)>,
 ) -> ApiResult<Json<LayoutView>> {
     Ok(Json(
-        service::apply_template(
-            &state.db,
-            &state.config,
-            &user.id,
-            &period_id,
-            &template_id,
-        )
-        .await?,
+        service::apply_template(&state.db, &state.config, &user.id, &period_id, &template_id)
+            .await?,
     ))
 }
 
@@ -272,9 +266,82 @@ pub async fn download(
     Path(report_id): Path<String>,
 ) -> ApiResult<Response> {
     let (path, filename) = service::download_path(&state.db, &state.config, &report_id).await?;
+    Ok(pdf_response(path, &filename, "attachment").await?)
+}
+
+pub async fn delete_report(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(report_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    if user.role != "admin" && user.role != "operator" {
+        return Err(ApiError::forbidden());
+    }
+    service::delete_report(&state.db, &state.config, &user.id, &report_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn create_share(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(report_id): Path<String>,
+) -> ApiResult<Json<ReportShareView>> {
+    Ok(Json(
+        service::create_share(&state.db, &user.id, &report_id).await?,
+    ))
+}
+
+pub async fn public_share(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> ApiResult<Json<PublicShareView>> {
+    Ok(Json(service::public_share(&state.db, &token).await?))
+}
+
+pub async fn public_preview(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> ApiResult<Response> {
+    let html = service::public_preview(&state.db, &token).await?;
+    let mut response = Response::new(Body::from(html));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        "x-robots-tag",
+        HeaderValue::from_static("noindex, nofollow"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline'; font-src data:",
+        ),
+    );
+    Ok(response)
+}
+
+pub async fn public_download(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> ApiResult<Response> {
+    let (path, filename) = service::public_download_path(&state.db, &token).await?;
+    Ok(pdf_response(path, &filename, "inline").await?)
+}
+
+async fn pdf_response(
+    path: std::path::PathBuf,
+    filename: &str,
+    disposition_type: &str,
+) -> ApiResult<Response> {
     let bytes = tokio::fs::read(path).await.map_err(ApiError::internal)?;
-    let disposition = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
-        .map_err(ApiError::internal)?;
+    let disposition =
+        HeaderValue::from_str(&format!("{disposition_type}; filename=\"{filename}\""))
+            .map_err(ApiError::internal)?;
 
     let mut response = Response::new(Body::from(bytes));
     *response.status_mut() = StatusCode::OK;
@@ -285,6 +352,13 @@ pub async fn download(
     response
         .headers_mut()
         .insert(header::CONTENT_DISPOSITION, disposition);
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        "x-robots-tag",
+        HeaderValue::from_static("noindex, nofollow"),
+    );
     Ok(response)
 }
 

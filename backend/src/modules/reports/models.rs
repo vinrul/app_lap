@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{modules::reports::layout::ReportLayout, shared::types::{LabeledCount, UnitBreakdown}};
+use crate::{
+    modules::reports::layout::ReportLayout,
+    shared::types::{LabeledCount, UnitBreakdown},
+};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -45,6 +48,20 @@ pub struct ReportView {
     pub period_label: String,
     pub pdf_url: String,
     pub preview_url: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ReportShareView {
+    pub token: String,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PublicShareView {
+    pub token: String,
+    pub title: String,
+    pub period_label: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Deserialize)]

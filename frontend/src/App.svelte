@@ -9,6 +9,7 @@
   import DashboardPage from './routes/dashboard/DashboardPage.svelte'
   import PeriodsPage from './routes/periods/PeriodsPage.svelte'
   import PeriodDetailPage from './routes/periods/PeriodDetailPage.svelte'
+  import PresentationPage from './routes/presentation/PresentationPage.svelte'
   import ImportsPage from './routes/imports/ImportsPage.svelte'
   import UsersPage from './routes/users/UsersPage.svelte'
   import AppShell from './lib/components/layout/AppShell.svelte'
@@ -35,7 +36,9 @@
   function handleUnauthorized() {
     if (auth.user) {
       auth.clear()
-      toast.error('Sesi berakhir. Silakan masuk kembali.')
+      if (router.route.name !== 'present') {
+        toast.error('Sesi berakhir. Silakan masuk kembali.')
+      }
     }
   }
 
@@ -48,7 +51,9 @@
           ? 'Detail periode'
           : router.route.name === 'imports'
             ? 'Import data'
-            : 'Pengguna & akses',
+            : router.route.name === 'present'
+              ? 'Presentasi laporan'
+              : 'Pengguna & akses',
   )
 </script>
 
@@ -57,7 +62,11 @@
   <meta name="description" content="Kelola impor data dan laporan mingguan PBM Polda Bali." />
 </svelte:head>
 
-{#if auth.loading}
+{#if router.route.name === 'present' && router.route.id}
+  {#key router.route.id}
+    <PresentationPage token={router.route.id} />
+  {/key}
+{:else if auth.loading}
   <main class="flex min-h-screen flex-col items-center justify-center gap-4 bg-forest-950 text-white">
     <span class="flex h-14 w-14 items-center justify-center rounded-2xl border border-gold-400/40 bg-white/5 text-gold-200">
       <Activity size={24} />

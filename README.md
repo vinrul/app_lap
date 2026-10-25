@@ -19,9 +19,11 @@ Aplikasi lokal untuk mengubah export Excel **Quick Wins / Qins Polri** menjadi l
   - Amplifikasi media (publikasi, dokumentasi, kanal, kegiatan)
 - Editor desain visual per laporan: saat desain periode belum pernah disimpan, tab Desain menampilkan pilihan blank template dan seluruh template desain; setelah desain disimpan, kanvas terakhir langsung ditampilkan. Editor mendukung teks (perataan horizontal dan vertikal, pilihan font sistem dan Google Fonts yang dibundel offline), kotak dan bentuk lain (lingkaran/elips, segitiga, segitiga siku, belah ketupat, jajar genjang, trapesium, segi lima, segi enam, bintang, panah, plus, hati) dengan isi warna solid atau gradien linear/radial hingga 8 warna serta opsi tanpa isi dan tanpa garis, gambar (media library atau URL), ikon Lucide (warna dan ketebalan garis dapat diubah), kartu, tabel manual, dan grafik bar, bar horizontal, line, pie, atau donut; tabel/grafik dapat diikat ke sumber data metrik; kartu KPI dapat diikat ke indikator Ringkasan/Analisis (narkoba, green policing, personel, bibit, luas, jemaah, koordinat, bukti dukung, jumlah polres/satker, periode), memakai enam template visual (klasik, ikon kiri, ikon kanan, tengah, panel ikon, minimal) dengan ikon Lucide yang bisa diganti warna dan latarnya, diedit langsung, atau di-detach menjadi kartu mandiri; geser/resize/style blok laporan; editor menampilkan satu halaman dalam satu waktu dengan navigasi Sebelumnya/Berikutnya serta zoom −/+ (Ctrl +/−); edit teks blok langsung di kanvas; detach tabel/grafik lama menjadi objek manual dengan tombol Reset ke data; panel layer untuk sembunyikan, kunci posisi, urutkan, atau gabungkan objek; menu klik kanan pada kanvas untuk menaikkan/menurunkan layer, menyembunyikan, mengunci, menduplikasi, menyalin, menempel (termasuk saat tidak ada objek terpilih), dan menghapus objek; pintasan Ctrl+C/Ctrl+V; gabungkan objek agar bergerak bersama; mode dokumen blank dengan orientasi portrait/landscape dan jumlah halaman yang bisa ditambah atau dikurangi; simpan dan terapkan template desain lintas periode (mode, orientasi, jumlah halaman, dan gambar ikut disimpan); lalu terapkan layout ke pratinjau dan PDF.
 - Media library desain: gambar yang pernah diunggah dari periode mana pun dan bukti dukung gambar pada periode aktif tersedia dalam satu panel; gambar dipilih dulu sebelum masuk kanvas, dan unggahan baru disimpan ke library tanpa langsung ditempatkan.
-- Pratinjau HTML sebelum penerbitan.
 - Pembuatan PDF laporan resmi 9 halaman dengan penomoran halaman, tabel sebaran wilayah, dan grafik batang, atau dokumen blank sesuai orientasi dan jumlah halaman yang disimpan.
 - Arsip PDF dengan snapshot metrik dan desain.
+- Bagikan & presentasi publik: setiap PDF dapat menghasilkan tautan token acak yang dapat dibuka tanpa login. Tautan presentasi menampilkan satu halaman penuh seperti PowerPoint dengan navigasi klik/ketuk halaman, keyboard, tombol, dan geser layar, mode layar penuh, pilihan transisi (buka buku, geser, pudar, zoom), dan opsi tanpa efek; tautan PDF juga dapat disalin, dibuka, atau dibagikan melalui WhatsApp/email. Tombol **Bagikan & presentasi** pada editor desain membuat snapshot PDF terlebih dahulu agar tautan selalu sesuai desain terakhir.
+- Hapus dokumen PDF oleh admin/operator: dokumen, file PDF/HTML, dan seluruh tautan publiknya dihapus permanen setelah konfirmasi, dengan audit log.
+- Pratinjau HTML sebelum penerbitan.
 - Autentikasi sesi, peran `admin`/`operator`, audit event, dan pembatasan koneksi loopback.
 - Antarmuka Svelte 5 responsif, modular, dan menggunakan Tailwind CSS v4.
 
@@ -60,7 +62,8 @@ Secara default aplikasi hanya mendengarkan koneksi loopback. Frontend dibangun o
 4. Buka tab **Ringkasan** untuk memeriksa metrik, berkas impor, duplikat, dan sebaran wilayah.
 5. Buka tab **Analisis** untuk personel, bibit, luas, jemaah, koordinat, tren harian, serta sebaran kode/unit. Tab **Data** memuat daftar baris beserta bukti dukung.
 6. Buka tab **Desain**. Jika desain periode belum pernah disimpan, pilih blank template atau salah satu template desain; jika sudah ada, kanvas terakhir langsung tampil. Susun layout, lalu **Pratinjau** dan **Buat PDF**.
-7. Unduh atau tinjau PDF pada tab **Dokumen**.
+7. Unduh, tinjau, atau buka **Bagikan & presentasi** pada tab **Dokumen**. Dialog menyediakan tautan presentasi publik, tautan PDF, salin tautan, WhatsApp, dan email.
+8. Buka tautan presentasi tanpa login. Gunakan tombol navigasi, panah/spasi, geser layar, layar penuh, dan pilihan transisi halaman.
 
 Metrik dihitung dari baris sumber dan isian terstruktur. Angka yang tidak tersedia di workbook (misalnya narasi kebijakan) tetap perlu diisi operator. Tinjau kembali angka agregat dan desain sebelum menerbitkan PDF.
 
@@ -74,7 +77,8 @@ app_lap/
 │   │   ├── 0002_reporting.sql
 │   │   ├── 0003_report_design.sql
 │   │   ├── 0004_design_templates.sql
-│   │   └── 0005_standalone_imports.sql
+│   │   ├── 0005_standalone_imports.sql
+│   │   └── 0006_report_shares.sql
 │   └── src/
 │       ├── main.rs              # Entry point & CLI
 │       ├── app.rs               # Perakitan router & middleware

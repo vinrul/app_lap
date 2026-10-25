@@ -25,6 +25,7 @@
     Plus,
     Redo2,
     Save,
+    Share2,
     Shapes,
     Star,
     Table2,
@@ -43,6 +44,7 @@
     PeriodDetail,
     ReportContent,
     ReportLayout,
+    ReportView,
     UploadedDesignImage,
   } from '../../types'
   import { iconByName, iconCatalog, type IconDefinition } from '../../icons/catalog'
@@ -58,6 +60,7 @@
   import Modal from '../ui/Modal.svelte'
   import CardTemplatePicker from './CardTemplatePicker.svelte'
   import MediaLibrary from './MediaLibrary.svelte'
+  import ShareReportDialog from './ShareReportDialog.svelte'
 
   type Props = {
     periodId: string
@@ -140,6 +143,8 @@
   let loading = $state(true)
   let saving = $state(false)
   let generating = $state(false)
+  let sharing = $state(false)
+  let shareTarget = $state<ReportView | null>(null)
   let previewing = $state(false)
   let mediaOpen = $state(false)
   let mediaTarget = $state<'new' | 'replace'>('new')
@@ -3209,8 +3214,25 @@
     }
   }
 
+  async function sharePresentation() {
+    if (!hasImport || generating || sharing) return
+    if (dirty && !(await save(true))) return
+    sharing = true
+    error = ''
+    try {
+      const report = await reportsApi.generate(periodId, content)
+      await ongenerated()
+      shareTarget = report
+    } catch (caught) {
+      error = errorMessage(caught)
+      toast.error(errorMessage(caught))
+    } finally {
+      sharing = false
+    }
+  }
+
   async function generate() {
-    if (!hasImport) return
+    if (!hasImport || sharing) return
     if (dirty && !(await save(true))) return
     generating = true
     error = ''
@@ -3470,7 +3492,8 @@
     <div class="flex flex-wrap items-center gap-2">
       <Button variant="secondary" size="sm" loading={previewing} onclick={preview}><Eye size={14} /> Pratinjau</Button>
       <Button variant="secondary" size="sm" loading={saving} onclick={() => save()}><Save size={14} /> Simpan</Button>
-      <Button size="sm" loading={generating} onclick={generate}><FileDown size={14} /> Buat PDF</Button>
+      <Button size="sm" loading={generating} disabled={sharing} onclick={generate}><FileDown size={14} /> Buat PDF</Button>
+      <Button variant="secondary" size="sm" loading={sharing} disabled={generating} onclick={sharePresentation}><Share2 size={14} /> Bagikan & presentasi</Button>
     </div>
   </section>
 
@@ -4508,6 +4531,12 @@
     {periodId}
     onclose={() => (mediaOpen = false)}
     onuse={insertMediaImage}
+  />
+
+  <ShareReportDialog
+    open={shareTarget !== null}
+    report={shareTarget}
+    onclose={() => (shareTarget = null)}
   />
 
   {#if contextMenu}
