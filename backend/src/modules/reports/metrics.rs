@@ -1,19 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use sqlx::SqlitePool;
 use chrono::{Duration, NaiveDate};
-use sqlx::{Row, SqlitePool};
 
 use crate::{
-    error::{ApiError, ApiResult},
+    error::ApiResult,
     modules::{
-        imports::models::ParsedRow,
+        imports,
         reports::models::{
             AspirationMetrics, DailyCount, FollowUpMetrics, GreenMetrics, GroupMetrics,
             MediaMetrics, MetricCard, NarkobaMetrics, ReligiousMetrics, ReportMetrics, RowSummary,
         },
     },
     shared::{
-        LabeledCount, extract_links, format_count, is_noise, parse_count, parse_fields, truncate,
+        LabeledCount, extract_links, format_count, is_noise, parse_count, truncate,
     },
 };
 
@@ -33,79 +33,40 @@ struct MetricRow {
     links: Vec<String>,
 }
 
-pub async fn load(
+pub async fn load_period(
     db: &SqlitePool,
-    import_id: &str,
     source_filename: &str,
     period_label: &str,
     start: &str,
     end: &str,
     polda_name: &str,
 ) -> ApiResult<ReportMetrics> {
-    let rows = sqlx::query(
-        "SELECT source_row, tanggal, satuan, tingkat, polda, polres, polsek, kode, kegiatan,
-                quick_wins, status_penerimaan, isian_laporan, parsed_json
-         FROM import_rows
-         WHERE import_id = ? AND tanggal BETWEEN ? AND ?
-         ORDER BY tanggal ASC, source_row ASC",
-    )
-    .bind(import_id)
-    .bind(start)
-    .bind(end)
-    .fetch_all(db)
-    .await
-    .map_err(ApiError::internal)?;
+    let (rows, duplicate_rows, source_count) =
+        imports::service::load_period_rows(db, start, end).await?;
 
-    let outside_period: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM import_rows WHERE import_id = ? AND tanggal NOT BETWEEN ? AND ?",
-    )
-    .bind(import_id)
-    .bind(start)
-    .bind(end)
-    .fetch_one(db)
-    .await
-    .map_err(ApiError::internal)?;
-
-    let mut metric_rows = Vec::with_capacity(rows.len());
-    for row in rows {
-        let isian: String = row.get("isian_laporan");
-        let parsed: ParsedRow =
-            serde_json::from_str(&row.get::<String, _>("parsed_json")).unwrap_or_default();
-        let fields = if parsed.fields.is_empty() {
-            parse_fields(&isian)
-        } else {
-            parsed.fields
-        };
-        let mut links = if parsed.links.is_empty() {
-            extract_links(&isian)
-        } else {
-            parsed.links
-        };
-        links.extend(extract_links(&isian));
-        links.sort();
-        links.dedup();
-
-        metric_rows.push(MetricRow {
-            source_row: row.get("source_row"),
-            tanggal: row.get("tanggal"),
-            satuan: row.get("satuan"),
-            tingkat: row.get("tingkat"),
-            polda: row.get("polda"),
-            polres: row.get("polres"),
-            polsek: row.get("polsek"),
-            kode: row.get("kode"),
-            kegiatan: row.get("kegiatan"),
-            quick_wins: row.get("quick_wins"),
-            status_penerimaan: row.get("status_penerimaan"),
-            fields,
-            links,
-        });
-    }
+    let metric_rows = rows
+        .into_iter()
+        .map(|row| MetricRow {
+            source_row: row.source_row,
+            tanggal: row.tanggal,
+            satuan: row.satuan,
+            tingkat: row.tingkat,
+            polda: row.polda,
+            polres: row.polres,
+            polsek: row.polsek,
+            kode: row.kode,
+            kegiatan: row.kegiatan,
+            quick_wins: row.quick_wins,
+            status_penerimaan: row.status_penerimaan,
+            fields: row.fields,
+            links: row.links,
+        })
+        .collect();
 
     Ok(build(
         metric_rows,
-        outside_period,
-        import_id,
+        duplicate_rows,
+        source_count,
         source_filename,
         period_label,
         start,
@@ -116,8 +77,8 @@ pub async fn load(
 
 fn build(
     rows: Vec<MetricRow>,
-    outside_period: i64,
-    import_id: &str,
+    duplicate_rows: i64,
+    source_count: i64,
     source_filename: &str,
     period_label: &str,
     start: &str,
@@ -179,7 +140,7 @@ fn build(
     }
 
     ReportMetrics {
-        import_id: import_id.to_string(),
+        source_count,
         source_filename: source_filename.to_string(),
         polda_name: polda_name.to_string(),
         period_label: period_label.to_string(),
@@ -187,7 +148,8 @@ fn build(
         period_end: end.to_string(),
         generated_at: chrono::Utc::now().to_rfc3339(),
         total_rows: rows.len() as i64,
-        outside_period,
+        outside_period: 0,
+        duplicate_rows,
         cards,
         quick_wins: count_by(&all, |row| quick_win_of(row), 0),
         codes: count_by(&all, |row| row.kode.clone(), 20),
@@ -1020,10 +982,9 @@ mod tests {
         .unwrap();
 
         let bytes = std::fs::read("../report-2026-10-19 (1).xlsx").unwrap();
-        let import = crate::modules::imports::service::commit(
+        let _import = crate::modules::imports::service::commit(
             &db,
             &config,
-            "p1",
             "u1",
             "report-2026-10-19.xlsx",
             bytes,
@@ -1031,9 +992,8 @@ mod tests {
         .await
         .unwrap();
 
-        let metrics = super::load(
+        let metrics = super::load_period(
             &db,
-            &import.id,
             "report-2026-10-19.xlsx",
             "15–19 Oktober 2026",
             "2026-10-15",
@@ -1043,13 +1003,13 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(metrics.total_rows, 4600);
+        assert_eq!(metrics.total_rows, 4554);
         assert_eq!(metrics.narkoba.orang_diamankan, 37);
         assert_eq!(metrics.narkoba.kawasan, 7);
         assert_eq!(metrics.green_policing.bibit, 854);
-        assert_eq!(metrics.jumat_keliling.people, 22_686);
-        assert_eq!(metrics.subuh_keliling.people, 5_069);
-        assert_eq!(metrics.minggu_kasih.people, 7_198);
+        assert_eq!(metrics.jumat_keliling.people, 22_666);
+        assert_eq!(metrics.subuh_keliling.people, 5_004);
+        assert_eq!(metrics.minggu_kasih.people, 7_048);
         assert!(metrics.media.publications > 0);
         assert!(!metrics.cards.is_empty());
     }

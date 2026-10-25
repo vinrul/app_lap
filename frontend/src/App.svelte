@@ -9,6 +9,7 @@
   import DashboardPage from './routes/dashboard/DashboardPage.svelte'
   import PeriodsPage from './routes/periods/PeriodsPage.svelte'
   import PeriodDetailPage from './routes/periods/PeriodDetailPage.svelte'
+  import ImportsPage from './routes/imports/ImportsPage.svelte'
   import UsersPage from './routes/users/UsersPage.svelte'
   import AppShell from './lib/components/layout/AppShell.svelte'
   import Toast from './lib/components/ui/Toast.svelte'
@@ -45,7 +46,9 @@
         ? 'Periode laporan'
         : router.route.name === 'period'
           ? 'Detail periode'
-          : 'Pengguna & akses',
+          : router.route.name === 'imports'
+            ? 'Import data'
+            : 'Pengguna & akses',
   )
 </script>
 
@@ -84,6 +87,8 @@
         <DashboardPage user={auth.user} />
       {:else if router.route.name === 'periods'}
         <PeriodsPage />
+      {:else if router.route.name === 'imports'}
+        <ImportsPage />
       {:else if router.route.name === 'period' && router.route.id}
         {#key router.route.id}
           <PeriodDetailPage periodId={router.route.id} tab={router.route.tab} />

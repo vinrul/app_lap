@@ -21,6 +21,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(modules::auth::routes())
         .merge(modules::dashboard::routes())
         .merge(modules::periods::routes())
+        .merge(modules::imports::routes())
         .merge(modules::imports::period_routes())
         .merge(modules::reports::period_routes())
         .merge(modules::reports::routes())

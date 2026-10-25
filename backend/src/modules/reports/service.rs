@@ -29,11 +29,10 @@ use crate::{
 pub async fn list_for_period(db: &SqlitePool, period_id: &str) -> ApiResult<Vec<ReportView>> {
     periods::service::get(db, period_id).await?;
     let rows = sqlx::query(
-        "SELECT r.id, r.period_id, r.import_id, r.created_at,
+        "SELECT r.id, r.period_id, r.created_at,
                 COALESCE(NULLIF(r.period_label, ''), p.label) AS period_label,
-                i.filename AS source_filename
+                r.source_filename
          FROM report_runs r
-         JOIN imports i ON i.id = r.import_id
          JOIN report_periods p ON p.id = r.period_id
          WHERE r.period_id = ?
          ORDER BY r.created_at DESC",
@@ -43,31 +42,18 @@ pub async fn list_for_period(db: &SqlitePool, period_id: &str) -> ApiResult<Vec<
     .await
     .map_err(ApiError::internal)?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| ReportView {
-            id: row.get("id"),
-            period_id: row.get("period_id"),
-            import_id: row.get("import_id"),
-            created_at: row.get("created_at"),
-            source_filename: row.get("source_filename"),
-            period_label: row.get("period_label"),
-            pdf_url: format!("/api/reports/{}/pdf", row.get::<String, _>("id")),
-            preview_url: format!("/api/reports/{}/preview", row.get::<String, _>("id")),
-        })
-        .collect())
+    Ok(rows.into_iter().map(report_from_row).collect())
 }
 
-pub async fn get_draft(db: &SqlitePool, period_id: &str, import_id: &str) -> ApiResult<DraftView> {
-    imports::service::ensure_import(db, period_id, import_id).await?;
+pub async fn get_draft(db: &SqlitePool, period_id: &str) -> ApiResult<DraftView> {
+    periods::service::get(db, period_id).await?;
     let row = sqlx::query(
         "SELECT d.content_json, d.updated_at, u.username AS updated_by
          FROM report_drafts d
          LEFT JOIN users u ON u.id = d.updated_by
-         WHERE d.period_id = ? AND d.import_id = ?",
+         WHERE d.period_id = ?",
     )
     .bind(period_id)
-    .bind(import_id)
     .fetch_optional(db)
     .await
     .map_err(ApiError::internal)?;
@@ -95,10 +81,9 @@ pub async fn save_draft(
     db: &SqlitePool,
     user_id: &str,
     period_id: &str,
-    import_id: &str,
     content: &ReportContent,
 ) -> ApiResult<DraftView> {
-    imports::service::ensure_import(db, period_id, import_id).await?;
+    periods::service::get(db, period_id).await?;
     let content_json = serde_json::to_string(content).map_err(ApiError::internal)?;
     if content_json.len() > 512 * 1024 {
         return Err(ApiError::payload_too_large(
@@ -107,16 +92,15 @@ pub async fn save_draft(
     }
 
     sqlx::query(
-        "INSERT INTO report_drafts(id, period_id, import_id, content_json, updated_by, updated_at)
-         VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
-         ON CONFLICT(period_id, import_id) DO UPDATE SET
+        "INSERT INTO report_drafts(id, period_id, content_json, updated_by, updated_at)
+         VALUES(?,?,?,?,CURRENT_TIMESTAMP)
+         ON CONFLICT(period_id) DO UPDATE SET
            content_json = excluded.content_json,
            updated_by = excluded.updated_by,
            updated_at = CURRENT_TIMESTAMP",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(period_id)
-    .bind(import_id)
     .bind(&content_json)
     .bind(user_id)
     .execute(db)
@@ -129,27 +113,22 @@ pub async fn save_draft(
         "draft.update",
         "period",
         period_id,
-        serde_json::json!({ "import_id": import_id }),
+        serde_json::json!({}),
     )
     .await?;
 
-    get_draft(db, period_id, import_id).await
+    get_draft(db, period_id).await
 }
 
-pub async fn get_layout(
-    db: &SqlitePool,
-    period_id: &str,
-    import_id: &str,
-) -> ApiResult<LayoutView> {
-    imports::service::ensure_import(db, period_id, import_id).await?;
+pub async fn get_layout(db: &SqlitePool, period_id: &str) -> ApiResult<LayoutView> {
+    periods::service::get(db, period_id).await?;
     let row = sqlx::query(
         "SELECT l.layout_json, l.updated_at, u.username AS updated_by
          FROM report_layouts l
          LEFT JOIN users u ON u.id = l.updated_by
-         WHERE l.period_id = ? AND l.import_id = ?",
+         WHERE l.period_id = ?",
     )
     .bind(period_id)
-    .bind(import_id)
     .fetch_optional(db)
     .await
     .map_err(ApiError::internal)?;
@@ -177,10 +156,9 @@ pub async fn save_layout(
     db: &SqlitePool,
     user_id: &str,
     period_id: &str,
-    import_id: &str,
     layout: ReportLayout,
 ) -> ApiResult<LayoutView> {
-    imports::service::ensure_import(db, period_id, import_id).await?;
+    periods::service::get(db, period_id).await?;
     let layout = layout.sanitize();
     let layout_json = serde_json::to_string(&layout).map_err(ApiError::internal)?;
     if layout_json.len() > 2 * 1024 * 1024 {
@@ -191,15 +169,14 @@ pub async fn save_layout(
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
-        "INSERT INTO report_layouts(period_id, import_id, layout_json, updated_by, updated_at)
-         VALUES(?,?,?,?,?)
-         ON CONFLICT(period_id, import_id) DO UPDATE SET
+        "INSERT INTO report_layouts(period_id, layout_json, updated_by, updated_at)
+         VALUES(?,?,?,?)
+         ON CONFLICT(period_id) DO UPDATE SET
            layout_json = excluded.layout_json,
            updated_by = excluded.updated_by,
            updated_at = excluded.updated_at",
     )
     .bind(period_id)
-    .bind(import_id)
     .bind(&layout_json)
     .bind(user_id)
     .bind(&now)
@@ -213,7 +190,7 @@ pub async fn save_layout(
         "layout.update",
         "period",
         period_id,
-        serde_json::json!({ "import_id": import_id }),
+        serde_json::json!({}),
     )
     .await?;
 
@@ -319,10 +296,9 @@ pub async fn apply_template(
     config: &Config,
     user_id: &str,
     period_id: &str,
-    import_id: &str,
     template_id: &str,
 ) -> ApiResult<LayoutView> {
-    imports::service::ensure_import(db, period_id, import_id).await?;
+    periods::service::get(db, period_id).await?;
     let row = sqlx::query("SELECT layout_json FROM design_templates WHERE id = ?")
         .bind(template_id)
         .fetch_optional(db)
@@ -380,7 +356,7 @@ pub async fn apply_template(
         }
     }
 
-    save_layout(db, user_id, period_id, import_id, layout).await
+    save_layout(db, user_id, period_id, layout).await
 }
 
 fn template_from_row(row: sqlx::sqlite::SqliteRow) -> DesignTemplateView {
@@ -516,9 +492,8 @@ pub async fn layout_image(
 pub async fn load_design(
     db: &SqlitePool,
     period_id: &str,
-    import_id: &str,
 ) -> ApiResult<(ReportLayout, HashMap<String, String>)> {
-    let layout = get_layout(db, period_id, import_id).await?.layout;
+    let layout = get_layout(db, period_id).await?.layout;
     let images = load_images(db, period_id, &layout).await?;
     Ok((layout, images))
 }
@@ -571,21 +546,24 @@ async fn load_images(
     Ok(images)
 }
 
+async fn source_summary(db: &SqlitePool, start: &str, end: &str) -> ApiResult<String> {
+    let imports = imports::service::list_for_range(db, start, end).await?;
+    Ok(match imports.as_slice() {
+        [] => "Tidak ada impor".to_string(),
+        [single] => single.filename.clone(),
+        [first, rest @ ..] => format!("{} + {} berkas lainnya", first.filename, rest.len()),
+    })
+}
+
 pub async fn metrics_for(
     db: &SqlitePool,
     config: &Config,
     period_id: &str,
-    import_id: Option<&str>,
 ) -> ApiResult<ReportMetrics> {
     let (start, end, label) = periods::service::dates(db, period_id).await?;
-    let import_id = match import_id {
-        Some(value) if !value.is_empty() => value.to_string(),
-        _ => imports::service::latest_import_id(db, period_id).await?,
-    };
-    let (filename, _, _) = imports::service::ensure_import(db, period_id, &import_id).await?;
-    metrics::load(
+    let filename = source_summary(db, &start, &end).await?;
+    metrics::load_period(
         db,
-        &import_id,
         &filename,
         &label,
         &start,
@@ -599,14 +577,13 @@ pub async fn preview_html(
     db: &SqlitePool,
     config: &Config,
     period_id: &str,
-    import_id: &str,
     content_override: Option<&ReportContent>,
     layout_override: Option<&ReportLayout>,
 ) -> ApiResult<String> {
-    let metrics = metrics_for(db, config, period_id, Some(import_id)).await?;
+    let metrics = metrics_for(db, config, period_id).await?;
     let content = match content_override {
         Some(content) => content.clone(),
-        None => get_draft(db, period_id, import_id).await?.content,
+        None => get_draft(db, period_id).await?.content,
     };
     let (layout, images) = match layout_override {
         Some(layout) => {
@@ -614,7 +591,7 @@ pub async fn preview_html(
             let images = load_images(db, period_id, &layout).await?;
             (layout, images)
         }
-        None => load_design(db, period_id, import_id).await?,
+        None => load_design(db, period_id).await?,
     };
     Ok(render::render_with_layout(
         &metrics, &content, config, &layout, &images,
@@ -627,13 +604,12 @@ pub async fn generate(
     pdf_lock: &Mutex<()>,
     user_id: &str,
     period_id: &str,
-    import_id: &str,
 ) -> ApiResult<ReportView> {
     let (start_date, end_date, label) = periods::service::dates(db, period_id).await?;
-    let (source_filename, _, _) = imports::service::ensure_import(db, period_id, import_id).await?;
-    let content = get_draft(db, period_id, import_id).await?.content;
-    let metrics = metrics_for(db, config, period_id, Some(import_id)).await?;
-    let (layout, images) = load_design(db, period_id, import_id).await?;
+    let source_filename = source_summary(db, &start_date, &end_date).await?;
+    let content = get_draft(db, period_id).await?.content;
+    let metrics = metrics_for(db, config, period_id).await?;
+    let (layout, images) = load_design(db, period_id).await?;
     let html = render::render_with_layout(&metrics, &content, config, &layout, &images);
 
     let report_id = Uuid::new_v4().to_string();
@@ -698,13 +674,12 @@ pub async fn generate(
 
     sqlx::query(
         "INSERT INTO report_runs(
-            id, period_id, import_id, content_json, metrics_json, layout_json, pdf_path, html_path,
+            id, period_id, content_json, metrics_json, layout_json, pdf_path, html_path,
             polda_name, source_filename, period_label, created_by
-         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+         ) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
     )
     .bind(&report_id)
     .bind(period_id)
-    .bind(import_id)
     .bind(serde_json::to_string(&content).map_err(ApiError::internal)?)
     .bind(serde_json::to_string(&metrics).map_err(ApiError::internal)?)
     .bind(serde_json::to_string(&layout).map_err(ApiError::internal)?)
@@ -725,7 +700,6 @@ pub async fn generate(
         "report",
         &report_id,
         serde_json::json!({
-            "import_id": import_id,
             "start_date": start_date,
             "end_date": end_date,
         }),
@@ -735,7 +709,6 @@ pub async fn generate(
     Ok(ReportView {
         id: report_id.clone(),
         period_id: period_id.to_string(),
-        import_id: import_id.to_string(),
         created_at: chrono::Utc::now().to_rfc3339(),
         source_filename,
         period_label: label,
@@ -758,7 +731,7 @@ pub async fn stored_preview(
     let html_path: String = row.get("html_path");
     if html_path.trim().is_empty() || !Path::new(&html_path).exists() {
         return Err(ApiError::not_found(
-            "Snapshot HTML laporan tidak ditemukan. Buat ulang PDF.",
+            "Pratinjau dokumen tidak tersedia. Buat ulang PDF.",
         ));
     }
     tokio::fs::read_to_string(&html_path)
@@ -766,61 +739,58 @@ pub async fn stored_preview(
         .map_err(ApiError::internal)
 }
 
-pub async fn download_path(
-    db: &SqlitePool,
-    config: &Config,
-    report_id: &str,
-) -> ApiResult<(PathBuf, String)> {
-    let row = sqlx::query(
-        "SELECT r.pdf_path, r.polda_name, p.start_date
-         FROM report_runs r JOIN report_periods p ON p.id = r.period_id
-         WHERE r.id = ?",
-    )
-    .bind(report_id)
-    .fetch_optional(db)
-    .await
-    .map_err(ApiError::internal)?
-    .ok_or_else(|| ApiError::not_found("Dokumen laporan tidak ditemukan."))?;
-
-    let path: String = row.get("pdf_path");
-    if !Path::new(&path).exists() {
-        return Err(ApiError::not_found(
-            "Berkas PDF tidak ditemukan pada penyimpanan.",
-        ));
+fn report_from_row(row: sqlx::sqlite::SqliteRow) -> ReportView {
+    let id: String = row.get("id");
+    ReportView {
+        id: id.clone(),
+        period_id: row.get("period_id"),
+        created_at: row.get("created_at"),
+        source_filename: row.get("source_filename"),
+        period_label: row.get("period_label"),
+        pdf_url: format!("/api/reports/{id}/pdf"),
+        preview_url: format!("/api/reports/{id}/preview"),
     }
-
-    let stored_polda: String = row.get("polda_name");
-    let polda = if stored_polda.trim().is_empty() {
-        config.polda_name.clone()
-    } else {
-        stored_polda
-    };
-    let start: String = row.get("start_date");
-    let filename = format!(
-        "Laporan-Mingguan-{}-{}.pdf",
-        sanitize_filename(&polda),
-        start
-    );
-    Ok((PathBuf::from(path), filename))
 }
 
 fn file_url(path: &Path) -> String {
-    format!("file:///{}", path.to_string_lossy().replace('\\', "/"))
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    if normalized.starts_with('/') {
+        format!("file://{normalized}")
+    } else {
+        format!("file:///{normalized}")
+    }
 }
 
-fn sanitize_filename(value: &str) -> String {
-    let mut output: String = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    while output.contains("--") {
-        output = output.replace("--", "-");
+pub async fn report_paths(
+    db: &SqlitePool,
+    report_id: &str,
+) -> ApiResult<(PathBuf, String, String)> {
+    let row = sqlx::query("SELECT pdf_path, html_path, period_label FROM report_runs WHERE id = ?")
+        .bind(report_id)
+        .fetch_optional(db)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("Dokumen laporan tidak ditemukan."))?;
+    Ok((
+        PathBuf::from(row.get::<String, _>("pdf_path")),
+        row.get::<String, _>("html_path"),
+        row.get("period_label"),
+    ))
+}
+
+pub async fn download_path(
+    db: &SqlitePool,
+    _config: &Config,
+    report_id: &str,
+) -> ApiResult<(PathBuf, String)> {
+    let (path, _html, label) = report_paths(db, report_id).await?;
+    if !path.exists() {
+        return Err(ApiError::not_found("Berkas PDF tidak ditemukan."));
     }
-    output.trim_matches('-').to_uppercase()
+    let sanitized: String = label
+        .chars()
+        .map(|ch| if ch.is_alphanumeric() { ch } else { '-' })
+        .collect();
+    let filename = format!("laporan-{}.pdf", sanitized.trim_matches('-'));
+    Ok((path, filename))
 }

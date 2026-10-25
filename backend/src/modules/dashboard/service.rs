@@ -41,19 +41,11 @@ pub async fn load(db: &SqlitePool, config: &Config) -> ApiResult<DashboardRespon
 
     let periods = periods::service::list(db).await?;
     let latest_period = periods.first().cloned();
-    let latest_import = match latest_period.as_ref() {
-        Some(period) => imports::service::list_for_period(db, &period.id)
-            .await?
-            .into_iter()
-            .next(),
-        None => None,
-    };
+    let latest_import = imports::service::list(db).await?.into_iter().next();
 
-    let metrics = match (latest_period.as_ref(), latest_import.as_ref()) {
-        (Some(period), Some(import)) => {
-            Some(reports::service::metrics_for(db, config, &period.id, Some(&import.id)).await?)
-        }
-        _ => None,
+    let metrics = match latest_period.as_ref() {
+        Some(period) => Some(reports::service::metrics_for(db, config, &period.id).await?),
+        None => None,
     };
 
     let recent_periods = periods.into_iter().take(6).collect();
@@ -80,11 +72,10 @@ async fn scalar(db: &SqlitePool, query: &'static str) -> ApiResult<i64> {
 
 async fn recent_reports(db: &SqlitePool) -> ApiResult<Vec<ReportView>> {
     let rows = sqlx::query(
-        "SELECT r.id, r.period_id, r.import_id, r.created_at,
+        "SELECT r.id, r.period_id, r.created_at,
                 COALESCE(NULLIF(r.period_label, ''), p.label) AS period_label,
-                i.filename AS source_filename
+                r.source_filename
          FROM report_runs r
-         JOIN imports i ON i.id = r.import_id
          JOIN report_periods p ON p.id = r.period_id
          ORDER BY r.created_at DESC
          LIMIT 6",
@@ -100,7 +91,6 @@ async fn recent_reports(db: &SqlitePool) -> ApiResult<Vec<ReportView>> {
             ReportView {
                 id: id.clone(),
                 period_id: row.get("period_id"),
-                import_id: row.get("import_id"),
                 created_at: row.get("created_at"),
                 source_filename: row.get("source_filename"),
                 period_label: row.get("period_label"),

@@ -16,12 +16,11 @@ use axum::{
 
 use crate::state::AppState;
 
-/// Route yang menempel pada resource periode.
 pub fn period_routes() -> Router<AppState> {
     Router::new()
         .route("/periods/{period_id}/metrics", get(handlers::metrics))
         .route(
-            "/periods/{period_id}/drafts/{import_id}",
+            "/periods/{period_id}/draft",
             get(handlers::get_draft).put(handlers::save_draft),
         )
         .route(

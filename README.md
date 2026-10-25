@@ -5,8 +5,11 @@ Aplikasi lokal untuk mengubah export Excel **Quick Wins / Qins Polri** menjadi l
 ## Fitur
 
 - Impor workbook `.xlsx` sheet `Data` dengan pemetaan 18 kolom berdasarkan nama header.
-- Validasi berkas, tanggal, duplikasi, baris di luar periode, dan pratinjau sebelum penyimpanan.
-- Riwayat versi impor per periode; unggahan baru tidak menghapus versi lama.
+- Import berdiri sendiri di menu **Import data**, tidak lagi menempel pada satu periode. Satu berkas dapat dipakai oleh banyak periode.
+- Validasi berkas, tanggal, duplikasi dalam berkas, dan pratinjau sebelum penyimpanan; duplikasi lintas berkas dibuang otomatis saat periode dibaca (kunci: tanggal, waktu kirim, satuan, tingkat, polres, polsek, dan kode).
+- Periode harian (pilih tanggal), mingguan/rentang (pilih rentang tanggal), atau bulanan (pilih bulan dan tahun). Hierarki pelaksana diturunkan otomatis: Polres/Polsek kosong berarti Polda/satker Polda, Polsek kosong berarti Polres/satker Polres.
+- Analisis otomatis dari `Isian laporan`: jumlah personel, bibit, luas area, jemaah, titik koordinat, dan tautan peta; tersedia sebagai kartu ringkas, tren harian, dan sebaran kelompok/kode/tingkat/unit.
+- Bukti dukung diunduh best-effort dari tautan gambar/PDF langsung, berkas Google Drive, dan ekspor Google Docs. Folder Drive, media sosial, dan tautan peta ditandai tidak dapat diunduh; pengguna dapat menjalankan ulang unduhan dari halaman Import data.
 - Perhitungan metrik otomatis dari kolom `Isian laporan`:
   - Berantas narkoba (orang ditangkap, kawasan, rehabilitasi, penyuluhan)
   - Green Policing (bibit, luas area, kerja bakti, penanaman)
@@ -46,17 +49,17 @@ Aplikasi lokal untuk mengubah export Excel **Quick Wins / Qins Polri** menjadi l
 
 3. Buka `http://127.0.0.1:4317`.
 
-Aplikasi hanya mendengarkan koneksi loopback. Frontend dibangun oleh `start.ps1` dan disajikan oleh backend pada origin yang sama.
+Secara default aplikasi hanya mendengarkan koneksi loopback. Frontend dibangun oleh `start.ps1` dan disajikan oleh backend pada origin yang sama.
 
 ## Alur laporan
 
 1. Masuk dengan akun admin/operator.
-2. Buat periode dengan rentang tanggal yang jelas.
-3. Unggah workbook `.xlsx` pada tab **Impor**. Periksa jumlah baris, peringatan, duplikasi, dan pratinjau.
-4. Simpan sebagai versi impor.
-5. Buka tab **Ringkasan** untuk memeriksa metrik dan sebaran wilayah.
+2. Buka menu **Import data**, unggah workbook `.xlsx`, periksa pratinjau (baris valid, duplikat, tautan bukti, analisis), lalu simpan.
+3. Buat periode pada menu **Periode** dan pilih jenisnya: harian, mingguan/rentang, atau bulanan. Periode otomatis mengambil baris dari seluruh import yang mencakup rentang tanggalnya.
+4. Buka tab **Ringkasan** untuk memeriksa metrik, berkas impor, duplikat, dan sebaran wilayah.
+5. Buka tab **Analisis** untuk personel, bibit, luas, jemaah, koordinat, tren harian, serta sebaran kode/unit. Tab **Data** memuat daftar baris beserta bukti dukung.
 6. Buka tab **Editorial** untuk melengkapi ringkasan, narasi per bagian, serta penandatangan.
-7. Gunakan **Pratinjau** untuk memeriksa HTML, lalu **Buat PDF**.
+7. Gunakan tab **Desain** untuk menyusun layout, lalu **Pratinjau** dan **Buat PDF**.
 8. Unduh atau tinjau PDF pada tab **Dokumen**.
 
 Metrik dihitung dari baris sumber dan isian terstruktur. Angka yang tidak tersedia di workbook (misalnya narasi kebijakan) tetap perlu diisi operator. Tinjau kembali angka agregat dan narasi sebelum menerbitkan PDF.
@@ -68,7 +71,10 @@ app_lap/
 ├── backend/                     # Rust + Axum + SQLx + SQLite
 │   ├── migrations/
 │   │   ├── 0001_initial.sql
-│   │   └── 0002_reporting.sql
+│   │   ├── 0002_reporting.sql
+│   │   ├── 0003_report_design.sql
+│   │   ├── 0004_design_templates.sql
+│   │   └── 0005_standalone_imports.sql
 │   └── src/
 │       ├── main.rs              # Entry point & CLI
 │       ├── app.rs               # Perakitan router & middleware
@@ -83,7 +89,7 @@ app_lap/
 │           ├── auth/            # Login, sesi, bootstrap admin
 │           ├── users/           # Pengelolaan akun & peran
 │           ├── periods/         # Periode laporan
-│           ├── imports/         # Parser Excel, validasi, data baris
+│           ├── imports/         # Import mandiri, parser Excel, dedupe, analisis, bukti dukung
 │           ├── reports/         # Metrik, render PDF, draft editorial, layout desain
 │           └── dashboard/       # Ringkasan lintas periode
 └── frontend/                    # Bun + Svelte 5 SPA + Tailwind CSS v4
@@ -95,13 +101,14 @@ app_lap/
         │   │   ├── layout/      # AppShell, sidebar, topbar
         │   │   ├── ui/          # Button, modal, badge, tabel, dll.
         │   │   ├── charts/      # Bar list & grafik harian
-        │   │   └── period/      # Panel impor, data, editorial, dokumen
+        │           └── period/      # Panel ringkasan, analisis, data, editorial, desain, dokumen
         │   ├── stores/          # Auth, router, toast, meta
         │   ├── types/           # Tipe API
         │   └── utils/           # Format tanggal/angka & konstanta
         └── routes/
             ├── login/
             ├── dashboard/
+            ├── imports/
             ├── periods/
             └── users/
 ```
@@ -121,14 +128,15 @@ cargo test
 cargo run --release
 ```
 
-Pengujian backend mencakup parser workbook contoh, normalisasi tanggal/angka, klasifikasi tautan media, render 9 halaman, dan agregasi metrik dari 4.600 baris data contoh.
+Pengujian backend mencakup parser workbook contoh (termasuk dedupe dan hierarki unit), analisis isian laporan, normalisasi tautan bukti dukung, normalisasi tanggal/angka, klasifikasi tautan media, render 9 halaman/halaman blank, dan agregasi metrik.
 
 ## Data dan cadangan
 
 Default data berada di `data/`:
 
 - `laporan.sqlite3` — akun, sesi, periode, impor, baris data, draft, audit, metadata PDF.
-- `imports/` — salinan workbook sumber per versi.
+- `imports/` — salinan workbook sumber per import.
+- `evidence/` — gambar/PDF bukti dukung hasil unduhan, dikelompokkan per import.
 - `reports/` — HTML dan PDF yang diarsipkan per versi laporan.
 - `design/` — gambar yang diunggah untuk layout desain laporan.
 

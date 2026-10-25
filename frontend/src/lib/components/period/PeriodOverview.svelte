@@ -12,8 +12,9 @@
     Rows3,
     Trees,
   } from 'lucide-svelte'
-  import type { ImportView, PeriodDetail, ReportMetrics } from '../../types'
+  import type { PeriodDetail, ReportMetrics } from '../../types'
   import { formatDateTime, formatNumber, formatRange } from '../../utils/format'
+  import { navigate } from '../../stores/router.svelte'
   import { quickWinsLabels } from '../../utils/constants'
   import Button from '../ui/Button.svelte'
   import EmptyState from '../ui/EmptyState.svelte'
@@ -33,8 +34,6 @@
     metricsLoading = false,
     onnavigate,
   }: Props = $props()
-
-  const latestImport = $derived<ImportView | undefined>(detail.imports[0])
 </script>
 
 {#if !metrics}
@@ -43,7 +42,7 @@
       title="Belum ada data impor"
       description="Unggah workbook Excel untuk periode ini. Setelah tersimpan, metrik dan pratinjau laporan akan muncul otomatis."
     >
-      <Button onclick={() => onnavigate('imports')}><CloudUpload size={15} /> Impor workbook</Button>
+      <Button onclick={() => navigate('/imports')}><CloudUpload size={15} /> Impor workbook</Button>
     </EmptyState>
   </section>
 {:else}
@@ -130,28 +129,32 @@
             <strong class="text-forest-900">{formatNumber(metrics.total_rows)}</strong>
           </div>
           <div class="flex items-center justify-between gap-3 text-sm">
-            <span class="text-ink-muted">Di luar rentang</span>
-            <strong class={metrics.outside_period > 0 ? 'text-gold-700' : 'text-forest-900'}>{formatNumber(metrics.outside_period)}</strong>
+            <span class="text-ink-muted">Duplikat dilewati</span>
+            <strong class={metrics.duplicate_rows > 0 ? 'text-gold-700' : 'text-forest-900'}>{formatNumber(metrics.duplicate_rows)}</strong>
           </div>
           <div class="flex items-center justify-between gap-3 text-sm">
-            <span class="text-ink-muted">Versi impor</span>
-            <strong class="text-forest-900">{detail.imports.length}</strong>
+            <span class="text-ink-muted">Berkas impor</span>
+            <strong class="text-forest-900">{detail.period.imports}</strong>
           </div>
           <div class="flex items-center justify-between gap-3 text-sm">
             <span class="text-ink-muted">PDF dihasilkan</span>
             <strong class="text-forest-900">{detail.reports.length}</strong>
           </div>
-          {#if latestImport}
+          {#if detail.imports.length}
             <div class="rounded-xl border border-line bg-stone-50 px-3.5 py-3">
-              <p class="truncate text-xs font-semibold text-ink">{latestImport.filename}</p>
-              <p class="mt-1 text-[10px] text-ink-muted">{formatNumber(latestImport.row_count)} baris · {formatDateTime(latestImport.created_at)}</p>
-              <p class="text-[10px] text-ink-muted">Diunggah oleh {latestImport.imported_by}</p>
+              {#each detail.imports.slice(0, 3) as item}
+                <p class="truncate text-xs font-semibold text-ink">{item.filename}</p>
+                <p class="mt-0.5 text-[10px] text-ink-muted">{formatNumber(item.row_count)} baris · {formatDateTime(item.created_at)}</p>
+              {/each}
+              {#if detail.imports.length > 3}
+                <p class="mt-1 text-[10px] text-ink-muted">+{detail.imports.length - 3} berkas lainnya</p>
+              {/if}
             </div>
           {/if}
-          {#if metrics.outside_period > 0}
+          {#if metrics.duplicate_rows > 0}
             <div class="flex items-start gap-2 rounded-lg border border-gold-200 bg-gold-100/60 px-3 py-2 text-[11px] text-gold-700">
               <AlertTriangle size={14} class="mt-0.5 shrink-0" />
-              Baris di luar periode tidak masuk agregat. Periksa kembali rentang tanggal bila diperlukan.
+              Baris duplikat lintas berkas dilewati otomatis. Data terbaru dipakai sebagai acuan.
             </div>
           {/if}
           <Button variant="secondary" size="sm" class="w-full" onclick={() => onnavigate('records')}>
@@ -172,7 +175,7 @@
           </li>
           <li class="flex gap-3 border-t border-stone-100 pt-4 pb-4">
             <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-forest-700 text-white"><Check size={13} /></span>
-            <div><strong class="text-xs text-ink">Impor dan validasi</strong><p class="text-[11px] text-ink-muted">{detail.imports.length} versi tersimpan</p></div>
+            <div><strong class="text-xs text-ink">Impor dan validasi</strong><p class="text-[11px] text-ink-muted">{detail.imports.length} berkas berkontribusi</p></div>
           </li>
           <li class="flex gap-3 border-t border-stone-100 pt-4 pb-4">
             <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full {detail.reports.length ? 'bg-forest-700 text-white' : 'border border-stone-300 bg-white text-ink-muted'}">

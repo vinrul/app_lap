@@ -1,11 +1,10 @@
 use axum::{
     Json,
     body::Body,
-    extract::{Multipart, Path, Query, State},
+    extract::{Multipart, Path, State},
     http::{HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
 };
-use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
@@ -14,8 +13,8 @@ use crate::{
         auth::AuthUser,
         reports::{
             layout::{
-                ApplyTemplateRequest, DesignSource, DesignTemplateView, LayoutView,
-                SaveLayoutRequest, SaveTemplateRequest, UploadedImage,
+                DesignSource, DesignTemplateView, LayoutView, SaveLayoutRequest,
+                SaveTemplateRequest, UploadedImage,
             },
             models::{
                 DraftView, GenerateReportRequest, PreviewReportRequest, PreviewResponse,
@@ -27,46 +26,32 @@ use crate::{
     state::AppState,
 };
 
-#[derive(Debug, Deserialize)]
-pub struct MetricsQuery {
-    pub import_id: Option<String>,
-}
-
 pub async fn metrics(
     State(state): State<AppState>,
     _user: AuthUser,
     Path(period_id): Path<String>,
-    Query(query): Query<MetricsQuery>,
 ) -> ApiResult<Json<ReportMetrics>> {
     Ok(Json(
-        service::metrics_for(
-            &state.db,
-            &state.config,
-            &period_id,
-            query.import_id.as_deref(),
-        )
-        .await?,
+        service::metrics_for(&state.db, &state.config, &period_id).await?,
     ))
 }
 
 pub async fn get_draft(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path((period_id, import_id)): Path<(String, String)>,
+    Path(period_id): Path<String>,
 ) -> ApiResult<Json<DraftView>> {
-    Ok(Json(
-        service::get_draft(&state.db, &period_id, &import_id).await?,
-    ))
+    Ok(Json(service::get_draft(&state.db, &period_id).await?))
 }
 
 pub async fn save_draft(
     State(state): State<AppState>,
     user: AuthUser,
-    Path((period_id, import_id)): Path<(String, String)>,
+    Path(period_id): Path<String>,
     Json(content): Json<ReportContent>,
 ) -> ApiResult<Json<DraftView>> {
     Ok(Json(
-        service::save_draft(&state.db, &user.id, &period_id, &import_id, &content).await?,
+        service::save_draft(&state.db, &user.id, &period_id, &content).await?,
     ))
 }
 
@@ -78,24 +63,12 @@ pub async fn list(
     Ok(Json(service::list_for_period(&state.db, &period_id).await?))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct LayoutQuery {
-    pub import_id: Option<String>,
-}
-
 pub async fn get_layout(
     State(state): State<AppState>,
     _user: AuthUser,
     Path(period_id): Path<String>,
-    Query(query): Query<LayoutQuery>,
 ) -> ApiResult<Json<LayoutView>> {
-    let import_id = query
-        .import_id
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| ApiError::bad_request("Versi impor wajib dipilih."))?;
-    Ok(Json(
-        service::get_layout(&state.db, &period_id, &import_id).await?,
-    ))
+    Ok(Json(service::get_layout(&state.db, &period_id).await?))
 }
 
 pub async fn save_layout(
@@ -104,18 +77,8 @@ pub async fn save_layout(
     Path(period_id): Path<String>,
     Json(input): Json<SaveLayoutRequest>,
 ) -> ApiResult<Json<LayoutView>> {
-    if input.import_id.trim().is_empty() {
-        return Err(ApiError::bad_request("Versi impor wajib dipilih."));
-    }
     Ok(Json(
-        service::save_layout(
-            &state.db,
-            &user.id,
-            &period_id,
-            &input.import_id,
-            input.layout,
-        )
-        .await?,
+        service::save_layout(&state.db, &user.id, &period_id, input.layout).await?,
     ))
 }
 
@@ -123,14 +86,8 @@ pub async fn design_sources(
     State(state): State<AppState>,
     _user: AuthUser,
     Path(period_id): Path<String>,
-    Query(query): Query<LayoutQuery>,
 ) -> ApiResult<Json<Vec<DesignSource>>> {
-    let import_id = query
-        .import_id
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| ApiError::bad_request("Versi impor wajib dipilih."))?;
-    let metrics =
-        service::metrics_for(&state.db, &state.config, &period_id, Some(&import_id)).await?;
+    let metrics = service::metrics_for(&state.db, &state.config, &period_id).await?;
     Ok(Json(sources::design_sources(&metrics)))
 }
 
@@ -164,18 +121,13 @@ pub async fn apply_template(
     State(state): State<AppState>,
     user: AuthUser,
     Path((period_id, template_id)): Path<(String, String)>,
-    Json(input): Json<ApplyTemplateRequest>,
 ) -> ApiResult<Json<LayoutView>> {
-    if input.import_id.trim().is_empty() {
-        return Err(ApiError::bad_request("Versi impor wajib dipilih."));
-    }
     Ok(Json(
         service::apply_template(
             &state.db,
             &state.config,
             &user.id,
             &period_id,
-            &input.import_id,
             &template_id,
         )
         .await?,
@@ -244,11 +196,8 @@ pub async fn generate(
     Path(period_id): Path<String>,
     Json(input): Json<GenerateReportRequest>,
 ) -> ApiResult<Json<ReportView>> {
-    if input.import_id.trim().is_empty() {
-        return Err(ApiError::bad_request("Versi impor wajib dipilih."));
-    }
     if let Some(content) = input.content.as_ref() {
-        service::save_draft(&state.db, &user.id, &period_id, &input.import_id, content).await?;
+        service::save_draft(&state.db, &user.id, &period_id, content).await?;
     }
 
     let report = service::generate(
@@ -257,7 +206,6 @@ pub async fn generate(
         &state.pdf_lock,
         &user.id,
         &period_id,
-        &input.import_id,
     )
     .await?;
 
@@ -270,14 +218,10 @@ pub async fn preview_render(
     Path(period_id): Path<String>,
     Json(input): Json<PreviewReportRequest>,
 ) -> ApiResult<Json<PreviewResponse>> {
-    if input.import_id.trim().is_empty() {
-        return Err(ApiError::bad_request("Versi impor wajib dipilih."));
-    }
     let html = service::preview_html(
         &state.db,
         &state.config,
         &period_id,
-        &input.import_id,
         input.content.as_ref(),
         input.layout.as_ref(),
     )

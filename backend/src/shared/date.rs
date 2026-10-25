@@ -51,6 +51,13 @@ pub fn normalize_date(value: &str) -> String {
     String::new()
 }
 
+pub fn format_month_label(date: &str) -> String {
+    let Ok(value) = NaiveDate::parse_from_str(date, "%Y-%m-%d") else {
+        return date.to_string();
+    };
+    format!("{} {}", MONTHS[value.month0() as usize], value.year())
+}
+
 pub fn format_period_label(start: &str, end: &str) -> String {
     let (Ok(start_date), Ok(end_date)) = (
         NaiveDate::parse_from_str(start, "%Y-%m-%d"),

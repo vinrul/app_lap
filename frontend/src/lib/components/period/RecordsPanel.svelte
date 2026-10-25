@@ -11,24 +11,17 @@
   } from 'lucide-svelte'
   import { recordsApi } from '../../api'
   import { errorMessage } from '../../api/client'
-  import type { PeriodDetail, RecordItem, RecordsResponse } from '../../types'
+  import type { RecordItem, RecordsResponse } from '../../types'
   import { formatDate, formatNumber } from '../../utils/format'
   import Button from '../ui/Button.svelte'
+  import EvidenceList from '../ui/EvidenceList.svelte'
   import Modal from '../ui/Modal.svelte'
 
   type Props = {
     periodId: string
-    detail: PeriodDetail
-    selectedImportId: string
-    onimportchange: (event: Event) => void
   }
 
-  let {
-    periodId,
-    detail,
-    selectedImportId,
-    onimportchange,
-  }: Props = $props()
+  let { periodId }: Props = $props()
 
   let data = $state<RecordsResponse | null>(null)
   let loading = $state(true)
@@ -43,7 +36,7 @@
   let lastKey = ''
 
   $effect(() => {
-    const key = `${periodId}:${selectedImportId}`
+    const key = periodId
     if (key === lastKey) return
     lastKey = key
     untrack(() => {
@@ -57,7 +50,6 @@
     error = ''
     try {
       data = await recordsApi.list(periodId, {
-        importId: selectedImportId,
         search,
         quickWins,
         status,
@@ -110,11 +102,7 @@
     </div>
     <div class="flex items-center gap-2">
       <span class="badge badge-neutral">{formatNumber(data?.total ?? 0)} baris</span>
-      {#if detail.imports.length > 1}
-        <select class="input max-w-xs py-2 text-xs" value={selectedImportId} onchange={onimportchange}>
-          {#each detail.imports as item}<option value={item.id}>{item.filename}</option>{/each}
-        </select>
-      {/if}
+      {#if data}<span class="text-[10px] text-ink-muted">{data.source_count} berkas · {data.duplicate_rows} duplikat</span>{/if}
     </div>
   </div>
 
@@ -160,8 +148,8 @@
             <tr class="cursor-pointer" onclick={() => (selected = row)}>
               <td class="text-xs whitespace-nowrap">{formatDate(row.tanggal)}</td>
               <td>
-                <strong class="block text-xs font-semibold text-ink">{row.satuan || row.polsek || row.polres || '—'}</strong>
-                <small class="block text-[10px] text-ink-muted">{row.polres || row.polda || row.polsek || ''}</small>
+                <strong class="block text-xs font-semibold text-ink">{row.unit || row.satuan || row.polsek || row.polres || '—'}</strong>
+                <small class="block text-[10px] text-ink-muted">{row.level || row.tingkat}{row.polres && row.unit !== row.polres ? ` · ${row.polres}` : ''}</small>
               </td>
               <td><span class="rounded-md bg-forest-50 px-2 py-1 text-[10px] font-bold whitespace-nowrap text-forest-700">{row.kode || '—'}</span></td>
               <td class="max-w-md text-xs">{row.kegiatan || '—'}</td>
@@ -214,10 +202,12 @@
           ['Kode', selected.kode],
           ['Quick Wins', selected.quick_wins],
           ['Status', selected.status_penerimaan || 'Belum diisi'],
-          ['Polda', selected.polda],
+          ['Tingkat', selected.level || selected.tingkat],
+          ['Unit', selected.unit || selected.satuan],
           ['Polres', selected.polres],
           ['Polsek', selected.polsek],
           ['Pelapor', selected.pelapor],
+          ['Sumber', selected.import_filename],
         ] as [label, value]}
           <div class="rounded-lg border border-line bg-stone-50/60 px-3 py-2">
             <p class="text-[9px] font-bold tracking-[0.12em] text-ink-muted uppercase">{label}</p>
@@ -234,6 +224,31 @@
           <p><span class="text-ink-muted">Pelaksana:</span> {selected.pelaksana || '—'}</p>
           <p><span class="text-ink-muted">Waktu kirim:</span> {selected.waktu_kirim_wib || '—'}</p>
         </div>
+      </div>
+
+      <div>
+        <h3 class="text-xs font-bold tracking-[0.12em] text-ink-muted uppercase">Analisis otomatis</h3>
+        <div class="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {#each [
+            ['Personel', formatNumber(selected.personel_count)],
+            ['Bibit', formatNumber(selected.bibit_count)],
+            ['Luas area', `${formatNumber(selected.area_m2)} m²`],
+            ['Jemaah', formatNumber(selected.jamaah_count)],
+          ] as [label, value]}
+            <div class="rounded-lg border border-line bg-stone-50/60 px-3 py-2">
+              <p class="text-[9px] font-bold tracking-[0.12em] text-ink-muted uppercase">{label}</p>
+              <p class="mt-0.5 text-xs font-semibold text-forest-900">{value}</p>
+            </div>
+          {/each}
+        </div>
+        {#if selected.latitude !== null && selected.longitude !== null}
+          <p class="mt-2 text-xs text-ink-soft">Koordinat: {selected.latitude}, {selected.longitude}</p>
+        {/if}
+        {#if selected.map_url}
+          <a class="mt-1 inline-flex items-center gap-1.5 text-[11px] font-medium text-forest-700 hover:underline" href={selected.map_url} target="_blank" rel="noopener noreferrer">
+            <ExternalLink size={12} /> Buka tautan peta
+          </a>
+        {/if}
       </div>
 
       {#if Object.keys(selected.fields).length}
@@ -265,6 +280,15 @@
                 <ExternalLink size={12} class="shrink-0" /> {link}
               </a>
             {/each}
+          </div>
+        </div>
+      {/if}
+
+      {#if selected.evidence.length}
+        <div>
+          <h3 class="text-xs font-bold tracking-[0.12em] text-ink-muted uppercase">Bukti terunduh</h3>
+          <div class="mt-2">
+            <EvidenceList items={selected.evidence} />
           </div>
         </div>
       {/if}

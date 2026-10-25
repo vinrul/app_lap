@@ -25,8 +25,6 @@
     periodId: string
     detail: PeriodDetail
     metrics: ReportMetrics | null
-    selectedImportId: string
-    onchangeimport: (event: Event) => void
     ongenerated: () => Promise<void>
   }
 
@@ -34,8 +32,6 @@
     periodId,
     detail,
     metrics,
-    selectedImportId,
-    onchangeimport,
     ongenerated,
   }: Props = $props()
 
@@ -51,10 +47,10 @@
   let lastKey = ''
 
   const dirty = $derived(JSON.stringify(content) !== savedJson)
-  const hasImport = $derived(Boolean(selectedImportId))
+  const hasImport = $derived(detail.imports.length > 0)
 
   $effect(() => {
-    const key = `${periodId}:${selectedImportId}`
+    const key = periodId
     if (key === lastKey) return
     lastKey = key
     untrack(() => void loadDraft())
@@ -63,7 +59,7 @@
   async function loadDraft() {
     loading = true
     error = ''
-    if (!selectedImportId) {
+    if (!hasImport) {
       content = { ...emptyContent }
       savedJson = ''
       updatedAt = null
@@ -72,7 +68,7 @@
       return
     }
     try {
-      const draft: DraftView = await reportsApi.getDraft(periodId, selectedImportId)
+      const draft: DraftView = await reportsApi.getDraft(periodId)
       content = { ...emptyContent, ...draft.content }
       savedJson = JSON.stringify(content)
       updatedAt = draft.updated_at
@@ -85,11 +81,11 @@
   }
 
   async function save(silent = false): Promise<boolean> {
-    if (!selectedImportId) return false
+    if (!hasImport) return false
     saving = true
     error = ''
     try {
-      const draft = await reportsApi.saveDraft(periodId, selectedImportId, content)
+      const draft = await reportsApi.saveDraft(periodId, content)
       savedJson = JSON.stringify(content)
       updatedAt = draft.updated_at
       updatedBy = draft.updated_by
@@ -104,7 +100,7 @@
   }
 
   async function preview() {
-    if (!selectedImportId) return
+    if (!hasImport) return
     const target = window.open('', '_blank')
     if (!target) {
       toast.error('Izinkan popup untuk membuka pratinjau laporan.')
@@ -113,7 +109,7 @@
     previewing = true
     error = ''
     try {
-      const result = await reportsApi.preview(periodId, selectedImportId, content)
+      const result = await reportsApi.preview(periodId, content)
       const url = URL.createObjectURL(new Blob([result.html], { type: 'text/html' }))
       target.location.href = url
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
@@ -126,7 +122,7 @@
   }
 
   async function generate() {
-    if (!selectedImportId) return
+    if (!hasImport) return
     if (dirty) {
       const ok = await save(true)
       if (!ok) return
@@ -134,7 +130,7 @@
     generating = true
     error = ''
     try {
-      const report: ReportView = await reportsApi.generate(periodId, selectedImportId, content)
+      const report: ReportView = await reportsApi.generate(periodId, content)
       toast.success('PDF laporan berhasil dibuat.')
       await ongenerated()
       window.open(reportsApi.previewUrl(report.id), '_blank', 'noopener')
@@ -152,7 +148,7 @@
       title="Belum ada versi data"
       description="Impor workbook terlebih dahulu sebelum menyusun narasi dan menerbitkan PDF."
     >
-      <Button onclick={() => (window.location.hash = `/periods/${periodId}/imports`)}><CloudUpload size={15} /> Impor workbook</Button>
+      <Button onclick={() => (window.location.hash = '/imports')}><CloudUpload size={15} /> Import workbook</Button>
     </EmptyState>
   </section>
 {:else}
@@ -167,11 +163,6 @@
       </p>
     </div>
     <div class="flex flex-wrap items-center gap-2">
-      {#if detail.imports.length > 1}
-        <select class="input max-w-xs py-2 text-xs" value={selectedImportId} onchange={onchangeimport}>
-          {#each detail.imports as item}<option value={item.id}>{item.filename}</option>{/each}
-        </select>
-      {/if}
       <Button variant="secondary" size="sm" loading={previewing} onclick={preview}><Eye size={14} /> Pratinjau</Button>
       <Button variant="secondary" size="sm" loading={saving} onclick={() => save()}><Save size={14} /> Simpan</Button>
       <Button size="sm" loading={generating} onclick={generate}><FileDown size={14} /> Buat PDF</Button>

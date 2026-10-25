@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     CalendarDays,
+    CloudUpload,
     LayoutDashboard,
     LogOut,
     ShieldCheck,
@@ -29,11 +30,13 @@
   const icons = {
     dashboard: LayoutDashboard,
     periods: CalendarDays,
+    imports: CloudUpload,
     users: Users,
   }
 
   const items = $derived([
     { id: 'dashboard', label: 'Ringkasan', path: '/dashboard' },
+    { id: 'imports', label: 'Import data', path: '/imports' },
     { id: 'periods', label: 'Periode laporan', path: '/periods' },
     ...(user.role === 'admin' ? [{ id: 'users', label: 'Pengguna & akses', path: '/users' }] : []),
   ])

@@ -35,7 +35,11 @@ pub async fn create(
         "period.create",
         "period",
         &period.id,
-        json!({ "start": period.start_date, "end": period.end_date }),
+        json!({
+            "start": period.start_date,
+            "end": period.end_date,
+            "type": period.period_type,
+        }),
     )
     .await?;
     Ok(Json(period))
@@ -47,21 +51,19 @@ pub async fn detail(
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<PeriodDetail>> {
     let period = periods::service::get(&state.db, &period_id).await?;
-    let imports = imports::service::list_for_period(&state.db, &period_id).await?;
+    let imports = imports::service::list_for_range(
+        &state.db,
+        &period.start_date,
+        &period.end_date,
+    )
+    .await?;
     let reports = reports::service::list_for_period(&state.db, &period_id).await?;
-    let latest_import_id = imports.first().map(|item| item.id.clone());
-    let draft = match latest_import_id.as_deref() {
-        Some(import_id) => {
-            Some(reports::service::get_draft(&state.db, &period_id, import_id).await?)
-        }
-        None => None,
-    };
+    let draft = Some(reports::service::get_draft(&state.db, &period_id).await?);
 
     Ok(Json(PeriodDetail {
         period,
         imports,
         reports,
-        latest_import_id,
         draft,
     }))
 }

@@ -40,7 +40,6 @@ pub struct DraftView {
 pub struct ReportView {
     pub id: String,
     pub period_id: String,
-    pub import_id: String,
     pub created_at: String,
     pub source_filename: String,
     pub period_label: String,
@@ -50,14 +49,15 @@ pub struct ReportView {
 
 #[derive(Debug, Deserialize)]
 pub struct GenerateReportRequest {
-    pub import_id: String,
+    #[serde(default)]
     pub content: Option<ReportContent>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct PreviewReportRequest {
-    pub import_id: String,
+    #[serde(default)]
     pub content: Option<ReportContent>,
+    #[serde(default)]
     pub layout: Option<ReportLayout>,
 }
 
@@ -169,7 +169,7 @@ pub struct MediaMetrics {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ReportMetrics {
-    pub import_id: String,
+    pub source_count: i64,
     pub source_filename: String,
     pub polda_name: String,
     pub period_label: String,
@@ -178,6 +178,7 @@ pub struct ReportMetrics {
     pub generated_at: String,
     pub total_rows: i64,
     pub outside_period: i64,
+    pub duplicate_rows: i64,
     pub cards: Vec<MetricCard>,
     pub quick_wins: Vec<LabeledCount>,
     pub codes: Vec<LabeledCount>,

@@ -114,7 +114,6 @@ pub struct LayoutView {
 
 #[derive(Debug, Deserialize)]
 pub struct SaveLayoutRequest {
-    pub import_id: String,
     pub layout: ReportLayout,
 }
 
@@ -613,11 +612,6 @@ pub struct DesignTemplateView {
 pub struct SaveTemplateRequest {
     pub name: String,
     pub layout: ReportLayout,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ApplyTemplateRequest {
-    pub import_id: String,
 }
 
 pub fn valid_binding(value: &str) -> bool {

@@ -23,9 +23,11 @@ export interface Period {
   start_date: string
   end_date: string
   label: string
+  period_type: 'daily' | 'range' | 'monthly'
   created_at: string
   created_by: string
   imports: number
+  rows: number
   reports: number
 }
 
@@ -34,7 +36,11 @@ export interface ImportView {
   filename: string
   row_count: number
   skipped_rows: number
+  duplicate_rows: number
   parser_version: string
+  date_start: string
+  date_end: string
+  warnings: string[]
   created_at: string
   imported_by: string
 }
@@ -157,7 +163,6 @@ export interface DesignTemplateView {
 export interface ReportView {
   id: string
   period_id: string
-  import_id: string
   created_at: string
   source_filename: string
   period_label: string
@@ -193,7 +198,6 @@ export interface PeriodDetail {
   period: Period
   imports: ImportView[]
   reports: ReportView[]
-  latest_import_id: string | null
   draft: DraftView | null
 }
 
@@ -294,7 +298,7 @@ export interface MediaMetrics {
 }
 
 export interface ReportMetrics {
-  import_id: string
+  source_count: number
   source_filename: string
   polda_name: string
   period_label: string
@@ -303,6 +307,7 @@ export interface ReportMetrics {
   generated_at: string
   total_rows: number
   outside_period: number
+  duplicate_rows: number
   cards: MetricCard[]
   quick_wins: LabeledCount[]
   codes: LabeledCount[]
@@ -346,12 +351,20 @@ export interface ImportPreview {
   statuses: LabeledCount[]
   file_date_start: string | null
   file_date_end: string | null
+  evidence_links: number
+  rows_with_coordinates: number
+  personel_total: number
+  bibit_total: number
+  area_total: number
+  jamaah_total: number
   preview_rows: PreviewRow[]
 }
 
 export interface RecordItem {
   id: number
   source_row: number
+  import_id: string
+  import_filename: string
   tanggal: string
   waktu_kirim_wib: string
   satuan: string
@@ -359,7 +372,10 @@ export interface RecordItem {
   polda: string
   polres: string
   polsek: string
+  level: string
+  unit: string
   kode: string
+  qw_title: string
   kegiatan: string
   quick_wins: string
   pejabat_pelaksana: string
@@ -370,15 +386,34 @@ export interface RecordItem {
   bukti_dukung: string
   keluhan_personel_polri: string
   isian_laporan: string
+  personel_count: number
+  bibit_count: number
+  area_m2: number
+  jamaah_count: number
+  latitude: number | null
+  longitude: number | null
+  map_url: string
   fields: Record<string, string>
   links: string[]
+  evidence: EvidenceItem[]
+}
+
+export interface EvidenceItem {
+  id: string
+  source_url: string
+  filename: string
+  content_type: string
+  size_bytes: number
+  status: string
+  error: string
+  url: string
 }
 
 export interface RecordsResponse {
-  import_id: string
-  import_filename: string
-  period_start: string
-  period_end: string
+  date_start: string
+  date_end: string
+  source_count: number
+  duplicate_rows: number
   total: number
   page: number
   page_size: number
@@ -386,6 +421,25 @@ export interface RecordsResponse {
   statuses: LabeledCount[]
   polres: LabeledCount[]
   records: RecordItem[]
+}
+
+export interface AnalysisResponse {
+  date_start: string
+  date_end: string
+  source_count: number
+  total_rows: number
+  duplicate_rows: number
+  personel_total: number
+  bibit_total: number
+  area_total: number
+  jamaah_total: number
+  rows_with_coordinates: number
+  evidence_links: number
+  by_group: LabeledCount[]
+  by_code: LabeledCount[]
+  by_level: LabeledCount[]
+  by_unit: LabeledCount[]
+  by_date: LabeledCount[]
 }
 
 export interface DashboardCounts {

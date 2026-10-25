@@ -33,6 +33,26 @@ pub struct ParsedRow {
     pub fields: BTreeMap<String, String>,
     #[serde(default)]
     pub links: Vec<String>,
+    #[serde(default)]
+    pub analysis: RowAnalysis,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RowAnalysis {
+    #[serde(default)]
+    pub personel: i64,
+    #[serde(default)]
+    pub bibit: i64,
+    #[serde(default)]
+    pub area_m2: f64,
+    #[serde(default)]
+    pub jamaah: i64,
+    #[serde(default)]
+    pub latitude: Option<f64>,
+    #[serde(default)]
+    pub longitude: Option<f64>,
+    #[serde(default)]
+    pub map_url: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -56,8 +76,12 @@ pub struct ImportedRow {
     pub bukti_dukung: String,
     pub keluhan_personel_polri: String,
     pub isian_laporan: String,
+    pub level: String,
+    pub unit: String,
+    pub qw_title: String,
     pub fields: BTreeMap<String, String>,
     pub links: Vec<String>,
+    pub analysis: RowAnalysis,
     pub raw: Value,
 }
 
@@ -78,6 +102,12 @@ pub struct ImportPreview {
     pub statuses: Vec<LabeledCount>,
     pub file_date_start: Option<String>,
     pub file_date_end: Option<String>,
+    pub evidence_links: usize,
+    pub rows_with_coordinates: usize,
+    pub personel_total: i64,
+    pub bibit_total: i64,
+    pub area_total: f64,
+    pub jamaah_total: i64,
     pub preview_rows: Vec<ImportedRow>,
     #[serde(skip)]
     pub rows: Vec<ImportedRow>,
@@ -89,20 +119,23 @@ pub struct ImportView {
     pub filename: String,
     pub row_count: i64,
     pub skipped_rows: i64,
+    pub duplicate_rows: i64,
     pub parser_version: String,
+    pub date_start: String,
+    pub date_end: String,
+    pub warnings: Vec<String>,
     pub created_at: String,
     pub imported_by: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RecordQuery {
     pub import_id: Option<String>,
     pub search: Option<String>,
     pub quick_wins: Option<String>,
     pub status: Option<String>,
     pub polres: Option<String>,
-    pub start_date: Option<String>,
-    pub end_date: Option<String>,
+    pub level: Option<String>,
     pub page: Option<i64>,
     pub page_size: Option<i64>,
 }
@@ -111,6 +144,8 @@ pub struct RecordQuery {
 pub struct RecordView {
     pub id: i64,
     pub source_row: i64,
+    pub import_id: String,
+    pub import_filename: String,
     pub tanggal: String,
     pub waktu_kirim_wib: String,
     pub satuan: String,
@@ -118,7 +153,10 @@ pub struct RecordView {
     pub polda: String,
     pub polres: String,
     pub polsek: String,
+    pub level: String,
+    pub unit: String,
     pub kode: String,
+    pub qw_title: String,
     pub kegiatan: String,
     pub quick_wins: String,
     pub pejabat_pelaksana: String,
@@ -129,16 +167,36 @@ pub struct RecordView {
     pub bukti_dukung: String,
     pub keluhan_personel_polri: String,
     pub isian_laporan: String,
+    pub personel_count: i64,
+    pub bibit_count: i64,
+    pub area_m2: f64,
+    pub jamaah_count: i64,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub map_url: String,
     pub fields: BTreeMap<String, String>,
     pub links: Vec<String>,
+    pub evidence: Vec<EvidenceView>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct EvidenceView {
+    pub id: String,
+    pub source_url: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size_bytes: i64,
+    pub status: String,
+    pub error: String,
+    pub url: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct RecordsResponse {
-    pub import_id: String,
-    pub import_filename: String,
-    pub period_start: String,
-    pub period_end: String,
+    pub date_start: String,
+    pub date_end: String,
+    pub source_count: i64,
+    pub duplicate_rows: i64,
     pub total: i64,
     pub page: i64,
     pub page_size: i64,
@@ -146,4 +204,24 @@ pub struct RecordsResponse {
     pub statuses: Vec<LabeledCount>,
     pub polres: Vec<LabeledCount>,
     pub records: Vec<RecordView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AnalysisResponse {
+    pub date_start: String,
+    pub date_end: String,
+    pub source_count: i64,
+    pub total_rows: i64,
+    pub duplicate_rows: i64,
+    pub personel_total: i64,
+    pub bibit_total: i64,
+    pub area_total: f64,
+    pub jamaah_total: i64,
+    pub rows_with_coordinates: i64,
+    pub evidence_links: i64,
+    pub by_group: Vec<LabeledCount>,
+    pub by_code: Vec<LabeledCount>,
+    pub by_level: Vec<LabeledCount>,
+    pub by_unit: Vec<LabeledCount>,
+    pub by_date: Vec<LabeledCount>,
 }

@@ -56,8 +56,6 @@
   type Props = {
     periodId: string
     detail: PeriodDetail
-    selectedImportId: string
-    onchangeimport: (event: Event) => void
     ongenerated: () => Promise<void>
   }
 
@@ -95,8 +93,6 @@
   let {
     periodId,
     detail,
-    selectedImportId,
-    onchangeimport,
     ongenerated,
   }: Props = $props()
 
@@ -151,7 +147,7 @@
   let drag: DragState | null = null
   const defaultTexts = new Map<string, string>()
 
-  const hasImport = $derived(Boolean(selectedImportId))
+  const hasImport = $derived(detail.imports.length > 0)
   const dirty = $derived(JSON.stringify(layout) !== savedJson)
   const pageNumbers = $derived(Array.from({ length: layout.pages.length }, (_, index) => index + 1))
   const zoomPercent = $derived(Math.round((zoomOverride ?? fitZoom) * 100))
@@ -216,7 +212,7 @@
   )
 
   $effect(() => {
-    const key = `${periodId}:${selectedImportId}`
+    const key = periodId
     if (key === loadedKey) return
     loadedKey = key
     untrack(() => void load())
@@ -351,9 +347,9 @@
   }
 
   async function refreshSources(): Promise<void> {
-    if (!selectedImportId) return
+    if (!hasImport) return
     try {
-      sources = await designApi.sources(periodId, selectedImportId)
+      sources = await designApi.sources(periodId)
       applyLayoutToDom()
       toast.success('Sumber data dimuat ulang.')
     } catch (caught) {
@@ -480,7 +476,7 @@
   }
 
   async function applySelectedTemplate(): Promise<void> {
-    if (!selectedImportId || !selectedTemplateId) return
+    if (!hasImport || !selectedTemplateId) return
     const template = templates.find((item) => item.id === selectedTemplateId)
     const label = template?.name ?? 'ini'
     const confirmed = await dialog.confirm({
@@ -492,7 +488,7 @@
     templateBusy = true
     const before = cloneLayout(layout)
     try {
-      const view = await designApi.applyTemplate(periodId, selectedImportId, selectedTemplateId)
+      const view = await designApi.applyTemplate(periodId, selectedTemplateId)
       pushSnapshot(before)
       layout = normalizeLayout(view.layout)
       savedJson = JSON.stringify(layout)
@@ -630,7 +626,7 @@
     checkedIds = []
     selectedTemplateId = ''
     zoomOverride = null
-    if (!selectedImportId) {
+    if (!hasImport) {
       content = { ...emptyContent }
       layout = emptyLayout()
       savedJson = ''
@@ -642,9 +638,9 @@
     }
     try {
       const [draft, layoutView, sourceList, templateList] = await Promise.all([
-        reportsApi.getDraft(periodId, selectedImportId),
-        designApi.getLayout(periodId, selectedImportId),
-        designApi.sources(periodId, selectedImportId),
+        reportsApi.getDraft(periodId),
+        designApi.getLayout(periodId),
+        designApi.sources(periodId),
         designApi.templates(),
       ])
       content = { ...emptyContent, ...draft.content }
@@ -654,7 +650,7 @@
       savedJson = JSON.stringify(layout)
       updatedAt = layoutView.updated_at
       updatedBy = layoutView.updated_by
-      const preview = await reportsApi.preview(periodId, selectedImportId, content, layout)
+      const preview = await reportsApi.preview(periodId, content, layout)
       iframeHtml = preview.html
     } catch (caught) {
       error = errorMessage(caught)
@@ -664,10 +660,10 @@
   }
 
   async function refreshCanvasStructure(): Promise<void> {
-    if (!selectedImportId) return
+    if (!hasImport) return
     const request = ++canvasRequest
     try {
-      const preview = await reportsApi.preview(periodId, selectedImportId, content, layout)
+      const preview = await reportsApi.preview(periodId, content, layout)
       if (request !== canvasRequest) return
       iframeHtml = preview.html
     } catch (caught) {
@@ -2677,12 +2673,12 @@
   }
 
   async function save(silent = false): Promise<boolean> {
-    if (!selectedImportId) return false
+    if (!hasImport) return false
     saving = true
     error = ''
     const beforeStructure = layoutStructure(layout)
     try {
-      const view = await designApi.saveLayout(periodId, selectedImportId, layout)
+      const view = await designApi.saveLayout(periodId, layout)
       const previous = selected
       layout = normalizeLayout(view.layout)
       savedJson = JSON.stringify(layout)
@@ -2706,7 +2702,7 @@
   }
 
   async function preview() {
-    if (!selectedImportId) return
+    if (!hasImport) return
     if (dirty && !(await save(true))) return
     const target = window.open('', '_blank')
     if (!target) {
@@ -2715,7 +2711,7 @@
     }
     previewing = true
     try {
-      const result = await reportsApi.preview(periodId, selectedImportId, content, layout)
+      const result = await reportsApi.preview(periodId, content, layout)
       const url = URL.createObjectURL(new Blob([result.html], { type: 'text/html' }))
       target.location.href = url
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
@@ -2728,12 +2724,12 @@
   }
 
   async function generate() {
-    if (!selectedImportId) return
+    if (!hasImport) return
     if (dirty && !(await save(true))) return
     generating = true
     error = ''
     try {
-      const report = await reportsApi.generate(periodId, selectedImportId, content)
+      const report = await reportsApi.generate(periodId, content)
       toast.success('PDF laporan berhasil dibuat dengan layout desain.')
       await ongenerated()
       window.open(reportsApi.previewUrl(report.id), '_blank', 'noopener')
@@ -2869,11 +2865,6 @@
       </p>
     </div>
     <div class="flex flex-wrap items-center gap-2">
-      {#if detail.imports.length > 1}
-        <select class="input max-w-xs py-2 text-xs" value={selectedImportId} onchange={onchangeimport}>
-          {#each detail.imports as item}<option value={item.id}>{item.filename}</option>{/each}
-        </select>
-      {/if}
       <Button variant="secondary" size="sm" loading={previewing} onclick={preview}><Eye size={14} /> Pratinjau</Button>
       <Button variant="secondary" size="sm" loading={saving} onclick={() => save()}><Save size={14} /> Simpan</Button>
       <Button size="sm" loading={generating} onclick={generate}><FileDown size={14} /> Buat PDF</Button>

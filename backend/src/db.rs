@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use sqlx::{
-    SqlitePool,
+    Connection, SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 
@@ -20,9 +20,14 @@ pub async fn connect(config: &Config) -> anyhow::Result<SqlitePool> {
     let pool = SqlitePoolOptions::new()
         .max_connections(8)
         .min_connections(1)
-        .connect_with(options)
+        .connect_with(options.clone())
         .await?;
 
-    sqlx::migrate!().run(&pool).await?;
+    // Migrasi berjalan tanpa penegakan foreign key agar tabel lama dapat
+    // dibangun ulang (mis. memisahkan imports dari report_periods).
+    let mut migration = sqlx::SqliteConnection::connect_with(&options.foreign_keys(false)).await?;
+    sqlx::migrate!().run(&mut migration).await?;
+    migration.close().await?;
+
     Ok(pool)
 }

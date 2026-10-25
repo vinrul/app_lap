@@ -1,6 +1,8 @@
 use axum::{
     Json,
     extract::{Multipart, Path, Query, State},
+    http::header,
+    response::{IntoResponse, Response},
 };
 
 use crate::{
@@ -8,60 +10,111 @@ use crate::{
     modules::{
         auth::AuthUser,
         imports::{
-            models::{ImportPreview, ImportView, RecordQuery, RecordsResponse},
+            evidence,
+            models::{
+                AnalysisResponse, ImportPreview, ImportView, RecordQuery, RecordsResponse,
+            },
             service,
         },
-        periods,
     },
     state::AppState,
 };
 
-pub async fn list(
-    State(state): State<AppState>,
-    _user: AuthUser,
-    Path(period_id): Path<String>,
-) -> ApiResult<Json<Vec<ImportView>>> {
-    Ok(Json(service::list_for_period(&state.db, &period_id).await?))
+pub async fn list(State(state): State<AppState>, _user: AuthUser) -> ApiResult<Json<Vec<ImportView>>> {
+    Ok(Json(service::list(&state.db).await?))
 }
 
 pub async fn preview(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(period_id): Path<String>,
     multipart: Multipart,
 ) -> ApiResult<Json<ImportPreview>> {
-    let (start_date, end_date, _) = periods::service::dates(&state.db, &period_id).await?;
     let (_, bytes) = read_workbook(multipart, state.config.max_upload_bytes).await?;
-    Ok(Json(service::preview(bytes, &start_date, &end_date).await?))
+    Ok(Json(service::preview(bytes).await?))
 }
 
 pub async fn commit(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(period_id): Path<String>,
     multipart: Multipart,
 ) -> ApiResult<Json<ImportView>> {
     let (filename, bytes) = read_workbook(multipart, state.config.max_upload_bytes).await?;
-    Ok(Json(
-        service::commit(
-            &state.db,
-            &state.config,
-            &period_id,
-            &user.id,
-            &filename,
-            bytes,
-        )
-        .await?,
-    ))
+    let view = service::commit(&state.db, &state.config, &user.id, &filename, bytes).await?;
+    if !view.id.is_empty() {
+        evidence::spawn_import_downloads(
+            state.db.clone(),
+            state.config.clone(),
+            view.id.clone(),
+        );
+    }
+    Ok(Json(view))
+}
+
+pub async fn retry_evidence(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(import_id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let queued = evidence::retry_import(&state.db, state.config.clone(), &import_id).await?;
+    Ok(Json(serde_json::json!({ "queued": queued })))
+}
+
+pub async fn evidence_file(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(evidence_id): Path<String>,
+) -> ApiResult<Response> {
+    let (bytes, content_type, filename) = evidence::open(&state.db, &evidence_id).await?;
+    let safe_name: String = filename
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | ' ') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let disposition = format!(
+        "attachment; filename=\"{}\"",
+        if safe_name.is_empty() { "bukti-dukung" } else { &safe_name }
+    );
+    let headers = [
+        (header::CONTENT_TYPE, content_type),
+        (header::CONTENT_DISPOSITION, disposition),
+        (header::CACHE_CONTROL, "private, max-age=3600".to_string()),
+    ];
+    Ok((headers, bytes).into_response())
 }
 
 pub async fn records(
     State(state): State<AppState>,
     _user: AuthUser,
+    Path(import_id): Path<String>,
+    Query(query): Query<RecordQuery>,
+) -> ApiResult<Json<RecordsResponse>> {
+    Ok(Json(
+        service::records_for_import(&state.db, &import_id, &query).await?,
+    ))
+}
+
+pub async fn period_records(
+    State(state): State<AppState>,
+    _user: AuthUser,
     Path(period_id): Path<String>,
     Query(query): Query<RecordQuery>,
 ) -> ApiResult<Json<RecordsResponse>> {
-    Ok(Json(service::records(&state.db, &period_id, &query).await?))
+    Ok(Json(
+        service::records_for_period(&state.db, &period_id, &query).await?,
+    ))
+}
+
+pub async fn analysis(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(period_id): Path<String>,
+) -> ApiResult<Json<AnalysisResponse>> {
+    Ok(Json(service::analysis_for_period(&state.db, &period_id).await?))
 }
 
 async fn read_workbook(mut multipart: Multipart, max_bytes: usize) -> ApiResult<(String, Vec<u8>)> {

@@ -1,5 +1,6 @@
 import type {
   AdminUser,
+  AnalysisResponse,
   Dashboard,
   DesignSource,
   DesignTemplateView,
@@ -37,38 +38,56 @@ export const dashboardApi = {
 
 export const periodsApi = {
   list: () => request<Period[]>('/periods'),
-  create: (input: { start_date: string; end_date: string; label?: string }) =>
-    request<Period>('/periods', { method: 'POST', body: JSON.stringify(input) }),
+  create: (input: {
+    start_date: string
+    end_date: string
+    label?: string
+    period_type?: 'daily' | 'range' | 'monthly'
+  }) => request<Period>('/periods', { method: 'POST', body: JSON.stringify(input) }),
   detail: (periodId: string) => request<PeriodDetail>(`/periods/${periodId}`),
-  imports: (periodId: string) => request<ImportView[]>(`/periods/${periodId}/imports`),
-  metrics: (periodId: string, importId?: string) =>
-    request<ReportMetrics>(
-      `/periods/${periodId}/metrics${queryString({ import_id: importId })}`,
-    ),
+  metrics: (periodId: string) =>
+    request<ReportMetrics>(`/periods/${periodId}/metrics`),
 }
 
 export const importsApi = {
-  preview: async (periodId: string, file: File) => {
+  list: () => request<ImportView[]>('/imports'),
+  preview: async (file: File) => {
     const form = new FormData()
     form.append('file', file)
-    return request<ImportPreview>(`/periods/${periodId}/imports/preview`, {
+    return request<ImportPreview>('/imports/preview', {
       method: 'POST',
       body: form,
     })
   },
-  commit: async (periodId: string, file: File) => {
+  commit: async (file: File) => {
     const form = new FormData()
     form.append('file', file)
-    return request<ImportView>(`/periods/${periodId}/imports`, { method: 'POST', body: form })
+    return request<ImportView>('/imports', { method: 'POST', body: form })
   },
+  records: (importId: string, filters: RecordFilters = {}) =>
+    request<RecordsResponse>(
+      `/imports/${importId}/records${queryString({
+        search: filters.search,
+        quick_wins: filters.quickWins,
+        status: filters.status,
+        polres: filters.polres,
+        level: filters.level,
+        page: filters.page,
+        page_size: filters.pageSize,
+      })}`,
+    ),
+  analysis: (periodId: string) =>
+    request<AnalysisResponse>(`/periods/${periodId}/analysis`),
+  retryEvidence: (importId: string) =>
+    request<{ queued: number }>(`/imports/${importId}/evidence/retry`, { method: 'POST' }),
 }
 
 export interface RecordFilters {
-  importId?: string
   search?: string
   quickWins?: string
   status?: string
   polres?: string
+  level?: string
   page?: number
   pageSize?: number
 }
@@ -77,11 +96,11 @@ export const recordsApi = {
   list: (periodId: string, filters: RecordFilters = {}) =>
     request<RecordsResponse>(
       `/periods/${periodId}/records${queryString({
-        import_id: filters.importId,
         search: filters.search,
         quick_wins: filters.quickWins,
         status: filters.status,
         polres: filters.polres,
+        level: filters.level,
         page: filters.page,
         page_size: filters.pageSize,
       })}`,
@@ -90,36 +109,34 @@ export const recordsApi = {
 
 export const reportsApi = {
   list: (periodId: string) => request<ReportView[]>(`/periods/${periodId}/reports`),
-  getDraft: (periodId: string, importId: string) =>
-    request<DraftView>(`/periods/${periodId}/drafts/${importId}`),
-  saveDraft: (periodId: string, importId: string, content: ReportContent) =>
-    request<DraftView>(`/periods/${periodId}/drafts/${importId}`, {
+  getDraft: (periodId: string) =>
+    request<DraftView>(`/periods/${periodId}/draft`),
+  saveDraft: (periodId: string, content: ReportContent) =>
+    request<DraftView>(`/periods/${periodId}/draft`, {
       method: 'PUT',
       body: JSON.stringify(content),
     }),
-  generate: (periodId: string, importId: string, content: ReportContent) =>
+  generate: (periodId: string, content: ReportContent) =>
     request<ReportView>(`/periods/${periodId}/reports`, {
       method: 'POST',
-      body: JSON.stringify({ import_id: importId, content }),
+      body: JSON.stringify({ content }),
     }),
-  preview: (periodId: string, importId: string, content: ReportContent, layout?: ReportLayout) =>
+  preview: (periodId: string, content: ReportContent, layout?: ReportLayout) =>
     request<{ html: string }>(`/periods/${periodId}/reports/preview`, {
       method: 'POST',
-      body: JSON.stringify({ import_id: importId, content, layout }),
+      body: JSON.stringify({ content, layout }),
     }),
   downloadUrl: (reportId: string) => `/api/reports/${reportId}/pdf`,
   previewUrl: (reportId: string) => `/api/reports/${reportId}/preview`,
 }
 
 export const designApi = {
-  getLayout: (periodId: string, importId: string) =>
-    request<LayoutView>(
-      `/periods/${periodId}/layout${queryString({ import_id: importId })}`,
-    ),
-  saveLayout: (periodId: string, importId: string, layout: ReportLayout) =>
+  getLayout: (periodId: string) =>
+    request<LayoutView>(`/periods/${periodId}/layout`),
+  saveLayout: (periodId: string, layout: ReportLayout) =>
     request<LayoutView>(`/periods/${periodId}/layout`, {
       method: 'PUT',
-      body: JSON.stringify({ import_id: importId, layout }),
+      body: JSON.stringify({ layout }),
     }),
   uploadImage: async (periodId: string, file: File) => {
     const form = new FormData()
@@ -131,10 +148,8 @@ export const designApi = {
   },
   imageUrl: (periodId: string, imageId: string) =>
     `/api/periods/${periodId}/layout/images/${imageId}`,
-  sources: (periodId: string, importId: string) =>
-    request<DesignSource[]>(
-      `/periods/${periodId}/design/sources${queryString({ import_id: importId })}`,
-    ),
+  sources: (periodId: string) =>
+    request<DesignSource[]>(`/periods/${periodId}/design/sources`),
   templates: () => request<DesignTemplateView[]>('/design/templates'),
   saveTemplate: (name: string, layout: ReportLayout) =>
     request<DesignTemplateView>('/design/templates', {
@@ -143,10 +158,10 @@ export const designApi = {
     }),
   deleteTemplate: (templateId: string) =>
     request<void>(`/design/templates/${templateId}`, { method: 'DELETE' }),
-  applyTemplate: (periodId: string, importId: string, templateId: string) =>
+  applyTemplate: (periodId: string, templateId: string) =>
     request<LayoutView>(`/periods/${periodId}/design/templates/${templateId}/apply`, {
       method: 'POST',
-      body: JSON.stringify({ import_id: importId }),
+      body: JSON.stringify({}),
     }),
 }
 
