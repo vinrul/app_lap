@@ -217,7 +217,7 @@ pub fn render_with_layout(
         fonts::face_css(),
         REPORT_CSS.replace("__LOGO_DATA_URI__", logo_data_uri()),
         block_css(layout),
-        page_background_css(layout)
+        page_background_css(layout, &ctx.images)
     );
     format!(
         "<!doctype html><html lang=\"id\"><head><meta charset=\"utf-8\">\
@@ -374,7 +374,7 @@ fn render_blank_document(
         fonts::face_css(),
         REPORT_CSS.replace("__LOGO_DATA_URI__", logo_data_uri()),
         block_css(layout),
-        page_background_css(layout)
+        page_background_css(layout, &ctx.images)
     );
     css.push_str(&format!(
         "\n@page {{ size: A4 {}; margin: 0; }}\nbody.blank-doc {{ background: #fff; }}\n.blank-page {{ width: {page_width}mm; height: {page_height}mm; padding: 0; display: block; }}\n",
@@ -1171,7 +1171,9 @@ fn render_card_element(element: &LayoutElement, ctx: &DesignContext, style: &str
         ),
         "minimal" => format!(
             "display:flex;flex-direction:column;box-sizing:border-box;padding:2mm 0;overflow:hidden;background:{};border-bottom:{}pt solid {};",
-            element.fill, element.border_width.max(1.0), element.card_accent
+            element.fill,
+            element.border_width.max(1.0),
+            element.card_accent
         ),
         _ => format!(
             "display:flex;flex-direction:column;box-sizing:border-box;padding:3mm 3.5mm;overflow:hidden;background:{};border-left:{}pt solid {};border-radius:{}mm;",
@@ -1198,9 +1200,7 @@ fn card_icon_html(element: &LayoutElement, size_mm: f64) -> String {
     };
     format!(
         "<span class=\"layout-card-icon\" style=\"display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:{size_mm:.1}mm;height:{size_mm:.1}mm;border-radius:50%;background:{};color:{};\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" preserveAspectRatio=\"xMidYMid meet\" style=\"width:56%;height:56%;\">{}</svg></span>",
-        element.card_icon_bg,
-        element.card_icon_color,
-        icon.svg
+        element.card_icon_bg, element.card_icon_color, icon.svg
     )
 }
 
@@ -1728,10 +1728,10 @@ fn block_css(layout: &ReportLayout) -> String {
     css
 }
 
-fn page_background_css(layout: &ReportLayout) -> String {
+fn page_background_css(layout: &ReportLayout, images: &HashMap<String, String>) -> String {
     let mut css = String::new();
     for page in &layout.pages {
-        let declarations = page_background_declarations(page);
+        let declarations = page_background_declarations(page, images);
         if declarations.is_empty() {
             continue;
         }
@@ -1743,7 +1743,20 @@ fn page_background_css(layout: &ReportLayout) -> String {
     css
 }
 
-fn page_background_declarations(page: &PageLayout) -> String {
+fn page_background_declarations(page: &PageLayout, images: &HashMap<String, String>) -> String {
+    if page.background_mode == "image" {
+        let src = match image_id_from_src(&page.background) {
+            Some(id) => images.get(id).cloned().unwrap_or_default(),
+            None => page.background.clone(),
+        };
+        if src.is_empty() {
+            return String::new();
+        }
+        return format!(
+            "background:url('{}') center / cover no-repeat;",
+            css_url(&src)
+        );
+    }
     let gradient = page.background_mode == "linear" || page.background_mode == "radial";
     if gradient && page.gradient_colors.len() >= 2 {
         let last = (page.gradient_colors.len() - 1) as f64;
@@ -1770,6 +1783,22 @@ fn page_background_declarations(page: &PageLayout) -> String {
     } else {
         format!("background:{};", escape_html(&page.background))
     }
+}
+
+fn css_url(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\'' => output.push_str("%27"),
+            '"' => output.push_str("%22"),
+            '(' => output.push_str("%28"),
+            ')' => output.push_str("%29"),
+            '\\' => output.push_str("%5C"),
+            '\n' | '\r' => {}
+            _ => output.push(ch),
+        }
+    }
+    output
 }
 
 fn kpi_row(items: &[(&str, i64, &str)], block_id: &str, ctx: &DesignContext) -> String {
@@ -2291,20 +2320,34 @@ mod tests {
                     gradient_colors: vec!["#143d30".into(), "#b8894b".into()],
                     ..PageLayout::default()
                 },
+                PageLayout {
+                    page: 3,
+                    background: "upload:img-1".into(),
+                    background_mode: "image".into(),
+                    ..PageLayout::default()
+                },
             ],
         };
 
+        let mut images = HashMap::new();
+        images.insert(
+            "img-1".to_string(),
+            "data:image/png;base64,AAAA".to_string(),
+        );
         let html = render_with_layout(
             &metrics,
             &ReportContent::default(),
             &Config::test_config(),
             &layout,
-            &HashMap::new(),
+            &images,
         );
         assert!(html.contains("<section class=\"page cover\" data-page=\"1\">"));
         assert!(html.contains(".page[data-page=\"1\"]{background:#f5f1e8;}"));
         assert!(html.contains(
             ".page[data-page=\"2\"]{background:linear-gradient(135deg, #143d30 0.0%, #b8894b 100.0%);}"
+        ));
+        assert!(html.contains(
+            ".page[data-page=\"3\"]{background:url('data:image/png;base64,AAAA') center / cover no-repeat;}"
         ));
     }
 

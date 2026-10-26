@@ -316,6 +316,16 @@ pub async fn apply_template(
     let mut cloned = HashMap::new();
 
     for page in &mut layout.pages {
+        if page.background_mode == "image" {
+            if let Some(old_id) = image_id_from_src(&page.background).map(str::to_string) {
+                match clone_template_image(db, config, user_id, period_id, &old_id, &mut cloned)
+                    .await
+                {
+                    Some(new_id) => page.background = format!("upload:{new_id}"),
+                    None => page.background.clear(),
+                }
+            }
+        }
         for element in &mut page.elements {
             if element.kind != "image" {
                 continue;
@@ -323,44 +333,58 @@ pub async fn apply_template(
             let Some(old_id) = image_id_from_src(&element.src).map(str::to_string) else {
                 continue;
             };
-            if let Some(new_id) = cloned.get(&old_id) {
-                element.src = format!("upload:{new_id}");
-                continue;
-            }
-
-            let image = sqlx::query("SELECT filename, stored_path FROM design_images WHERE id = ?")
-                .bind(&old_id)
-                .fetch_optional(db)
-                .await
-                .map_err(ApiError::internal)?;
-            let Some(image) = image else {
-                element.src.clear();
-                continue;
-            };
-            let path: String = image.get("stored_path");
-            let filename: String = image.get("filename");
-            let bytes = match tokio::fs::read(&path).await {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    tracing::warn!(error = %error, image_id = %old_id, "gambar template tidak dapat dibaca");
-                    element.src.clear();
-                    continue;
-                }
-            };
-            match save_layout_image(db, config, user_id, period_id, &filename, &bytes).await {
-                Ok(uploaded) => {
-                    cloned.insert(old_id, uploaded.id.clone());
-                    element.src = format!("upload:{}", uploaded.id);
-                }
-                Err(error) => {
-                    tracing::warn!(error = %error, image_id = %old_id, "gambar template tidak dapat disalin");
-                    element.src.clear();
-                }
+            match clone_template_image(db, config, user_id, period_id, &old_id, &mut cloned).await {
+                Some(new_id) => element.src = format!("upload:{new_id}"),
+                None => element.src.clear(),
             }
         }
     }
 
     save_layout(db, user_id, period_id, layout).await
+}
+
+async fn clone_template_image(
+    db: &SqlitePool,
+    config: &Config,
+    user_id: &str,
+    period_id: &str,
+    old_id: &str,
+    cloned: &mut HashMap<String, String>,
+) -> Option<String> {
+    if let Some(new_id) = cloned.get(old_id) {
+        return Some(new_id.clone());
+    }
+
+    let image = match sqlx::query("SELECT filename, stored_path FROM design_images WHERE id = ?")
+        .bind(old_id)
+        .fetch_optional(db)
+        .await
+    {
+        Ok(image) => image,
+        Err(error) => {
+            tracing::warn!(error = %error, image_id = %old_id, "gambar template tidak dapat dibaca");
+            return None;
+        }
+    }?;
+    let path: String = image.get("stored_path");
+    let filename: String = image.get("filename");
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(error = %error, image_id = %old_id, "gambar template tidak dapat dibaca");
+            return None;
+        }
+    };
+    match save_layout_image(db, config, user_id, period_id, &filename, &bytes).await {
+        Ok(uploaded) => {
+            cloned.insert(old_id.to_string(), uploaded.id.clone());
+            Some(uploaded.id)
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, image_id = %old_id, "gambar template tidak dapat disalin");
+            None
+        }
+    }
 }
 
 fn template_from_row(row: sqlx::sqlite::SqliteRow) -> DesignTemplateView {
@@ -676,6 +700,11 @@ async fn load_images(
 ) -> ApiResult<HashMap<String, String>> {
     let mut ids = HashSet::new();
     for page in &layout.pages {
+        if page.background_mode == "image" {
+            if let Some(id) = image_id_from_src(&page.background) {
+                ids.insert(id.to_string());
+            }
+        }
         for element in &page.elements {
             if element.hidden || element.kind != "image" {
                 continue;
@@ -1259,6 +1288,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn template_copies_page_background_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::test_config();
+        config.data_dir = dir.path().to_path_buf();
+        let db = crate::db::connect(&config).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO users(id,username,password_hash,role) VALUES('u1','tester','x','admin')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO report_periods(id,start_date,end_date,label,created_by)
+             VALUES('p1','2026-10-19','2026-10-25','19–25 Oktober 2026','u1'),
+                   ('p2','2026-10-26','2026-11-01','26 Oktober–1 November 2026','u1')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let png = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        let uploaded = super::save_layout_image(&db, &config, "u1", "p1", "latar.png", &png)
+            .await
+            .unwrap();
+
+        let layout = ReportLayout {
+            version: 1,
+            mode: "blank".into(),
+            orientation: "portrait".into(),
+            pages: vec![crate::modules::reports::layout::PageLayout {
+                page: 1,
+                background: format!("upload:{}", uploaded.id),
+                background_mode: "image".into(),
+                ..Default::default()
+            }],
+        };
+        let template = super::save_template(&db, "u1", "Latar", layout)
+            .await
+            .unwrap();
+        let applied = super::apply_template(&db, &config, "u1", "p2", &template.id)
+            .await
+            .unwrap();
+
+        assert_eq!(applied.layout.pages[0].background_mode, "image");
+        let background = &applied.layout.pages[0].background;
+        assert!(background.starts_with("upload:"));
+        assert_ne!(background, &format!("upload:{}", uploaded.id));
+
+        let new_id = background.strip_prefix("upload:").unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM design_images WHERE id = ? AND period_id = 'p2'",
+        )
+        .bind(new_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
     async fn shares_and_deletes_report_with_public_links() {
         let dir = tempfile::tempdir().unwrap();
         let mut config = Config::test_config();
@@ -1334,6 +1424,10 @@ mod tests {
                 .unwrap();
         assert_eq!(shares, 0);
         assert!(super::public_share(&db, &share.token).await.is_err());
-        assert!(super::delete_report(&db, &config, "u1", "r1").await.is_err());
+        assert!(
+            super::delete_report(&db, &config, "u1", "r1")
+                .await
+                .is_err()
+        );
     }
 }

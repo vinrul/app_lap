@@ -1,6 +1,9 @@
 use crate::{
     modules::{
-        imports::qw,
+        imports::{
+            models::{CoverageProgram, CoverageResponse},
+            qw,
+        },
         reports::{
             layout::DesignSource,
             models::{GroupMetrics, ReportMetrics},
@@ -216,6 +219,8 @@ pub fn design_sources(metrics: &ReportMetrics) -> Vec<DesignSource> {
     ];
     sources.splice(1..1, summary_card_sources(metrics));
     sources.extend(analysis_card_sources(metrics));
+    sources.extend(coverage_sources(metrics));
+    sources.extend(coverage_card_sources(metrics));
     sources
 }
 
@@ -667,6 +672,429 @@ fn group_source(
     }
 }
 
+fn coverage_sources(metrics: &ReportMetrics) -> Vec<DesignSource> {
+    let Some(coverage) = metrics.coverage.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut sources = vec![
+        coverage_group_source(coverage),
+        coverage_code_source(coverage),
+    ];
+    for program in &coverage.programs {
+        sources.push(program_metric_source(program));
+        sources.push(program_unit_source(program, true));
+        sources.push(program_unit_source(program, false));
+        sources.push(program_missing_source(program));
+    }
+    sources
+}
+
+fn coverage_group_source(coverage: &CoverageResponse) -> DesignSource {
+    let columns = vec![
+        "Kode".to_string(),
+        "Deskripsi".to_string(),
+        "Kegiatan".to_string(),
+        "Polres".to_string(),
+        "Satker".to_string(),
+    ];
+    let mut rows = vec![columns.clone()];
+    for group in coverage.groups.iter().take(MAX_TABLE_ROWS - 1) {
+        rows.push(vec![
+            group.code.clone(),
+            group.title.clone(),
+            group.rows.to_string(),
+            group.polres.to_string(),
+            group.satker.to_string(),
+        ]);
+    }
+    DesignSource {
+        key: "coverage.groups".to_string(),
+        label: "Cakupan kelompok Quick Wins".to_string(),
+        category: "Cakupan".to_string(),
+        table_columns: columns,
+        table_rows: rows,
+        chart_labels: coverage
+            .groups
+            .iter()
+            .map(|group| format!("{} · {}", group.code, group.title))
+            .collect(),
+        chart_values: coverage
+            .groups
+            .iter()
+            .map(|group| group.rows as f64)
+            .collect(),
+        chart_title: "Kegiatan per kelompok Quick Wins".to_string(),
+        can_table: true,
+        can_chart: !coverage.groups.is_empty(),
+        can_card: false,
+        card_label: String::new(),
+        card_value: String::new(),
+        card_unit: String::new(),
+        card_detail: String::new(),
+        card_icon: String::new(),
+    }
+}
+
+fn coverage_code_source(coverage: &CoverageResponse) -> DesignSource {
+    let columns = vec![
+        "Kode".to_string(),
+        "Deskripsi".to_string(),
+        "Kegiatan".to_string(),
+        "Polres".to_string(),
+        "Satker".to_string(),
+    ];
+    let mut codes = coverage
+        .groups
+        .iter()
+        .flat_map(|group| group.codes.iter())
+        .collect::<Vec<_>>();
+    codes.sort_by(|left, right| {
+        right
+            .rows
+            .cmp(&left.rows)
+            .then(right.polres.cmp(&left.polres))
+            .then(left.code.cmp(&right.code))
+    });
+
+    let mut rows = vec![columns.clone()];
+    for code in codes.iter().take(MAX_TABLE_ROWS - 1) {
+        rows.push(vec![
+            code.code.clone(),
+            code.title.clone(),
+            code.rows.to_string(),
+            code.polres.to_string(),
+            code.satker.to_string(),
+        ]);
+    }
+
+    let chart_items = codes
+        .iter()
+        .filter(|code| code.rows > 0)
+        .take(MAX_CHART_POINTS)
+        .collect::<Vec<_>>();
+
+    DesignSource {
+        key: "coverage.codes".to_string(),
+        label: "Cakupan sub-kode".to_string(),
+        category: "Cakupan".to_string(),
+        table_columns: columns,
+        table_rows: rows,
+        chart_labels: chart_items
+            .iter()
+            .map(|code| format!("{} · {}", code.code, code.title))
+            .collect(),
+        chart_values: chart_items.iter().map(|code| code.rows as f64).collect(),
+        chart_title: "Kegiatan per sub-kode".to_string(),
+        can_table: true,
+        can_chart: !chart_items.is_empty(),
+        can_card: false,
+        card_label: String::new(),
+        card_value: String::new(),
+        card_unit: String::new(),
+        card_detail: String::new(),
+        card_icon: String::new(),
+    }
+}
+
+fn program_metric_source(program: &CoverageProgram) -> DesignSource {
+    let columns = vec![
+        "Indikator".to_string(),
+        "Total".to_string(),
+        "Satuan".to_string(),
+        "Baris terisi".to_string(),
+        "Baris kosong".to_string(),
+        "Polres terisi".to_string(),
+        "Satker terisi".to_string(),
+    ];
+    let mut rows = vec![columns.clone()];
+    for metric in &program.metrics {
+        rows.push(vec![
+            metric.label.clone(),
+            coverage_value(metric.total, &metric.unit),
+            metric.unit.clone(),
+            metric.filled_rows.to_string(),
+            metric.missing_rows.to_string(),
+            metric.filled_polres.to_string(),
+            metric.filled_satker.to_string(),
+        ]);
+    }
+    let chart_items = program.metrics.iter().collect::<Vec<_>>();
+    DesignSource {
+        key: format!("coverage.{}.metrics", program.key),
+        label: format!("{} · indikator isian", program.title),
+        category: "Cakupan".to_string(),
+        table_columns: columns,
+        table_rows: rows,
+        chart_labels: chart_items
+            .iter()
+            .map(|metric| metric.label.clone())
+            .collect(),
+        chart_values: chart_items.iter().map(|metric| metric.total).collect(),
+        chart_title: format!("{} · indikator isian", program.title),
+        can_table: true,
+        can_chart: !chart_items.is_empty(),
+        can_card: false,
+        card_label: String::new(),
+        card_value: String::new(),
+        card_unit: String::new(),
+        card_detail: String::new(),
+        card_icon: String::new(),
+    }
+}
+
+fn program_unit_source(program: &CoverageProgram, by_polres: bool) -> DesignSource {
+    let units = if by_polres {
+        &program.by_polres
+    } else {
+        &program.by_satker
+    };
+    let scope = if by_polres { "Polres" } else { "Satker" };
+    let mut columns = vec![scope.to_string(), "Kegiatan".to_string()];
+    columns.extend(program.metrics.iter().map(|metric| {
+        if metric.unit.is_empty() {
+            metric.label.clone()
+        } else {
+            format!("{} ({})", metric.label, metric.unit)
+        }
+    }));
+
+    let mut rows = vec![columns.clone()];
+    for unit in units.iter().take(MAX_TABLE_ROWS - 1) {
+        let mut row = vec![unit.label.clone(), unit.rows.to_string()];
+        row.extend(unit.values.iter().enumerate().map(|(index, value)| {
+            let label = program
+                .metrics
+                .get(index)
+                .map(|metric| metric.unit.as_str())
+                .unwrap_or("");
+            coverage_value(value.value, label)
+        }));
+        rows.push(row);
+    }
+
+    let chart_items = units.iter().take(MAX_CHART_POINTS).collect::<Vec<_>>();
+    let scope_label = if by_polres { "polres" } else { "satker" };
+    DesignSource {
+        key: format!("coverage.{}.by_{}", program.key, scope_label),
+        label: format!("{} · per {}", program.title, scope_label),
+        category: "Cakupan".to_string(),
+        table_columns: columns,
+        table_rows: rows,
+        chart_labels: chart_items.iter().map(|unit| unit.label.clone()).collect(),
+        chart_values: chart_items.iter().map(|unit| unit.rows as f64).collect(),
+        chart_title: format!("{} · per {}", program.title, scope_label),
+        can_table: true,
+        can_chart: !chart_items.is_empty(),
+        can_card: false,
+        card_label: String::new(),
+        card_value: String::new(),
+        card_unit: String::new(),
+        card_detail: String::new(),
+        card_icon: String::new(),
+    }
+}
+
+fn program_missing_source(program: &CoverageProgram) -> DesignSource {
+    let columns = vec![
+        "Cakupan".to_string(),
+        "Jumlah".to_string(),
+        "Daftar".to_string(),
+    ];
+    let mut rows = vec![columns.clone()];
+    for (label, missing) in [
+        ("Polres", &program.polres_missing),
+        ("Satker Polda", &program.satker_missing),
+    ] {
+        rows.push(vec![
+            label.to_string(),
+            missing.len().to_string(),
+            if missing.is_empty() {
+                "—".to_string()
+            } else {
+                missing.join(", ")
+            },
+        ]);
+    }
+    DesignSource {
+        key: format!("coverage.{}.missing", program.key),
+        label: format!("{} · unit belum mengisi", program.title),
+        category: "Cakupan".to_string(),
+        table_columns: columns,
+        table_rows: rows,
+        chart_labels: Vec::new(),
+        chart_values: Vec::new(),
+        chart_title: String::new(),
+        can_table: true,
+        can_chart: false,
+        can_card: false,
+        card_label: String::new(),
+        card_value: String::new(),
+        card_unit: String::new(),
+        card_detail: String::new(),
+        card_icon: String::new(),
+    }
+}
+
+fn coverage_card_sources(metrics: &ReportMetrics) -> Vec<DesignSource> {
+    let Some(coverage) = metrics.coverage.as_ref() else {
+        return Vec::new();
+    };
+    let groups_done = coverage
+        .groups
+        .iter()
+        .filter(|group| group.rows > 0)
+        .count();
+    let codes_done = coverage
+        .groups
+        .iter()
+        .flat_map(|group| group.codes.iter())
+        .filter(|code| code.rows > 0)
+        .count();
+    let codes_total: usize = coverage.groups.iter().map(|group| group.codes.len()).sum();
+
+    let mut cards = vec![
+        card_source(
+            "card.coverage.polres",
+            "Kartu Cakupan · Polres aktif",
+            "Kartu Cakupan",
+            "Polres aktif",
+            format_count(coverage.active_polres),
+            "polres",
+            format!("dari {} polres", coverage.known_polres.len()),
+            "building-2",
+        ),
+        card_source(
+            "card.coverage.satker",
+            "Kartu Cakupan · Satker Polda aktif",
+            "Kartu Cakupan",
+            "Satker Polda aktif",
+            format_count(coverage.active_satker),
+            "satker",
+            format!("dari {} satker", coverage.known_satker.len()),
+            "landmark",
+        ),
+        card_source(
+            "card.coverage.groups",
+            "Kartu Cakupan · Kelompok terlaksana",
+            "Kartu Cakupan",
+            "Kelompok terlaksana",
+            format_count(groups_done as i64),
+            "kelompok",
+            format!("dari {} kelompok", coverage.groups.len()),
+            "target",
+        ),
+        card_source(
+            "card.coverage.codes",
+            "Kartu Cakupan · Sub-kode terlaksana",
+            "Kartu Cakupan",
+            "Sub-kode terlaksana",
+            format_count(codes_done as i64),
+            "sub-kode",
+            format!("dari {} sub-kode", codes_total),
+            "check",
+        ),
+        card_source(
+            "card.coverage.rows",
+            "Kartu Cakupan · Kegiatan tercakup",
+            "Kartu Cakupan",
+            "Kegiatan tercakup",
+            format_count(coverage.total_rows),
+            "kegiatan",
+            format!(
+                "{} polres · {} satker",
+                coverage.active_polres, coverage.active_satker
+            ),
+            "clipboard-list",
+        ),
+    ];
+
+    for group in &coverage.groups {
+        cards.push(card_source(
+            &format!("card.coverage.group.{}", group.code),
+            &format!("Kartu Cakupan · {} {}", group.code, group.title),
+            "Kartu Cakupan",
+            group.title.clone(),
+            format_count(group.rows),
+            "kegiatan",
+            format!("{} polres · {} satker", group.polres, group.satker),
+            coverage_group_icon(&group.code),
+        ));
+    }
+
+    for program in &coverage.programs {
+        cards.push(card_source(
+            &format!("card.coverage.{}", program.key),
+            &format!("Kartu Cakupan · {}", program.title),
+            "Kartu Cakupan",
+            program.title.clone(),
+            format_count(program.rows),
+            "kegiatan",
+            format!(
+                "{}/{} polres · {}/{} satker",
+                program.polres, program.polres_total, program.satker, program.satker_total
+            ),
+            coverage_program_icon(&program.key),
+        ));
+        for metric in &program.metrics {
+            cards.push(card_source(
+                &format!("card.coverage.{}.{}", program.key, metric.key),
+                &format!("Kartu Cakupan · {} · {}", program.title, metric.label),
+                "Kartu Cakupan",
+                format!("{} · {}", program.title, metric.label),
+                coverage_value(metric.total, &metric.unit),
+                metric.unit.clone(),
+                format!(
+                    "{}/{} baris terisi · {} polres · {} satker",
+                    metric.filled_rows,
+                    metric.filled_rows + metric.missing_rows,
+                    metric.filled_polres,
+                    metric.filled_satker
+                ),
+                coverage_program_icon(&program.key),
+            ));
+        }
+    }
+
+    cards
+}
+
+fn coverage_value(value: f64, unit: &str) -> String {
+    if unit == "m²" {
+        format!("{:.2}", value)
+    } else if (value - value.round()).abs() < 0.005 {
+        format_count(value.round() as i64)
+    } else {
+        format!("{:.2}", value)
+    }
+}
+
+fn coverage_group_icon(code: &str) -> &'static str {
+    match code {
+        "QW1" => "shield",
+        "QW2" => "shield-alert",
+        "QW3" => "smartphone",
+        "QW4" => "siren",
+        "QW5" => "file-text",
+        "QW6" => "lock",
+        "QW7" => "building-2",
+        "QW8" => "microscope",
+        _ => "clipboard-list",
+    }
+}
+
+fn coverage_program_icon(key: &str) -> &'static str {
+    match key {
+        "green_policing" => "sprout",
+        "jumat_keliling" => "users",
+        "subuh_keliling" => "sunrise",
+        "minggu_kasih" => "heart-handshake",
+        "narkoba" => "shield-alert",
+        "media" => "megaphone",
+        _ => "chart-column",
+    }
+}
+
 fn short_date(value: &str) -> String {
     let trimmed = value.trim();
     if let Some((_, rest)) = trimmed.split_once('-') {
@@ -680,10 +1108,11 @@ fn short_date(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        modules::reports::models::{DailyCount, MetricCard, NarkobaMetrics, ReportMetrics},
-        shared::LabeledCount,
+    use crate::modules::{
+        imports::{coverage::build_coverage, models::RecordView},
+        reports::models::{DailyCount, MetricCard, NarkobaMetrics, ReportMetrics},
     };
+    use crate::shared::LabeledCount;
 
     fn sample_metrics() -> ReportMetrics {
         let mut metrics = ReportMetrics::default();
@@ -694,10 +1123,7 @@ mod tests {
             unit: "orang".into(),
             detail: "89 kegiatan".into(),
         }];
-        metrics.quick_wins = vec![
-            LabeledCount::new("QW1", 12),
-            LabeledCount::new("QW2", 8),
-        ];
+        metrics.quick_wins = vec![LabeledCount::new("QW1", 12), LabeledCount::new("QW2", 8)];
         metrics.codes = vec![
             LabeledCount::new("QW1.10", 9),
             LabeledCount::new("QW2.1", 2),
@@ -781,12 +1207,12 @@ mod tests {
 
         let codes = sources.iter().find(|source| source.key == "codes").unwrap();
         assert_eq!(codes.table_rows[0], vec!["Kode", "Deskripsi", "Jumlah"]);
-        assert_eq!(
-            codes.table_rows[1],
-            vec!["QW1.10", "Patroli Sabhara", "9"]
-        );
+        assert_eq!(codes.table_rows[1], vec!["QW1.10", "Patroli Sabhara", "9"]);
         assert_eq!(codes.chart_labels[0], "QW1.10 · Patroli Sabhara");
-        assert_eq!(codes.table_rows[2], vec!["QW2.1", "Pemberantasan dan pemulihan kawasan narkoba", "2"]);
+        assert_eq!(
+            codes.table_rows[2],
+            vec!["QW2.1", "Pemberantasan dan pemulihan kawasan narkoba", "2"]
+        );
 
         let cards = sources.iter().find(|source| source.key == "cards").unwrap();
         assert!(cards.can_table);
@@ -810,6 +1236,162 @@ mod tests {
             .unwrap();
         assert!(analysis.can_card);
         assert_eq!(analysis.card_label, "Baris unik");
+    }
+
+    fn sample_coverage() -> CoverageResponse {
+        build_coverage(
+            "2026-10-15",
+            "2026-10-23",
+            &[
+                sample_row("QW1.5", "Polres Tabanan", 5, 10, 100.0, 0),
+                sample_row("QW1.7", "Polres Badung", 4, 0, 0.0, 50),
+            ],
+        )
+    }
+
+    fn sample_row(
+        kode: &str,
+        polres: &str,
+        personel: i64,
+        bibit: i64,
+        area: f64,
+        jamaah: i64,
+    ) -> RecordView {
+        RecordView {
+            id: 1,
+            source_row: 1,
+            import_id: "import-1".into(),
+            import_filename: "contoh.xlsx".into(),
+            tanggal: "2026-10-20".into(),
+            waktu_kirim_wib: "08:00".into(),
+            satuan: polres.into(),
+            tingkat: "Polres".into(),
+            polda: "Polda Bali".into(),
+            polres: polres.into(),
+            polsek: String::new(),
+            level: "Polres".into(),
+            unit: String::new(),
+            kode: kode.into(),
+            qw_title: qw::title(kode).into(),
+            kegiatan: String::new(),
+            quick_wins: qw::group_of(kode)
+                .map(|group| group.code.to_string())
+                .unwrap_or_default(),
+            pejabat_pelaksana: String::new(),
+            jabatan: String::new(),
+            pelaksana: String::new(),
+            pelapor: String::new(),
+            status_penerimaan: String::new(),
+            bukti_dukung: String::new(),
+            keluhan_personel_polri: String::new(),
+            isian_laporan: String::new(),
+            personel_count: personel,
+            bibit_count: bibit,
+            area_m2: area,
+            jamaah_count: jamaah,
+            latitude: None,
+            longitude: None,
+            map_url: String::new(),
+            fields: Default::default(),
+            links: Vec::new(),
+            evidence: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn coverage_sources_bind_tables_charts_and_cards() {
+        let mut metrics = sample_metrics();
+        metrics.coverage = Some(sample_coverage());
+        let sources = design_sources(&metrics);
+
+        let groups = sources
+            .iter()
+            .find(|source| source.key == "coverage.groups")
+            .unwrap();
+        assert!(groups.can_table);
+        assert_eq!(
+            groups.table_rows[0],
+            vec!["Kode", "Deskripsi", "Kegiatan", "Polres", "Satker"]
+        );
+        let qw1 = groups
+            .table_rows
+            .iter()
+            .find(|row| row[0] == "QW1")
+            .unwrap();
+        assert_eq!(qw1, &vec!["QW1", "Ruang Publik Aman", "2", "2", "0"]);
+        assert_eq!(groups.chart_labels[0], "QW1 · Ruang Publik Aman");
+        assert_eq!(groups.chart_values[0], 2.0);
+
+        let green = sources
+            .iter()
+            .find(|source| source.key == "coverage.green_policing.by_polres")
+            .unwrap();
+        assert_eq!(
+            green.table_rows[0],
+            vec![
+                "Polres",
+                "Kegiatan",
+                "Luas area (m²)",
+                "Bibit ditanam (pohon)",
+                "Personel (orang)",
+                "Kerja bakti (kegiatan)",
+                "Peserta (orang)"
+            ]
+        );
+        assert_eq!(
+            green.table_rows[1],
+            vec!["Polres Tabanan", "1", "100.00", "10", "5", "0", "0"]
+        );
+
+        let indicators = sources
+            .iter()
+            .find(|source| source.key == "coverage.green_policing.metrics")
+            .unwrap();
+        assert_eq!(
+            indicators.table_rows[0],
+            vec![
+                "Indikator",
+                "Total",
+                "Satuan",
+                "Baris terisi",
+                "Baris kosong",
+                "Polres terisi",
+                "Satker terisi"
+            ]
+        );
+        assert_eq!(
+            indicators.table_rows[1],
+            vec!["Luas area", "100.00", "m²", "1", "0", "1", "0"]
+        );
+
+        let card = sources
+            .iter()
+            .find(|source| source.key == "card.coverage.polres")
+            .unwrap();
+        assert!(card.can_card);
+        assert_eq!(card.card_label, "Polres aktif");
+        assert_eq!(card.card_value, "2");
+        assert_eq!(card.card_unit, "polres");
+        assert_eq!(card.card_detail, "dari 2 polres");
+
+        let group_card = sources
+            .iter()
+            .find(|source| source.key == "card.coverage.group.QW1")
+            .unwrap();
+        assert_eq!(group_card.card_value, "2");
+        assert_eq!(group_card.card_detail, "2 polres · 0 satker");
+
+        let area_card = sources
+            .iter()
+            .find(|source| source.key == "card.coverage.green_policing.area")
+            .unwrap();
+        assert_eq!(area_card.card_label, "Green Policing · Luas area");
+        assert_eq!(area_card.card_value, "100.00");
+        assert_eq!(area_card.card_unit, "m²");
+        assert_eq!(
+            area_card.card_detail,
+            "1/1 baris terisi · 1 polres · 0 satker"
+        );
     }
 
     #[test]

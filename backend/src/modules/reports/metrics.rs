@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use sqlx::SqlitePool;
 use chrono::{Duration, NaiveDate};
+use sqlx::SqlitePool;
 
 use crate::{
     error::ApiResult,
     modules::{
         imports,
+        imports::models::CoverageResponse,
         reports::models::{
             AspirationMetrics, DailyCount, FollowUpMetrics, GreenMetrics, GroupMetrics,
             MediaMetrics, MetricCard, NarkobaMetrics, ReligiousMetrics, ReportMetrics, RowSummary,
@@ -79,6 +80,7 @@ pub fn metrics_from_rows(
     end: &str,
     polda_name: &str,
 ) -> ReportMetrics {
+    let coverage = imports::coverage::build_coverage(start, end, &rows);
     let metric_rows = rows
         .into_iter()
         .map(|row| MetricRow {
@@ -117,6 +119,7 @@ pub fn metrics_from_rows(
         start,
         end,
         polda_name,
+        coverage,
     )
 }
 
@@ -129,6 +132,7 @@ fn build(
     start: &str,
     end: &str,
     polda_name: &str,
+    coverage: CoverageResponse,
 ) -> ReportMetrics {
     let all: Vec<&MetricRow> = rows.iter().collect();
     let narkoba = build_narkoba(&all);
@@ -274,6 +278,7 @@ fn build(
         follow_up,
         media,
         highlights,
+        coverage: Some(coverage),
     }
 }
 

@@ -302,18 +302,21 @@ impl PageLayout {
         page_height: f64,
     ) -> Self {
         let page = self.page;
-        let background = {
+        let background_mode = match self.background_mode.trim().to_ascii_lowercase().as_str() {
+            "linear" => "linear".to_string(),
+            "radial" => "radial".to_string(),
+            "image" => "image".to_string(),
+            _ => "solid".to_string(),
+        };
+        let background = if background_mode == "image" {
+            safe_image_src(&self.background).unwrap_or_default()
+        } else {
             let color = optional_color(&self.background);
             if color.eq_ignore_ascii_case("transparent") {
                 String::new()
             } else {
                 color
             }
-        };
-        let background_mode = match self.background_mode.trim().to_ascii_lowercase().as_str() {
-            "linear" => "linear".to_string(),
-            "radial" => "radial".to_string(),
-            _ => "solid".to_string(),
         };
         let gradient_angle = clamp_num(self.gradient_angle, -360.0, 360.0, 90.0);
         let mut gradient_colors = self
@@ -325,7 +328,13 @@ impl PageLayout {
         if gradient_colors.len() < 2 {
             gradient_colors.clear();
         }
-        let background_mode = if gradient_colors.len() >= 2 {
+        let background_mode = if background_mode == "image" {
+            if background.is_empty() {
+                "solid".to_string()
+            } else {
+                background_mode
+            }
+        } else if gradient_colors.len() >= 2 {
             background_mode
         } else {
             "solid".to_string()
@@ -1088,6 +1097,18 @@ mod tests {
                     gradient_colors: vec!["#143d30".into()],
                     ..PageLayout::default()
                 },
+                PageLayout {
+                    page: 3,
+                    background: "upload:282474bc-f462-41a2-9588-fc7e2e69053c".into(),
+                    background_mode: "image".into(),
+                    ..PageLayout::default()
+                },
+                PageLayout {
+                    page: 4,
+                    background: "bukan-gambar".into(),
+                    background_mode: "image".into(),
+                    ..PageLayout::default()
+                },
             ],
         };
 
@@ -1102,6 +1123,17 @@ mod tests {
         assert_eq!(second.background, "#f5f1e8");
         assert_eq!(second.background_mode, "solid");
         assert!(second.gradient_colors.is_empty());
+
+        let third = &sanitized.pages[2];
+        assert_eq!(
+            third.background,
+            "upload:282474bc-f462-41a2-9588-fc7e2e69053c"
+        );
+        assert_eq!(third.background_mode, "image");
+
+        let fourth = &sanitized.pages[3];
+        assert_eq!(fourth.background, "");
+        assert_eq!(fourth.background_mode, "solid");
     }
 
     #[test]

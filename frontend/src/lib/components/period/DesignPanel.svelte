@@ -8,6 +8,7 @@
     BarChart3,
     CalendarDays,
     Check,
+    ChevronDown,
     ChevronLeft,
     ChevronRight,
     Copy,
@@ -36,9 +37,14 @@
     Type,
     Undo2,
   } from 'lucide-svelte'
-  import { designApi, reportsApi } from '../../api'
+  import { designApi, importsApi, reportsApi } from '../../api'
   import { errorMessage } from '../../api/client'
   import type {
+    CoverageCode,
+    CoverageGroup,
+    CoverageResponse,
+    CoverageUnit,
+    CoverageUnitCount,
     DesignSource,
     DesignTemplateView,
     LayoutBlockOffset,
@@ -62,7 +68,7 @@
     readDesignDraft,
     writeDesignDraft,
   } from '../../utils/designDraft'
-  import { formatDate, formatDateTime, formatMonthYear, formatRange } from '../../utils/format'
+  import { formatDate, formatDateTime, formatMonthYear, formatNumber, formatRange } from '../../utils/format'
   import { toast } from '../../stores/toast.svelte'
   import { dialog } from '../../stores/dialog.svelte'
   import { auth } from '../../stores/auth.svelte'
@@ -109,6 +115,43 @@
     historyPushed: boolean
     before: ReportLayout
     groupStarts?: { id: string; x: number; y: number }[]
+  }
+
+  type CakupanNode =
+    | { kind: 'groups' }
+    | { kind: 'group'; code: string }
+    | { kind: 'code'; code: string }
+    | { kind: 'programs' }
+    | { kind: 'program'; key: string }
+    | { kind: 'metric'; program: string; metric: string }
+    | {
+        kind: 'units'
+        scope: 'polres' | 'satker'
+        group?: string
+        code?: string
+        program?: string
+      }
+
+  type CakupanItem = {
+    label: string
+    value: number
+    unit: string
+    detail: string
+    icon: string
+  }
+
+  type CakupanDataset = {
+    title: string
+    summaryLabel: string
+    summaryValue: number
+    summaryDetail: string
+    summaryIcon: string
+    tableColumns: string[]
+    tableRows: string[][]
+    chartLabels: string[]
+    chartValues: number[]
+    chartTitle: string
+    items: CakupanItem[]
   }
 
   const PAGE_PORTRAIT_WIDTH_PX = 793.7
@@ -165,7 +208,7 @@
   let shareTarget = $state<ReportView | null>(null)
   let previewing = $state(false)
   let mediaOpen = $state(false)
-  let mediaTarget = $state<'new' | 'replace'>('new')
+  let mediaTarget = $state<'new' | 'replace' | 'background'>('new')
   let error = $state('')
   let currentPage = $state(1)
   let selected = $state<Selection>(null)
@@ -184,6 +227,17 @@
   let iconPickerTarget = $state<'new' | 'replace' | 'card'>('new')
   let iconSearch = $state('')
   let iconCategory = $state('Semua')
+  let coverage = $state<CoverageResponse | null>(null)
+  let cakupanExpanded = $state<string[]>([])
+  let cakupanTarget = $state<CakupanNode | null>(null)
+  let cakupanDialogOpen = $state(false)
+  let cakupanDropPoint = $state<{ x: number; y: number } | null>(null)
+  let cakupanDragActive = $state(false)
+  let cakupanDragNode = $state<CakupanNode | null>(null)
+  let cakupanCardStep = $state(false)
+  let cakupanCardScope = $state<'summary' | 'all' | 'pick'>('all')
+  let cakupanCardPicks = $state<number[]>([])
+  let cakupanCardGroup = $state(false)
 
   let loadedKey = ''
   let canvasRequest = 0
@@ -240,7 +294,9 @@
   })
   const activePage = $derived(getPage(currentPage))
   const pageBackgroundMode = $derived(
-    activePage?.background_mode === 'linear' || activePage?.background_mode === 'radial'
+    activePage?.background_mode === 'linear' ||
+      activePage?.background_mode === 'radial' ||
+      activePage?.background_mode === 'image'
       ? activePage.background_mode
       : 'solid',
   )
@@ -298,6 +354,11 @@
   const checkedHasGroup = $derived.by(() =>
     pageElements.some((element) => checkedIds.includes(element.id) && Boolean(element.group)),
   )
+  const cakupanGroups = $derived(coverage?.groups ?? [])
+  const cakupanTotalRows = $derived(
+    cakupanGroups.reduce((total, group) => total + group.rows, 0),
+  )
+  const cakupanDataset = $derived(cakupanTarget ? buildCakupanDataset(cakupanTarget) : null)
   const selectionKey = $derived(
     selected ? `${selected.kind}:${selected.page}:${selected.id}` : '',
   )
@@ -419,7 +480,9 @@
     return {
       background: page?.background ?? '',
       background_mode:
-        page?.background_mode === 'linear' || page?.background_mode === 'radial'
+        page?.background_mode === 'linear' ||
+        page?.background_mode === 'radial' ||
+        page?.background_mode === 'image'
           ? page.background_mode
           : 'solid',
       gradient_angle: page?.gradient_angle ?? 90,
@@ -505,7 +568,15 @@
   async function refreshSources(): Promise<void> {
     if (!hasImport) return
     try {
-      sources = await designApi.sources(periodId)
+      const [sourceList, coverageData] = await Promise.all([
+        designApi.sources(periodId),
+        importsApi.coverage(periodId).catch(() => null),
+      ])
+      sources = sourceList
+      if (coverageData) {
+        coverage = coverageData
+        if (!cakupanExpanded.includes('groups')) cakupanExpanded = ['groups', ...cakupanExpanded]
+      }
       applyLayoutToDom()
       toast.success('Sumber data dimuat ulang.')
     } catch (caught) {
@@ -996,6 +1067,7 @@
     history = []
     redoStack = []
     sources = []
+    coverage = null
     checkedIds = []
     selectedTemplateId = ''
     zoomOverride = null
@@ -1013,16 +1085,19 @@
       return
     }
     try {
-      const [draft, layoutView, sourceList, templateList] = await Promise.all([
+      const [draft, layoutView, sourceList, templateList, coverageData] = await Promise.all([
         reportsApi.getDraft(targetPeriod),
         designApi.getLayout(targetPeriod),
         designApi.sources(targetPeriod),
         designApi.templates(),
+        importsApi.coverage(targetPeriod).catch(() => null),
       ])
       if (targetPeriod !== periodId) return
       content = { ...emptyContent, ...draft.content }
       sources = sourceList
       templates = templateList
+      coverage = coverageData
+      if (coverageData) cakupanExpanded = ['groups']
 
       const serverLayout = normalizeLayout(layoutView.layout)
       const serverSaved = layoutView.updated_at !== null
@@ -1160,6 +1235,7 @@
       doc.addEventListener('contextmenu', onContextMenu)
     }
     applyLayoutToDom()
+    applyPageBackgroundToDom()
     updateCanvasSize()
     applyPageVisibility()
   }
@@ -2835,6 +2911,653 @@
     addElement(element)
   }
 
+  const CAKUPAN_GROUP_ICONS: Record<string, string> = {
+    QW1: 'shield',
+    QW2: 'shield-alert',
+    QW3: 'smartphone',
+    QW4: 'siren',
+    QW5: 'file-text',
+    QW6: 'lock',
+    QW7: 'building-2',
+    QW8: 'microscope',
+  }
+
+  function cakupanGroupIcon(code: string): string {
+    return CAKUPAN_GROUP_ICONS[code] ?? 'clipboard-list'
+  }
+
+  const CAKUPAN_PROGRAM_ICONS: Record<string, string> = {
+    green_policing: 'sprout',
+    jumat_keliling: 'users',
+    subuh_keliling: 'sunrise',
+    minggu_kasih: 'heart-handshake',
+    narkoba: 'shield-alert',
+    media: 'megaphone',
+  }
+
+  function cakupanProgramIcon(key: string): string {
+    return CAKUPAN_PROGRAM_ICONS[key] ?? 'chart-column'
+  }
+
+  function cakupanProgram(key: string) {
+    return coverage?.programs.find((program) => program.key === key)
+  }
+
+  function cakupanValue(value: number, unit: string): string {
+    if (unit === 'm²' || !Number.isInteger(value)) {
+      return value.toLocaleString('id-ID', { maximumFractionDigits: 2 })
+    }
+    return formatNumber(value)
+  }
+
+  function cakupanGroup(code: string): CoverageGroup | undefined {
+    return coverage?.groups.find((group) => group.code === code)
+  }
+
+  function cakupanCode(code: string): CoverageCode | undefined {
+    for (const group of coverage?.groups ?? []) {
+      const found = group.codes.find((item) => item.code === code)
+      if (found) return found
+    }
+    return undefined
+  }
+
+  function cakupanCodeGroup(code: string): CoverageGroup | undefined {
+    return coverage?.groups.find((group) => group.codes.some((item) => item.code === code))
+  }
+
+  function isCakupanExpanded(key: string): boolean {
+    return cakupanExpanded.includes(key)
+  }
+
+  function toggleCakupan(key: string): void {
+    cakupanExpanded = isCakupanExpanded(key)
+      ? cakupanExpanded.filter((item) => item !== key)
+      : [...cakupanExpanded, key]
+  }
+
+  function cakupanNodeLabel(node: CakupanNode): string {
+    if (node.kind === 'groups') return 'Semua kelompok Quick Wins'
+    if (node.kind === 'programs') return 'Program prioritas'
+    if (node.kind === 'group') {
+      const group = cakupanGroup(node.code)
+      return group ? `${group.code} · ${group.title}` : node.code
+    }
+    if (node.kind === 'code') {
+      const code = cakupanCode(node.code)
+      return code ? `${code.code} · ${code.title}` : node.code
+    }
+    if (node.kind === 'program') {
+      const program = cakupanProgram(node.key)
+      return program ? program.title : node.key
+    }
+    if (node.kind === 'metric') {
+      const program = cakupanProgram(node.program)
+      const metric = program?.metrics.find((item) => item.key === node.metric)
+      return [program?.title, metric?.label].filter(Boolean).join(' · ') || node.metric
+    }
+    const scope = node.scope === 'polres' ? 'Polres' : 'Satker Polda'
+    const context = node.program
+      ? cakupanNodeLabel({ kind: 'program', key: node.program })
+      : node.group
+        ? cakupanNodeLabel({ kind: 'group', code: node.group })
+        : node.code
+          ? cakupanNodeLabel({ kind: 'code', code: node.code })
+          : ''
+    return context ? `${scope} · ${context}` : scope
+  }
+
+  function buildCakupanDataset(node: CakupanNode): CakupanDataset | null {
+    const groups = coverage?.groups ?? []
+    const codeColumns = ['Kode', 'Deskripsi', 'Kegiatan', 'Polres', 'Satker']
+    if (node.kind === 'groups') {
+      return {
+        title: 'Cakupan kelompok Quick Wins',
+        summaryLabel: 'Semua kelompok Quick Wins',
+        summaryValue: groups.reduce((total, group) => total + group.rows, 0),
+        summaryDetail: `${groups.length} kelompok`,
+        summaryIcon: 'clipboard-list',
+        tableColumns: codeColumns,
+        tableRows: [
+          [...codeColumns],
+          ...groups.map((group) => [
+            group.code,
+            group.title,
+            formatNumber(group.rows),
+            String(group.polres),
+            String(group.satker),
+          ]),
+        ],
+        chartLabels: groups.map((group) => group.code),
+        chartValues: groups.map((group) => group.rows),
+        chartTitle: 'Kegiatan per kelompok Quick Wins',
+        items: groups.map((group) => ({
+          label: group.title,
+          value: group.rows,
+          unit: 'kegiatan',
+          detail: `${group.code} · ${group.polres} polres · ${group.satker} satker`,
+          icon: cakupanGroupIcon(group.code),
+        })),
+      }
+    }
+    if (node.kind === 'group') {
+      const group = cakupanGroup(node.code)
+      if (!group) return null
+      return {
+        title: `${group.code} · ${group.title}`,
+        summaryLabel: group.title,
+        summaryValue: group.rows,
+        summaryDetail: `${group.code} · ${group.codes.length} sub-kode`,
+        summaryIcon: cakupanGroupIcon(group.code),
+        tableColumns: codeColumns,
+        tableRows: [
+          [...codeColumns],
+          ...group.codes.map((code) => [
+            code.code,
+            code.title,
+            formatNumber(code.rows),
+            String(code.polres),
+            String(code.satker),
+          ]),
+        ],
+        chartLabels: group.codes.map((code) => code.code),
+        chartValues: group.codes.map((code) => code.rows),
+        chartTitle: `${group.code} · ${group.title}`,
+        items: group.codes.map((code) => ({
+          label: code.title,
+          value: code.rows,
+          unit: 'kegiatan',
+          detail: `${code.code} · ${code.polres} polres · ${code.satker} satker`,
+          icon: cakupanGroupIcon(group.code),
+        })),
+      }
+    }
+    if (node.kind === 'code') {
+      const code = cakupanCode(node.code)
+      if (!code) return null
+      const group = cakupanCodeGroup(code.code)
+      return {
+        title: `${code.code} · ${code.title}`,
+        summaryLabel: code.title,
+        summaryValue: code.rows,
+        summaryDetail: code.code,
+        summaryIcon: cakupanGroupIcon(group?.code ?? ''),
+        tableColumns: codeColumns,
+        tableRows: [
+          [...codeColumns],
+          [
+            code.code,
+            code.title,
+            formatNumber(code.rows),
+            String(code.polres),
+            String(code.satker),
+          ],
+        ],
+        chartLabels: [code.code],
+        chartValues: [code.rows],
+        chartTitle: `${code.code} · ${code.title}`,
+        items: [
+          {
+            label: code.title,
+            value: code.rows,
+            unit: 'kegiatan',
+            detail: `${code.code} · ${code.polres} polres · ${code.satker} satker`,
+            icon: cakupanGroupIcon(group?.code ?? ''),
+          },
+        ],
+      }
+    }
+
+    if (node.kind === 'programs') {
+      const programs = coverage?.programs ?? []
+      const columns = ['Program', 'Kegiatan', 'Polres', 'Satker']
+      return {
+        title: 'Cakupan program prioritas',
+        summaryLabel: 'Program prioritas',
+        summaryValue: coverage?.total_rows ?? 0,
+        summaryDetail: `${programs.length} program`,
+        summaryIcon: 'clipboard-list',
+        tableColumns: columns,
+        tableRows: [
+          [...columns],
+          ...programs.map((program) => [
+            program.title,
+            formatNumber(program.rows),
+            String(program.polres),
+            String(program.satker),
+          ]),
+        ],
+        chartLabels: programs.map((program) => program.title),
+        chartValues: programs.map((program) => program.rows),
+        chartTitle: 'Kegiatan program prioritas',
+        items: programs.map((program) => ({
+          label: program.title,
+          value: program.rows,
+          unit: 'kegiatan',
+          detail: `${program.polres}/${program.polres_total} polres · ${program.satker}/${program.satker_total} satker`,
+          icon: cakupanProgramIcon(program.key),
+        })),
+      }
+    }
+    if (node.kind === 'program') {
+      const program = cakupanProgram(node.key)
+      if (!program) return null
+      const columns = [
+        'Indikator',
+        'Total',
+        'Satuan',
+        'Baris terisi',
+        'Baris kosong',
+        'Polres terisi',
+        'Satker terisi',
+      ]
+      return {
+        title: program.title,
+        summaryLabel: program.title,
+        summaryValue: program.rows,
+        summaryDetail: `${program.polres}/${program.polres_total} polres · ${program.satker}/${program.satker_total} satker`,
+        summaryIcon: cakupanProgramIcon(program.key),
+        tableColumns: columns,
+        tableRows: [
+          [...columns],
+          ...program.metrics.map((metric) => [
+            metric.label,
+            cakupanValue(metric.total, metric.unit),
+            metric.unit,
+            String(metric.filled_rows),
+            String(metric.missing_rows),
+            String(metric.filled_polres),
+            String(metric.filled_satker),
+          ]),
+        ],
+        chartLabels: program.metrics.map((metric) => metric.label),
+        chartValues: program.metrics.map((metric) => metric.total),
+        chartTitle: `${program.title} · indikator`,
+        items: program.metrics.map((metric) => ({
+          label: metric.label,
+          value: metric.total,
+          unit: metric.unit,
+          detail: `${metric.filled_rows}/${metric.filled_rows + metric.missing_rows} baris terisi · ${metric.filled_polres} polres · ${metric.filled_satker} satker`,
+          icon: cakupanProgramIcon(program.key),
+        })),
+      }
+    }
+    if (node.kind === 'metric') {
+      const program = cakupanProgram(node.program)
+      const metric = program?.metrics.find((item) => item.key === node.metric)
+      if (!program || !metric) return null
+      const columns = [
+        'Indikator',
+        'Total',
+        'Satuan',
+        'Baris terisi',
+        'Baris kosong',
+        'Polres terisi',
+        'Satker terisi',
+      ]
+      const detail = `${metric.filled_rows}/${metric.filled_rows + metric.missing_rows} baris terisi · ${metric.filled_polres} polres · ${metric.filled_satker} satker`
+      return {
+        title: `${program.title} · ${metric.label}`,
+        summaryLabel: `${program.title} · ${metric.label}`,
+        summaryValue: metric.total,
+        summaryDetail: detail,
+        summaryIcon: cakupanProgramIcon(program.key),
+        tableColumns: columns,
+        tableRows: [
+          [...columns],
+          [
+            metric.label,
+            cakupanValue(metric.total, metric.unit),
+            metric.unit,
+            String(metric.filled_rows),
+            String(metric.missing_rows),
+            String(metric.filled_polres),
+            String(metric.filled_satker),
+          ],
+        ],
+        chartLabels: [metric.label],
+        chartValues: [metric.total],
+        chartTitle: `${program.title} · ${metric.label}`,
+        items: [
+          {
+            label: metric.label,
+            value: metric.total,
+            unit: metric.unit,
+            detail: `${program.title} · ${detail}`,
+            icon: cakupanProgramIcon(program.key),
+          },
+        ],
+      }
+    }
+
+    if (node.kind === 'units' && node.program) {
+      const program = cakupanProgram(node.program)
+      if (!program) return null
+      const scopeLabel = node.scope === 'polres' ? 'Polres' : 'Satker Polda'
+      const units = (node.scope === 'polres' ? program.by_polres : program.by_satker) ?? []
+      const columns = [
+        scopeLabel,
+        'Kegiatan',
+        ...program.metrics.map((metric) =>
+          metric.unit ? `${metric.label} (${metric.unit})` : metric.label,
+        ),
+      ]
+      return {
+        title: `${scopeLabel} · ${program.title}`,
+        summaryLabel: scopeLabel,
+        summaryValue: units.reduce((total, unit) => total + unit.rows, 0),
+        summaryDetail: program.title,
+        summaryIcon: node.scope === 'polres' ? 'building-2' : 'landmark',
+        tableColumns: columns,
+        tableRows: [
+          [...columns],
+          ...units.map((unit) => [
+            unit.label,
+            formatNumber(unit.rows),
+            ...unit.values.map((value, index) => {
+              const metric = program.metrics[index]
+              return value.filled ? cakupanValue(value.value, metric?.unit ?? '') : '—'
+            }),
+          ]),
+        ],
+        chartLabels: units.map((unit) => unit.label),
+        chartValues: units.map((unit) => unit.rows),
+        chartTitle: `${scopeLabel} · ${program.title}`,
+        items: units.map((unit) => ({
+          label: unit.label,
+          value: unit.rows,
+          unit: 'kegiatan',
+          detail: `${program.title}${unit.missing.length ? ` · ${unit.missing.length} indikator kosong` : ' · semua indikator terisi'}`,
+          icon: node.scope === 'polres' ? 'building-2' : 'landmark',
+        })),
+      }
+    }
+
+    let units: CoverageUnitCount[] | undefined
+    let contextTitle = ''
+    if (node.group) {
+      const group = cakupanGroup(node.group)
+      units = node.scope === 'polres' ? group?.by_polres : group?.by_satker
+      contextTitle = group ? `${group.code} · ${group.title}` : node.group
+    } else {
+      const code = cakupanCode(node.code ?? '')
+      units = node.scope === 'polres' ? code?.by_polres : code?.by_satker
+      contextTitle = code ? `${code.code} · ${code.title}` : (node.code ?? '')
+    }
+    const scopeLabel = node.scope === 'polres' ? 'Polres' : 'Satker Polda'
+    const list = units ?? []
+    return {
+      title: contextTitle ? `${scopeLabel} · ${contextTitle}` : scopeLabel,
+      summaryLabel: scopeLabel,
+      summaryValue: list.reduce((total, unit) => total + unit.rows, 0),
+      summaryDetail: contextTitle,
+      summaryIcon: node.scope === 'polres' ? 'building-2' : 'landmark',
+      tableColumns: [scopeLabel, 'Kegiatan'],
+      tableRows: [
+        [scopeLabel, 'Kegiatan'],
+        ...list.map((unit) => [unit.label, formatNumber(unit.rows)]),
+      ],
+      chartLabels: list.map((unit) => unit.label),
+      chartValues: list.map((unit) => unit.rows),
+      chartTitle: contextTitle
+        ? `${scopeLabel} · ${contextTitle}`
+        : `Kegiatan per ${scopeLabel.toLowerCase()}`,
+      items: list.map((unit) => ({
+        label: unit.label,
+        value: unit.rows,
+        unit: 'kegiatan',
+        detail: contextTitle,
+        icon: node.scope === 'polres' ? 'building-2' : 'landmark',
+      })),
+    }
+  }
+
+  function startCakupanDrag(event: DragEvent, node: CakupanNode): void {
+    cakupanDragNode = node
+    cakupanDragActive = true
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'copy'
+      event.dataTransfer.setData('text/plain', cakupanNodeLabel(node))
+    }
+  }
+
+  function endCakupanDrag(): void {
+    cakupanDragActive = false
+    cakupanDragNode = null
+  }
+
+  function openCakupanDialog(
+    node: CakupanNode,
+    point: { x: number; y: number } | null = null,
+  ): void {
+    cakupanTarget = node
+    cakupanDropPoint = point
+    cakupanDialogOpen = true
+  }
+
+  function closeCakupanDialog(): void {
+    cakupanDialogOpen = false
+    cakupanTarget = null
+    cakupanDropPoint = null
+    cakupanCardStep = false
+    cakupanCardScope = 'all'
+    cakupanCardPicks = []
+    cakupanCardGroup = false
+  }
+
+  function onCakupanDrop(event: DragEvent): void {
+    event.preventDefault()
+    const node = cakupanDragNode
+    const rect = iframeEl?.getBoundingClientRect()
+    cakupanDragActive = false
+    cakupanDragNode = null
+    if (!node) return
+    let point: { x: number; y: number } | null = null
+    if (rect && rect.width > 0 && rect.height > 0) {
+      point = {
+        x: clamp(((event.clientX - rect.left) / rect.width) * PAGE_WIDTH, 2, PAGE_WIDTH - 2),
+        y: clamp(((event.clientY - rect.top) / rect.height) * PAGE_HEIGHT, 2, PAGE_HEIGHT - 2),
+      }
+    }
+    openCakupanDialog(node, point)
+  }
+
+  function insertCakupan(mode: 'table' | 'chart' | 'hbar' | 'cards'): void {
+    if (!cakupanTarget) return
+    const dataset = buildCakupanDataset(cakupanTarget)
+    const page = getPage(currentPage)
+    if (!dataset || !page) return
+    if (!dataset.items.length) {
+      toast.error('Belum ada data cakupan untuk pilihan ini.')
+      return
+    }
+    if (mode === 'cards') {
+      openCakupanCardStep()
+      return
+    }
+    pushHistory()
+    addCakupanBlock(page, dataset, mode, cakupanDropPoint)
+    closeCakupanDialog()
+    applyLayoutToDom()
+    toast.success(
+      `Data cakupan ditambahkan sebagai ${mode === 'table' ? 'tabel' : 'grafik'}.`,
+    )
+  }
+
+  function openCakupanCardStep(): void {
+    const dataset = cakupanDataset
+    if (!dataset) return
+    if (dataset.items.length <= 1) {
+      createCakupanCards(dataset.items)
+      return
+    }
+    cakupanCardScope = 'all'
+    cakupanCardPicks = dataset.items.map((_, index) => index)
+    cakupanCardStep = true
+  }
+
+  function toggleCakupanPick(index: number): void {
+    cakupanCardPicks = cakupanCardPicks.includes(index)
+      ? cakupanCardPicks.filter((item) => item !== index)
+      : [...cakupanCardPicks, index]
+  }
+
+  function selectAllCakupanPicks(): void {
+    const dataset = cakupanDataset
+    if (!dataset) return
+    cakupanCardPicks = dataset.items.map((_, index) => index)
+  }
+
+  function clearCakupanPicks(): void {
+    cakupanCardPicks = []
+  }
+
+  function applyCakupanCards(): void {
+    const dataset = cakupanDataset
+    if (!dataset) return
+    if (cakupanCardScope === 'summary') {
+      createCakupanCards([
+        {
+          label: dataset.summaryLabel,
+          value: dataset.summaryValue,
+          unit: 'kegiatan',
+          detail: dataset.summaryDetail,
+          icon: dataset.summaryIcon,
+        },
+      ])
+      return
+    }
+    const items =
+      cakupanCardScope === 'pick'
+        ? cakupanCardPicks
+            .map((index) => dataset.items[index])
+            .filter((item): item is CakupanItem => Boolean(item))
+        : dataset.items
+    createCakupanCards(items)
+  }
+
+  function createCakupanCards(items: CakupanItem[], groupCards = cakupanCardGroup): void {
+    const page = getPage(currentPage)
+    if (!page) return
+    if (!items.length) {
+      toast.error('Pilih minimal satu kartu.')
+      return
+    }
+    pushHistory()
+    addCakupanCards(page, items, cakupanDropPoint, groupCards)
+    closeCakupanDialog()
+    applyLayoutToDom()
+    toast.success(`${items.length} kartu cakupan ditambahkan.`)
+  }
+
+  function addCakupanBlock(
+    page: LayoutPage,
+    dataset: CakupanDataset,
+    mode: 'table' | 'chart' | 'hbar',
+    point: { x: number; y: number } | null,
+  ): void {
+    const element = baseElement(mode === 'table' ? 'table' : 'chart')
+    if (mode === 'table') {
+      element.width = Math.min(180, PAGE_WIDTH - 24)
+      element.height = Math.min(PAGE_HEIGHT - 20, 12 + dataset.tableRows.length * 5.5)
+      element.font_size = 8.5
+      element.table_rows = dataset.tableRows.map((row) => [...row])
+      element.table_header = true
+    } else {
+      element.width = Math.min(190, PAGE_WIDTH - 24)
+      element.height = Math.min(160, Math.max(70, 40 + dataset.chartLabels.length * 6))
+      element.font_size = 9
+      element.chart_type = mode === 'hbar' ? 'hbar' : 'bar'
+      element.chart_title = dataset.chartTitle
+      element.chart_labels = [...dataset.chartLabels]
+      element.chart_values = [...dataset.chartValues]
+      element.chart_colors = dataset.chartLabels.map(
+        (_, index) => CHART_PALETTE[index % CHART_PALETTE.length],
+      )
+      element.chart_show_values = true
+      element.chart_show_legend = dataset.chartLabels.length <= 8
+    }
+    if (point) {
+      element.x = clamp(point.x, 2, PAGE_WIDTH - element.width - 2)
+      element.y = clamp(point.y, 2, PAGE_HEIGHT - element.height - 2)
+    } else {
+      element.x = (PAGE_WIDTH - element.width) / 2
+      element.y = (PAGE_HEIGHT - element.height) / 2
+    }
+    clampElement(element)
+    page.elements.push(element)
+    selected = { kind: 'element', page: currentPage, id: element.id }
+  }
+
+  function addCakupanCards(
+    page: LayoutPage,
+    items: CakupanItem[],
+    point: { x: number; y: number } | null,
+    groupCards: boolean,
+  ): void {
+    const count = items.length
+    const columns =
+      count <= 1
+        ? 1
+        : count === 2
+          ? 2
+          : count === 3
+            ? 3
+            : count === 4
+              ? 2
+              : count <= 6
+                ? 3
+                : count <= 12
+                  ? 4
+                  : 5
+    const gap = 4
+    const available = PAGE_WIDTH - 24
+    const cardWidth = Math.min(64, (available - gap * (columns - 1)) / columns)
+    const cardHeight = count > 12 ? 24 : count > 6 ? 27 : 30
+    const rows = Math.ceil(count / columns)
+    const gridWidth = columns * cardWidth + gap * (columns - 1)
+    const gridHeight = rows * cardHeight + gap * (rows - 1)
+    const startX = clamp(
+      point ? point.x : (PAGE_WIDTH - gridWidth) / 2,
+      6,
+      Math.max(6, PAGE_WIDTH - gridWidth - 6),
+    )
+    const startY = clamp(
+      point ? point.y : (PAGE_HEIGHT - gridHeight) / 2,
+      6,
+      Math.max(6, PAGE_HEIGHT - gridHeight - 6),
+    )
+    const template = cardTemplate('icon_right')
+    const groupId = groupCards && count > 1 ? newId() : ''
+    items.forEach((item, index) => {
+      const element = baseElement('card')
+      element.width = cardWidth
+      element.height = cardHeight
+      element.x = startX + (index % columns) * (cardWidth + gap)
+      element.y = startY + Math.floor(index / columns) * (cardHeight + gap)
+      element.z = 10 + index
+      element.group = groupId
+      element.card_template = template.id
+      element.fill = template.fill
+      element.card_accent = template.accent
+      element.color = template.color
+      element.card_icon_bg = template.iconBg
+      element.card_icon_color = template.iconColor
+      element.border_width = template.borderWidth
+      element.radius = template.radius
+      element.card_icon = item.icon
+      element.card_icon_scale = 80
+      element.card_label = item.label
+      element.card_value = cakupanValue(item.value, item.unit)
+      element.card_unit = item.unit
+      element.card_detail = item.detail
+      element.font_size = count > 12 ? 8 : 9
+      page.elements.push(element)
+    })
+    const last = page.elements[page.elements.length - 1]
+    selected = last ? { kind: 'element', page: currentPage, id: last.id } : null
+  }
+
   function openIconPickerForNew() {
     iconPickerTarget = 'new'
     iconSearch = ''
@@ -3003,6 +3726,16 @@
   }
 
   function insertMediaImage(uploaded: UploadedDesignImage, filename: string) {
+    if (mediaTarget === 'background') {
+      const page = activePage
+      if (!page) return
+      pushHistory()
+      page.background = `upload:${uploaded.id}`
+      page.background_mode = 'image'
+      applyPageBackgroundToDom()
+      toast.success(`Gambar ${filename} dipakai sebagai latar halaman.`)
+      return
+    }
     if (mediaTarget === 'replace' && activeElement?.type === 'image') {
       updateElement({ src: `upload:${uploaded.id}`, alt: filename }, true)
       toast.success('Gambar berhasil diganti.')
@@ -3409,8 +4142,31 @@
     return [pickerColor(page?.background, '#ffffff'), '#b8894b']
   }
 
+  function pageBackgroundImageSrc(page: LayoutPage | undefined): string {
+    const src = (page?.background ?? '').trim()
+    if (!src) return ''
+    if (src.startsWith('upload:')) {
+      const id = src.slice(7)
+      return id ? designApi.imageUrl(periodId, id) : ''
+    }
+    return /^https?:\/\//i.test(src) ? src : ''
+  }
+
+  function cssUrl(value: string): string {
+    return value
+      .replace(/'/g, '%27')
+      .replace(/"/g, '%22')
+      .replace(/\(/g, '%28')
+      .replace(/\)/g, '%29')
+      .replace(/\\/g, '%5C')
+  }
+
   function pageBackgroundCss(page: LayoutPage | undefined): string {
     if (!page) return '#ffffff'
+    if (page.background_mode === 'image') {
+      const src = pageBackgroundImageSrc(page)
+      return src ? `url("${cssUrl(src)}") center / cover no-repeat` : '#ffffff'
+    }
     const colors = page.gradient_colors ?? []
     const mode = page.background_mode
     if ((mode === 'linear' || mode === 'radial') && colors.length >= 2) {
@@ -3434,14 +4190,36 @@
     })
   }
 
-  function setPageBackgroundMode(mode: 'solid' | 'linear' | 'radial') {
+  function setPageBackgroundMode(mode: 'solid' | 'linear' | 'radial' | 'image') {
     const page = activePage
     if (!page) return
     pushHistory()
+    const wasImage = page.background_mode === 'image'
     page.background_mode = mode
+    if (mode === 'image') {
+      if (!pageBackgroundImageSrc(page)) page.background = ''
+      applyPageBackgroundToDom()
+      return
+    }
+    if (wasImage) page.background = '#ffffff'
     if (mode !== 'solid' && (page.gradient_colors?.length ?? 0) < 2) {
       page.gradient_colors = pageGradientColors(page)
     }
+    applyPageBackgroundToDom()
+  }
+
+  function openPageBackgroundMedia() {
+    mediaTarget = 'background'
+    mediaOpen = true
+  }
+
+  function clearPageBackgroundImage() {
+    const page = activePage
+    if (!page) return
+    pushHistory()
+    page.background = '#ffffff'
+    page.background_mode = 'solid'
+    page.gradient_colors = []
     applyPageBackgroundToDom()
   }
 
@@ -4162,14 +4940,33 @@
           {#if loading}
             <div class="text-sm text-ink-muted">Menyiapkan kanvas laporan…</div>
           {:else}
-            <iframe
-              bind:this={iframeEl}
-              title="Editor tata letak laporan"
-              class="block rounded-lg border border-line bg-white"
-              style={`width:${canvasWidth}px;height:${canvasHeight}px`}
-              srcdoc={iframeHtml}
-              onload={handleIframeLoad}
-            ></iframe>
+            <div class="relative">
+              <iframe
+                bind:this={iframeEl}
+                title="Editor tata letak laporan"
+                class="block rounded-lg border border-line bg-white"
+                style={`width:${canvasWidth}px;height:${canvasHeight}px`}
+                srcdoc={iframeHtml}
+                onload={handleIframeLoad}
+              ></iframe>
+              {#if cakupanDragActive}
+                <button
+                  type="button"
+                  class="absolute inset-0 z-20 flex items-start justify-center rounded-lg border-2 border-dashed border-gold-400 bg-gold-50/40 p-3"
+                  data-cakupan-drop
+                  aria-label="Lepas data cakupan di kanvas"
+                  ondragover={(event) => {
+                    event.preventDefault()
+                    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+                  }}
+                  ondrop={onCakupanDrop}
+                >
+                  <span class="rounded-full bg-white/95 px-3 py-1.5 text-[11px] font-semibold text-forest-800 shadow">
+                    Lepas untuk menambahkan data cakupan
+                  </span>
+                </button>
+              {/if}
+            </div>
           {/if}
         </div>
       </div>
@@ -4979,15 +5776,294 @@
           <ul class="mt-3 space-y-2 text-[11px] leading-relaxed text-ink-muted">
             <li>1. Gunakan Sebelumnya/Berikutnya untuk berpindah halaman; kanvas hanya menampilkan satu halaman.</li>
             <li>2. Tambah teks, kotak, gambar, ikon, kartu, tabel, atau grafik.</li>
-            <li>3. Tarik elemen untuk menggeser; tarik sudut untuk mengubah ukuran.</li>
-            <li>4. Klik blok laporan untuk geser; tarik sudut kanan bawah untuk resize.</li>
-            <li>5. Klik dua kali teks blok untuk mengeditnya.</li>
-            <li>6. Gunakan panel Layer untuk menyembunyikan, mengunci posisi, mengurutkan, atau menggabungkan objek.</li>
-            <li>7. Simpan desain sebagai template untuk dipakai pada periode lain.</li>
-            <li>8. Simpan, lalu Buat PDF.</li>
+            <li>3. Tarik data dari panel Cakupan ke kanvas, lalu pilih grafik, tabel, atau kartu otomatis.</li>
+            <li>4. Tarik elemen untuk menggeser; tarik sudut untuk mengubah ukuran.</li>
+            <li>5. Klik blok laporan untuk geser; tarik sudut kanan bawah untuk resize.</li>
+            <li>6. Klik dua kali teks blok untuk mengeditnya.</li>
+            <li>7. Gunakan panel Layer untuk menyembunyikan, mengunci posisi, mengurutkan, atau menggabungkan objek.</li>
+            <li>8. Simpan desain sebagai template untuk dipakai pada periode lain.</li>
+            <li>9. Simpan, lalu Buat PDF.</li>
           </ul>
         </section>
       {/if}
+
+      {#snippet cakupanUnits(options: {
+        key: string
+        scope: 'polres' | 'satker'
+        units: CoverageUnitCount[]
+        node: CakupanNode
+      })}
+        <div class="ml-6 flex items-center gap-1 rounded-lg border border-line bg-stone-50/70 px-1.5 py-1.5">
+          <button type="button" class="rounded p-0.5 text-ink-muted hover:bg-stone-100"
+            onclick={() => toggleCakupan(options.key)}>
+            {#if isCakupanExpanded(options.key)}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
+          </button>
+          <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing" onclick={() => toggleCakupan(options.key)}
+            draggable="true"
+            ondragstart={(event) => startCakupanDrag(event, options.node)}
+            ondragend={endCakupanDrag}>
+            <span class="block truncate text-[11px] font-medium text-ink">{options.scope === 'polres' ? 'Polres' : 'Satker Polda'}</span>
+            <span class="block text-[10px] text-ink-muted">
+              {options.units.length} unit · {formatNumber(options.units.reduce((total, unit) => total + unit.rows, 0))} kegiatan
+            </span>
+          </button>
+          <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+            onclick={() => openCakupanDialog(options.node)}>
+            <Plus size={12} />
+          </button>
+        </div>
+        {#if isCakupanExpanded(options.key)}
+          {#each options.units as unit (unit.label)}
+            <div class="ml-10 flex items-center justify-between gap-2 px-2 py-0.5 text-[10px] text-ink-muted">
+              <span class="min-w-0 truncate">{unit.label}</span>
+              <span class="shrink-0 font-semibold text-ink">{formatNumber(unit.rows)}</span>
+            </div>
+          {/each}
+          {#if !options.units.length}
+            <p class="ml-10 px-2 py-0.5 text-[10px] text-ink-muted">Belum ada unit.</p>
+          {/if}
+        {/if}
+      {/snippet}
+
+      {#snippet cakupanProgramUnits(options: {
+        key: string
+        scope: 'polres' | 'satker'
+        units: CoverageUnit[]
+        program: string
+      })}
+        <div class="ml-6 flex items-center gap-1 rounded-lg border border-line bg-stone-50/70 px-1.5 py-1.5">
+          <button type="button" class="rounded p-0.5 text-ink-muted hover:bg-stone-100"
+            onclick={() => toggleCakupan(options.key)}>
+            {#if isCakupanExpanded(options.key)}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
+          </button>
+          <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
+            onclick={() => toggleCakupan(options.key)}
+            draggable="true"
+            ondragstart={(event) => startCakupanDrag(event, { kind: 'units', scope: options.scope, program: options.program })}
+            ondragend={endCakupanDrag}>
+            <span class="block truncate text-[11px] font-medium text-ink">{options.scope === 'polres' ? 'Polres' : 'Satker Polda'}</span>
+            <span class="block text-[10px] text-ink-muted">
+              {options.units.length} unit · {formatNumber(options.units.reduce((total, unit) => total + unit.rows, 0))} kegiatan
+            </span>
+          </button>
+          <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+            onclick={() => openCakupanDialog({ kind: 'units', scope: options.scope, program: options.program })}>
+            <Plus size={12} />
+          </button>
+        </div>
+        {#if isCakupanExpanded(options.key)}
+          {#each options.units as unit (unit.label)}
+            <div class="ml-10 flex items-center justify-between gap-2 px-2 py-0.5 text-[10px] text-ink-muted">
+              <span class="min-w-0 truncate">{unit.label}</span>
+              <span class="shrink-0 font-semibold text-ink">{formatNumber(unit.rows)}</span>
+              {#if unit.missing.length}
+                <span class="shrink-0 rounded bg-red-50 px-1 py-0.5 text-[9px] font-bold text-red-700">{unit.missing.length} kosong</span>
+              {/if}
+            </div>
+          {/each}
+          {#if !options.units.length}
+            <p class="ml-10 px-2 py-0.5 text-[10px] text-ink-muted">Belum ada unit.</p>
+          {/if}
+        {/if}
+      {/snippet}
+
+      <section class="card overflow-hidden">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">CAKUPAN</span>
+            <h2 class="panel-title mt-1">Tarik data ke kanvas</h2>
+          </div>
+          <span class="badge badge-neutral">{cakupanGroups.length} QW</span>
+        </div>
+        <div class="space-y-2 p-3">
+          <p class="text-[10px] leading-relaxed text-ink-muted">
+            Tarik kelompok, sub-kode, polres, atau satker ke kanvas lalu pilih grafik, tabel, atau kartu. Tombol + menambahkan tanpa drag.
+          </p>
+          {#if !hasImport}
+            <p class="text-xs text-ink-muted">Impor data terlebih dahulu untuk melihat cakupan.</p>
+          {:else if !coverage}
+            <p class="text-xs text-ink-muted">Cakupan belum tersedia. Coba muat ulang data dari panel elemen.</p>
+          {:else}
+            <div class="max-h-[420px] space-y-1 overflow-auto pr-1" data-cakupan-tree>
+              <div class="flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                <button type="button" class="rounded p-0.5 text-ink-muted hover:bg-stone-100"
+                  onclick={() => toggleCakupan('groups')}>
+                  {#if isCakupanExpanded('groups')}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
+                </button>
+                <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing" onclick={() => toggleCakupan('groups')}
+                  draggable="true"
+                  data-cakupan-node="groups"
+                  ondragstart={(event) => startCakupanDrag(event, { kind: 'groups' })}
+                  ondragend={endCakupanDrag}>
+                  <span class="block truncate text-[11px] font-semibold text-ink">Semua kelompok</span>
+                  <span class="block text-[10px] text-ink-muted">
+                    {formatNumber(cakupanTotalRows)} kegiatan · {cakupanGroups.length} kelompok
+                  </span>
+                </button>
+                <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                  onclick={() => openCakupanDialog({ kind: 'groups' })}>
+                  <Plus size={12} />
+                </button>
+              </div>
+              {#if isCakupanExpanded('groups')}
+                {#each cakupanGroups as group (group.code)}
+                  <div class="ml-2 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                    <button type="button" class="rounded p-0.5 text-ink-muted hover:bg-stone-100"
+                      onclick={() => toggleCakupan(`group:${group.code}`)}>
+                      {#if isCakupanExpanded(`group:${group.code}`)}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
+                    </button>
+                    <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing" onclick={() => toggleCakupan(`group:${group.code}`)}
+                      draggable="true"
+                      data-cakupan-node={group.code}
+                      ondragstart={(event) => startCakupanDrag(event, { kind: 'group', code: group.code })}
+                      ondragend={endCakupanDrag}>
+                      <span class="block truncate text-[11px] font-semibold text-ink">{group.code} · {group.title}</span>
+                      <span class="block text-[10px] text-ink-muted">
+                        {formatNumber(group.rows)} kegiatan · {group.polres} polres · {group.satker} satker
+                      </span>
+                    </button>
+                    <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                      onclick={() => openCakupanDialog({ kind: 'group', code: group.code })}>
+                      <Plus size={12} />
+                    </button>
+                  </div>
+                  {#if isCakupanExpanded(`group:${group.code}`)}
+                    {#each group.codes as code (code.code)}
+                      <div class="ml-4 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                        <button type="button" class="rounded p-0.5 text-ink-muted hover:bg-stone-100"
+                          onclick={() => toggleCakupan(`code:${code.code}`)}>
+                          {#if isCakupanExpanded(`code:${code.code}`)}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
+                        </button>
+                        <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing" onclick={() => toggleCakupan(`code:${code.code}`)}
+                          draggable="true"
+                          data-cakupan-node={code.code}
+                          ondragstart={(event) => startCakupanDrag(event, { kind: 'code', code: code.code })}
+                          ondragend={endCakupanDrag}>
+                          <span class="block truncate text-[11px] font-medium text-ink">{code.code} · {code.title}</span>
+                          <span class="block text-[10px] text-ink-muted">
+                            {formatNumber(code.rows)} kegiatan · {code.polres} polres · {code.satker} satker
+                          </span>
+                        </button>
+                        <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                          onclick={() => openCakupanDialog({ kind: 'code', code: code.code })}>
+                          <Plus size={12} />
+                        </button>
+                      </div>
+                      {#if isCakupanExpanded(`code:${code.code}`)}
+                        {@render cakupanUnits({
+                          key: `code-polres:${code.code}`,
+                          scope: 'polres',
+                          units: code.by_polres,
+                          node: { kind: 'units', scope: 'polres', code: code.code },
+                        })}
+                        {@render cakupanUnits({
+                          key: `code-satker:${code.code}`,
+                          scope: 'satker',
+                          units: code.by_satker,
+                          node: { kind: 'units', scope: 'satker', code: code.code },
+                        })}
+                      {/if}
+                    {/each}
+                    {@render cakupanUnits({
+                      key: `group-polres:${group.code}`,
+                      scope: 'polres',
+                      units: group.by_polres,
+                      node: { kind: 'units', scope: 'polres', group: group.code },
+                    })}
+                    {@render cakupanUnits({
+                      key: `group-satker:${group.code}`,
+                      scope: 'satker',
+                      units: group.by_satker,
+                      node: { kind: 'units', scope: 'satker', group: group.code },
+                    })}
+                  {/if}
+                {/each}
+              {/if}
+
+              <div class="mt-2 border-t border-line pt-2"></div>
+              <div class="flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                <button type="button" class="rounded p-0.5 text-ink-muted hover:bg-stone-100"
+                  onclick={() => toggleCakupan('programs')}>
+                  {#if isCakupanExpanded('programs')}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
+                </button>
+                <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
+                  onclick={() => toggleCakupan('programs')}
+                  draggable="true"
+                  data-cakupan-node="programs"
+                  ondragstart={(event) => startCakupanDrag(event, { kind: 'programs' })}
+                  ondragend={endCakupanDrag}>
+                  <span class="block truncate text-[11px] font-semibold text-ink">Program prioritas</span>
+                  <span class="block text-[10px] text-ink-muted">
+                    {coverage?.programs.length ?? 0} program · {formatNumber(coverage?.total_rows ?? 0)} kegiatan
+                  </span>
+                </button>
+                <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                  onclick={() => openCakupanDialog({ kind: 'programs' })}>
+                  <Plus size={12} />
+                </button>
+              </div>
+              {#if isCakupanExpanded('programs')}
+                {#each coverage?.programs ?? [] as program (program.key)}
+                  <div class="ml-2 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                    <button type="button" class="rounded p-0.5 text-ink-muted hover:bg-stone-100"
+                      onclick={() => toggleCakupan(`program:${program.key}`)}>
+                      {#if isCakupanExpanded(`program:${program.key}`)}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
+                    </button>
+                    <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
+                      onclick={() => toggleCakupan(`program:${program.key}`)}
+                      draggable="true"
+                      data-cakupan-node={`program:${program.key}`}
+                      ondragstart={(event) => startCakupanDrag(event, { kind: 'program', key: program.key })}
+                      ondragend={endCakupanDrag}>
+                      <span class="block truncate text-[11px] font-semibold text-ink">{program.title}</span>
+                      <span class="block text-[10px] text-ink-muted">
+                        {formatNumber(program.rows)} kegiatan · {program.polres}/{program.polres_total} polres · {program.satker}/{program.satker_total} satker
+                      </span>
+                    </button>
+                    <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                      onclick={() => openCakupanDialog({ kind: 'program', key: program.key })}>
+                      <Plus size={12} />
+                    </button>
+                  </div>
+                  {#if isCakupanExpanded(`program:${program.key}`)}
+                    {#each program.metrics as metric (metric.key)}
+                      <div class="ml-4 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                        <span class="flex w-4 shrink-0 justify-center"><span class="h-1.5 w-1.5 rounded-full bg-gold-400"></span></span>
+                        <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
+                          draggable="true"
+                          data-cakupan-node={`metric:${program.key}:${metric.key}`}
+                          ondragstart={(event) => startCakupanDrag(event, { kind: 'metric', program: program.key, metric: metric.key })}
+                          ondragend={endCakupanDrag}>
+                          <span class="block truncate text-[11px] font-medium text-ink">{metric.label}</span>
+                          <span class="block text-[10px] text-ink-muted">
+                            {cakupanValue(metric.total, metric.unit)} {metric.unit} · {metric.filled_rows}/{metric.filled_rows + metric.missing_rows} baris terisi
+                          </span>
+                        </button>
+                        <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                          onclick={() => openCakupanDialog({ kind: 'metric', program: program.key, metric: metric.key })}>
+                          <Plus size={12} />
+                        </button>
+                      </div>
+                    {/each}
+                    {@render cakupanProgramUnits({
+                      key: `program-polres:${program.key}`,
+                      scope: 'polres',
+                      units: program.by_polres,
+                      program: program.key,
+                    })}
+                    {@render cakupanProgramUnits({
+                      key: `program-satker:${program.key}`,
+                      scope: 'satker',
+                      units: program.by_satker,
+                      program: program.key,
+                    })}
+                  {/if}
+                {/each}
+              {/if}
+            </div>
+          {/if}
+        </div>
+      </section>
 
       <section class="card overflow-hidden">
         <div class="panel-heading">
@@ -5002,10 +6078,11 @@
             <span class="label">Tipe latar</span>
             <select class="input py-1.5 text-xs" value={pageBackgroundMode}
               data-page-background-mode
-              onchange={(event) => setPageBackgroundMode((event.currentTarget as HTMLSelectElement).value as 'solid' | 'linear' | 'radial')}>
+              onchange={(event) => setPageBackgroundMode((event.currentTarget as HTMLSelectElement).value as 'solid' | 'linear' | 'radial' | 'image')}>
               <option value="solid">Warna solid</option>
               <option value="linear">Gradien linear</option>
               <option value="radial">Gradien radial</option>
+              <option value="image">Gambar dari media library</option>
             </select>
           </label>
           {#if pageBackgroundMode === 'solid'}
@@ -5016,6 +6093,29 @@
                 onfocus={pushHistory}
                 oninput={(event) => setPageBackgroundColor((event.currentTarget as HTMLInputElement).value)} />
             </label>
+          {:else if pageBackgroundMode === 'image'}
+            <div class="space-y-2.5 rounded-xl border border-line p-3">
+              {#if pageBackgroundImageSrc(activePage)}
+                <img src={pageBackgroundImageSrc(activePage)} alt="Latar halaman"
+                  class="h-28 w-full rounded-md border border-line object-cover"
+                  data-page-background-preview />
+              {:else}
+                <div class="flex h-28 items-center justify-center rounded-md border border-dashed border-line text-[11px] text-ink-muted">
+                  Belum ada gambar latar
+                </div>
+              {/if}
+              <div class="flex flex-wrap gap-2">
+                <Button variant="secondary" size="sm" onclick={openPageBackgroundMedia}>
+                  <ImagePlus size={13} /> {pageBackgroundImageSrc(activePage) ? 'Ganti gambar' : 'Pilih dari media library'}
+                </Button>
+                {#if pageBackgroundImageSrc(activePage)}
+                  <Button variant="ghost" size="sm" onclick={clearPageBackgroundImage}>Hapus gambar</Button>
+                {/if}
+              </div>
+              <p class="text-[10px] leading-relaxed text-ink-muted">
+                Gambar menutupi seluruh halaman (cover), mengikuti ukuran dan orientasi halaman, serta tidak bisa digeser. Pilih dari media library agar gambar ikut tersimpan di layout dan template.
+              </p>
+            </div>
           {:else}
             <div class="space-y-2.5 rounded-xl border border-line p-3">
               <span class="block h-9 rounded-md border border-line" data-page-gradient-preview
@@ -5328,6 +6428,172 @@
             <span class="mt-1 text-[10px] leading-relaxed text-ink-muted">Tambah teks kosong untuk diisi dan diatur secara bebas.</span>
           </button>
         </div>
+      </Modal>
+    </div>
+  {/if}
+
+  {#if cakupanDialogOpen && cakupanTarget}
+    <div use:portal>
+      <Modal
+        open={true}
+        title={cakupanCardStep ? 'Pilih kartu cakupan' : 'Tambahkan data cakupan'}
+        description={cakupanCardStep
+          ? `${cakupanNodeLabel(cakupanTarget)} · pilih kartu yang ingin dibuat`
+          : `${cakupanNodeLabel(cakupanTarget)}${cakupanDataset ? ` · ${cakupanDataset.items.length} data` : ''}`}
+        onclose={closeCakupanDialog}
+        width="max-w-2xl"
+      >
+        {#if cakupanCardStep && cakupanDataset}
+          <div class="space-y-3">
+            <div class="grid gap-2 sm:grid-cols-3">
+              <button
+                type="button"
+                class="rounded-2xl border p-3 text-left transition-colors hover:border-gold-300 {cakupanCardScope === 'summary' ? 'border-gold-300 bg-gold-50/50' : 'border-line bg-white'}"
+                data-cakupan-card-scope="summary"
+                onclick={() => (cakupanCardScope = 'summary')}
+              >
+                <span class="block text-sm font-semibold text-ink">1 kartu ringkasan</span>
+                <span class="mt-1 block text-[10px] leading-relaxed text-ink-muted">
+                  Total {formatNumber(cakupanDataset.summaryValue)} kegiatan dari seluruh data.
+                </span>
+                <span class="mt-1 block truncate text-[10px] font-medium text-forest-700">{cakupanDataset.summaryLabel}</span>
+              </button>
+              <button
+                type="button"
+                class="rounded-2xl border p-3 text-left transition-colors hover:border-gold-300 {cakupanCardScope === 'all' ? 'border-gold-300 bg-gold-50/50' : 'border-line bg-white'}"
+                data-cakupan-card-scope="all"
+                onclick={() => (cakupanCardScope = 'all')}
+              >
+                <span class="block text-sm font-semibold text-ink">Semua kartu</span>
+                <span class="mt-1 block text-[10px] leading-relaxed text-ink-muted">
+                  {cakupanDataset.items.length} kartu, satu kartu untuk setiap data.
+                </span>
+              </button>
+              <button
+                type="button"
+                class="rounded-2xl border p-3 text-left transition-colors hover:border-gold-300 {cakupanCardScope === 'pick' ? 'border-gold-300 bg-gold-50/50' : 'border-line bg-white'}"
+                data-cakupan-card-scope="pick"
+                onclick={() => (cakupanCardScope = 'pick')}
+              >
+                <span class="block text-sm font-semibold text-ink">Pilih sebagian</span>
+                <span class="mt-1 block text-[10px] leading-relaxed text-ink-muted">
+                  Centang hanya kartu yang ingin ditampilkan.
+                </span>
+              </button>
+            </div>
+
+            {#if cakupanCardScope === 'pick'}
+              <div class="overflow-hidden rounded-xl border border-line">
+                <div class="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-stone-50/60 px-3 py-2">
+                  <span class="text-[10px] text-ink-muted">{cakupanCardPicks.length} dari {cakupanDataset.items.length} dipilih</span>
+                  <div class="flex gap-1">
+                    <Button variant="ghost" size="sm" onclick={selectAllCakupanPicks}>Pilih semua</Button>
+                    <Button variant="ghost" size="sm" onclick={clearCakupanPicks}>Kosongkan</Button>
+                  </div>
+                </div>
+                <div class="max-h-56 overflow-auto p-2">
+                  {#each cakupanDataset.items as item, index (index)}
+                    <label class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[11px] hover:bg-stone-50">
+                      <input
+                        type="checkbox"
+                        class="h-3.5 w-3.5"
+                        checked={cakupanCardPicks.includes(index)}
+                        data-cakupan-card-pick={index}
+                        onchange={() => toggleCakupanPick(index)}
+                      />
+                      <span class="min-w-0 flex-1 truncate">{item.label}</span>
+                      <span class="shrink-0 font-semibold text-ink">{formatNumber(item.value)}</span>
+                    </label>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
+            <label class="flex items-center gap-2 text-[11px] text-ink-muted">
+              <input
+                type="checkbox"
+                class="h-3.5 w-3.5"
+                checked={cakupanCardGroup}
+                data-cakupan-card-group
+                onchange={(event) => (cakupanCardGroup = (event.currentTarget as HTMLInputElement).checked)}
+              />
+              Gabungkan kartu agar bergerak bersama (opsional)
+            </label>
+
+            <div class="flex flex-wrap items-center justify-end gap-2 border-t border-line pt-3">
+              <Button variant="ghost" size="sm" onclick={() => (cakupanCardStep = false)}>Kembali</Button>
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={cakupanCardScope === 'pick' && !cakupanCardPicks.length}
+                onclick={applyCakupanCards}
+              >
+                Buat kartu
+              </Button>
+            </div>
+          </div>
+        {:else}
+          <div class="grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              class="flex items-start gap-3 rounded-2xl border border-line bg-white p-4 text-left transition-colors hover:border-gold-300 hover:bg-gold-50/40"
+              data-cakupan-mode="chart"
+              onclick={() => insertCakupan('chart')}
+            >
+              <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-forest-50 text-forest-700"><BarChart3 size={17} /></span>
+              <span>
+                <span class="block text-sm font-semibold text-ink">Grafik batang</span>
+                <span class="mt-1 block text-[10px] leading-relaxed text-ink-muted">Bandingkan jumlah kegiatan antar data.</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              class="flex items-start gap-3 rounded-2xl border border-line bg-white p-4 text-left transition-colors hover:border-gold-300 hover:bg-gold-50/40"
+              data-cakupan-mode="hbar"
+              onclick={() => insertCakupan('hbar')}
+            >
+              <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gold-50 text-gold-700"><AlignLeft size={17} /></span>
+              <span>
+                <span class="block text-sm font-semibold text-ink">Grafik bar samping</span>
+                <span class="mt-1 block text-[10px] leading-relaxed text-ink-muted">Cocok untuk label panjang seperti nama polres atau satker.</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              class="flex items-start gap-3 rounded-2xl border border-line bg-white p-4 text-left transition-colors hover:border-gold-300 hover:bg-gold-50/40"
+              data-cakupan-mode="table"
+              onclick={() => insertCakupan('table')}
+            >
+              <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-stone-100 text-ink-soft"><Table2 size={17} /></span>
+              <span>
+                <span class="block text-sm font-semibold text-ink">Tabel</span>
+                <span class="mt-1 block text-[10px] leading-relaxed text-ink-muted">Tampilkan rincian angka dalam baris dan kolom.</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              class="flex items-start gap-3 rounded-2xl border border-line bg-white p-4 text-left transition-colors hover:border-gold-300 hover:bg-gold-50/40"
+              data-cakupan-mode="cards"
+              onclick={() => insertCakupan('cards')}
+            >
+              <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-forest-50 text-forest-700"><CreditCard size={17} /></span>
+              <span>
+                <span class="block text-sm font-semibold text-ink">Kartu</span>
+                <span class="mt-1 block text-[10px] leading-relaxed text-ink-muted">
+                  {cakupanDataset?.items.length ?? 0} data tersedia. Pilih ringkasan, semua, atau sebagian.
+                </span>
+              </span>
+            </button>
+          </div>
+          {#if cakupanDataset && !cakupanDataset.items.length}
+            <p class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+              Belum ada data untuk pilihan ini.
+            </p>
+          {/if}
+          <p class="mt-3 text-[10px] leading-relaxed text-ink-muted">
+            Elemen dibuat dari data cakupan periode ini dan bisa diedit setelah ditambahkan. Kartu tidak digabung secara default sehingga setiap kartu bisa digeser sendiri; centang Gabungkan bila ingin bergerak bersama.
+          </p>
+        {/if}
       </Modal>
     </div>
   {/if}

@@ -4,7 +4,7 @@ use crate::{
     modules::imports::{
         models::{
             CoverageCode, CoverageGroup, CoverageMetric, CoverageProgram, CoverageResponse,
-            CoverageUnit, CoverageUnitValue, RecordView,
+            CoverageUnit, CoverageUnitCount, CoverageUnitValue, RecordView,
         },
         qw,
     },
@@ -295,6 +295,42 @@ const PROGRAM_SPECS: &[ProgramSpec] = &[
     },
 ];
 
+type UnitCountMap = BTreeMap<&'static str, BTreeMap<String, (String, i64)>>;
+
+fn unit_count_map(keys: impl Iterator<Item = &'static str>) -> UnitCountMap {
+    keys.map(|key| (key, BTreeMap::new())).collect()
+}
+
+fn bump_unit_count(map: &mut UnitCountMap, code: &'static str, key: &str, label: &str) {
+    if let Some(counts) = map.get_mut(code) {
+        let entry = counts
+            .entry(key.to_string())
+            .or_insert((label.to_string(), 0));
+        entry.1 += 1;
+    }
+}
+
+fn unit_counts(counts: Option<&BTreeMap<String, (String, i64)>>) -> Vec<CoverageUnitCount> {
+    let mut items: Vec<CoverageUnitCount> = counts
+        .map(|counts| {
+            counts
+                .values()
+                .map(|(label, rows)| CoverageUnitCount {
+                    label: label.clone(),
+                    rows: *rows,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    items.sort_by(|left, right| {
+        right
+            .rows
+            .cmp(&left.rows)
+            .then_with(|| left.label.to_lowercase().cmp(&right.label.to_lowercase()))
+    });
+    items
+}
+
 pub fn build_coverage(start: &str, end: &str, rows: &[RecordView]) -> CoverageResponse {
     let known = KnownUnits::from_rows(rows);
 
@@ -318,6 +354,10 @@ pub fn build_coverage(start: &str, end: &str, rows: &[RecordView]) -> CoverageRe
         .iter()
         .map(|code| (code.code, BTreeSet::new()))
         .collect();
+    let mut group_polres_counts = unit_count_map(qw::GROUPS.iter().map(|group| group.code));
+    let mut group_satker_counts = unit_count_map(qw::GROUPS.iter().map(|group| group.code));
+    let mut code_polres_counts = unit_count_map(qw::CODES.iter().map(|code| code.code));
+    let mut code_satker_counts = unit_count_map(qw::CODES.iter().map(|code| code.code));
     let mut active_polres = BTreeSet::new();
     let mut active_satker = BTreeSet::new();
 
@@ -335,14 +375,16 @@ pub fn build_coverage(start: &str, end: &str, rows: &[RecordView]) -> CoverageRe
                 Scope::Polres => {
                     active_polres.insert(key.clone());
                     if let Some(set) = group_polres.get_mut(group.code) {
-                        set.insert(key);
+                        set.insert(key.clone());
                     }
+                    bump_unit_count(&mut group_polres_counts, group.code, &key, &label);
                 }
                 Scope::Satker => {
                     active_satker.insert(key.clone());
                     if let Some(set) = group_satker.get_mut(group.code) {
-                        set.insert(key);
+                        set.insert(key.clone());
                     }
+                    bump_unit_count(&mut group_satker_counts, group.code, &key, &label);
                 }
             }
         }
@@ -358,13 +400,15 @@ pub fn build_coverage(start: &str, end: &str, rows: &[RecordView]) -> CoverageRe
             match scope {
                 Scope::Polres => {
                     if let Some(set) = code_polres.get_mut(item.code) {
-                        set.insert(key);
+                        set.insert(key.clone());
                     }
+                    bump_unit_count(&mut code_polres_counts, item.code, &key, &label);
                 }
                 Scope::Satker => {
                     if let Some(set) = code_satker.get_mut(item.code) {
-                        set.insert(key);
+                        set.insert(key.clone());
                     }
+                    bump_unit_count(&mut code_satker_counts, item.code, &key, &label);
                 }
             }
         }
@@ -389,6 +433,8 @@ pub fn build_coverage(start: &str, end: &str, rows: &[RecordView]) -> CoverageRe
                         satker: performed_satker.len() as i64,
                         polres_missing: known.total(Scope::Polres) - performed_polres.len() as i64,
                         satker_missing: known.total(Scope::Satker) - performed_satker.len() as i64,
+                        by_polres: unit_counts(code_polres_counts.get(code.code)),
+                        by_satker: unit_counts(code_satker_counts.get(code.code)),
                     }
                 })
                 .collect();
@@ -400,6 +446,8 @@ pub fn build_coverage(start: &str, end: &str, rows: &[RecordView]) -> CoverageRe
                 satker: performed_satker.len() as i64,
                 polres_missing: known.missing(Scope::Polres, &performed_polres),
                 satker_missing: known.missing(Scope::Satker, &performed_satker),
+                by_polres: unit_counts(group_polres_counts.get(group.code)),
+                by_satker: unit_counts(group_satker_counts.get(group.code)),
                 codes,
             }
         })
@@ -463,6 +511,7 @@ fn build_program(spec: &ProgramSpec, rows: &[RecordView], known: &KnownUnits) ->
                     satker_acc.entry(key).or_insert_with(|| UnitAcc::new(label))
                 }
             };
+            acc.rows += 1;
             for metric in spec.metrics {
                 acc.add(metric, metric_sample(row, metric.kind));
             }
@@ -594,7 +643,6 @@ impl UnitAcc {
     }
 
     fn add(&mut self, metric: &MetricSpec, sample: MetricSample) {
-        self.rows += 1;
         match sample {
             MetricSample::Number { value, filled } => {
                 if filled {
@@ -1067,10 +1115,19 @@ mod tests {
         assert_eq!(qw1.rows, 4);
         assert_eq!(qw1.polres, 2);
         assert_eq!(qw1.satker, 1);
+        assert_eq!(qw1.by_polres.len(), 2);
+        assert_eq!(qw1.by_polres[0].label, "Polres Badung");
+        assert_eq!(qw1.by_polres[0].rows, 1);
+        assert_eq!(qw1.by_satker.len(), 1);
+        assert_eq!(qw1.by_satker[0].label, "Propam");
+        assert_eq!(qw1.by_satker[0].rows, 2);
         let qw15 = qw1.codes.iter().find(|code| code.code == "QW1.5").unwrap();
         assert_eq!(qw15.rows, 2);
         assert_eq!(qw15.polres, 1);
         assert_eq!(qw15.satker, 1);
+        assert_eq!(qw15.by_polres.len(), 1);
+        assert_eq!(qw15.by_polres[0].label, "Polres Tabanan");
+        assert_eq!(qw15.by_polres[0].rows, 1);
         let qw17 = qw1.codes.iter().find(|code| code.code == "QW1.7").unwrap();
         assert_eq!(qw17.rows, 2);
         assert_eq!(qw17.polres, 1);

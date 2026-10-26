@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    modules::reports::layout::ReportLayout,
+    modules::{imports::models::CoverageResponse, reports::layout::ReportLayout},
     shared::types::{LabeledCount, UnitBreakdown},
 };
 
@@ -221,4 +221,8 @@ pub struct ReportMetrics {
     pub follow_up: FollowUpMetrics,
     pub media: MediaMetrics,
     pub highlights: Vec<RowSummary>,
+    /// Ringkasan cakupan per program, dipakai katalog sumber data desain.
+    /// Tidak ikut diserialisasi karena hanya dibutuhkan saat menyusun sumber.
+    #[serde(skip)]
+    pub coverage: Option<CoverageResponse>,
 }

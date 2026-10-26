@@ -309,7 +309,7 @@ pub struct QuickWinDetailResponse {
     pub activities: Vec<QuickWinActivity>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct CoverageResponse {
     pub date_start: String,
     pub date_end: String,
@@ -322,7 +322,7 @@ pub struct CoverageResponse {
     pub programs: Vec<CoverageProgram>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct CoverageGroup {
     pub code: String,
     pub title: String,
@@ -331,10 +331,12 @@ pub struct CoverageGroup {
     pub satker: i64,
     pub polres_missing: Vec<String>,
     pub satker_missing: Vec<String>,
+    pub by_polres: Vec<CoverageUnitCount>,
+    pub by_satker: Vec<CoverageUnitCount>,
     pub codes: Vec<CoverageCode>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct CoverageCode {
     pub code: String,
     pub title: String,
@@ -343,9 +345,17 @@ pub struct CoverageCode {
     pub satker: i64,
     pub polres_missing: i64,
     pub satker_missing: i64,
+    pub by_polres: Vec<CoverageUnitCount>,
+    pub by_satker: Vec<CoverageUnitCount>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
+pub struct CoverageUnitCount {
+    pub label: String,
+    pub rows: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct CoverageProgram {
     pub key: String,
     pub title: String,
@@ -362,7 +372,7 @@ pub struct CoverageProgram {
     pub by_satker: Vec<CoverageUnit>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct CoverageMetric {
     pub key: String,
     pub label: String,
@@ -374,7 +384,7 @@ pub struct CoverageMetric {
     pub filled_satker: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct CoverageUnit {
     pub label: String,
     pub rows: i64,
@@ -382,7 +392,7 @@ pub struct CoverageUnit {
     pub missing: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct CoverageUnitValue {
     pub key: String,
     pub value: f64,

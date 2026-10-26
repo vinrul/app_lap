@@ -127,7 +127,7 @@ export interface LayoutPage {
   blocks: Record<string, LayoutBlockOffset>
   elements: LayoutElement[]
   background?: string
-  background_mode?: 'solid' | 'linear' | 'radial'
+  background_mode?: 'solid' | 'linear' | 'radial' | 'image'
   gradient_angle?: number
   gradient_colors?: string[]
 }
@@ -577,6 +577,8 @@ export interface CoverageGroup {
   satker: number
   polres_missing: string[]
   satker_missing: string[]
+  by_polres: CoverageUnitCount[]
+  by_satker: CoverageUnitCount[]
   codes: CoverageCode[]
 }
 
@@ -588,6 +590,13 @@ export interface CoverageCode {
   satker: number
   polres_missing: number
   satker_missing: number
+  by_polres: CoverageUnitCount[]
+  by_satker: CoverageUnitCount[]
+}
+
+export interface CoverageUnitCount {
+  label: string
+  rows: number
 }
 
 export interface CoverageProgram {
