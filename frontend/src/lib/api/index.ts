@@ -157,10 +157,11 @@ export const publicShareApi = {
 export const designApi = {
   getLayout: (periodId: string) =>
     request<LayoutView>(`/periods/${periodId}/layout`),
-  saveLayout: (periodId: string, layout: ReportLayout) =>
+  saveLayout: (periodId: string, layout: ReportLayout, keepalive = false) =>
     request<LayoutView>(`/periods/${periodId}/layout`, {
       method: 'PUT',
       body: JSON.stringify({ layout }),
+      keepalive,
     }),
   uploadImage: async (periodId: string, file: File) => {
     const form = new FormData()

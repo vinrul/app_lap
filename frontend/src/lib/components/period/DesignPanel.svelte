@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick, untrack } from 'svelte'
+  import { onDestroy, tick, untrack } from 'svelte'
   import {
     AlertCircle,
     AlignLeft,
@@ -26,6 +26,7 @@
     Minus,
     Plus,
     Redo2,
+    RefreshCw,
     Save,
     Share2,
     Shapes,
@@ -54,9 +55,17 @@
   import { shapeCatalog, shapeDefinition, shapeLabel, type ShapeDefinition } from '../../shapes/catalog'
   import { emptyContent } from '../../utils/constants'
   import { cardTemplate, type CardTemplateId } from '../../utils/cardTemplates'
+  import {
+    clearDesignDraft,
+    layoutsMatch,
+    parseDesignDraftLayout,
+    readDesignDraft,
+    writeDesignDraft,
+  } from '../../utils/designDraft'
   import { formatDate, formatDateTime, formatMonthYear, formatRange } from '../../utils/format'
   import { toast } from '../../stores/toast.svelte'
   import { dialog } from '../../stores/dialog.svelte'
+  import { auth } from '../../stores/auth.svelte'
   import Button from '../ui/Button.svelte'
   import EmptyState from '../ui/EmptyState.svelte'
   import Modal from '../ui/Modal.svelte'
@@ -108,6 +117,9 @@
   const MAX_ZOOM = 2
   const MAX_HISTORY = 40
   const MAX_BLANK_PAGES = 30
+  const AUTOSAVE_DEBOUNCE_MS = 2_000
+  const AUTOSAVE_MAX_WAIT_MS = 30_000
+  const AUTOSAVE_RETRY_MS = 15_000
 
   let {
     periodId,
@@ -144,6 +156,10 @@
   let choosingTemplate = $state(false)
   let loading = $state(true)
   let saving = $state(false)
+  let autosaveReady = $state(false)
+  let autosaveState = $state<'idle' | 'saved' | 'error'>('idle')
+  let autosaveError = $state('')
+  let lastSaveMode = $state<'manual' | 'auto' | null>(null)
   let generating = $state(false)
   let sharing = $state(false)
   let shareTarget = $state<ReportView | null>(null)
@@ -173,9 +189,18 @@
   let canvasRequest = 0
   let boundDoc: Document | null = null
   let drag: DragState | null = null
+  let autosaveTimer: ReturnType<typeof setTimeout> | null = null
+  let autosaveMaxTimer: ReturnType<typeof setTimeout> | null = null
+  let autosaveRetryTimer: ReturnType<typeof setTimeout> | null = null
+  let autosaveQueued = false
+  let activeSavePromise: Promise<boolean> | null = null
+  let autosaveErrorNotified = false
+  let localDraftAt = $state<string | null>(null)
+  let draftUnavailable = $state(false)
   const defaultTexts = new Map<string, string>()
 
   const hasImport = $derived(detail.imports.length > 0)
+  const draftOwner = $derived(auth.user?.id ?? 'anon')
   const dirty = $derived(JSON.stringify(layout) !== savedJson)
   const pageNumbers = $derived(Array.from({ length: layout.pages.length }, (_, index) => index + 1))
   const periodDateText = $derived.by(() => {
@@ -276,6 +301,38 @@
     if (key === loadedKey) return
     loadedKey = key
     untrack(() => void load())
+  })
+
+  $effect(() => {
+    const json = JSON.stringify(layout)
+    if (!autosaveReady || loading || choosingTemplate || !hasImport) return
+    if (json === savedJson) {
+      clearAutosaveTimers()
+      return
+    }
+    scheduleAutosave()
+  })
+
+  $effect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        if (dirty && autosaveReady) void autosaveNow()
+      } else if (dirty) {
+        scheduleAutosave()
+      }
+    }
+    const onPageHide = () => flushOnPageHide()
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pagehide', onPageHide)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pagehide', onPageHide)
+    }
+  })
+
+  onDestroy(() => {
+    clearAutosaveTimers()
+    flushOnPageHide()
   })
 
   $effect(() => {
@@ -750,6 +807,7 @@
       confirmLabel: 'Terapkan',
     })
     if (!confirmed) return
+    if (!(await flushAutosave())) return
     templateBusy = true
     const before = cloneLayout(layout)
     try {
@@ -760,6 +818,14 @@
       updatedAt = view.updated_at
       updatedBy = view.updated_by
       hasSavedDesign = true
+      autosaveReady = true
+      autosaveState = 'idle'
+      autosaveError = ''
+      lastSaveMode = null
+      clearAutosaveTimers()
+      clearDesignDraft(periodId, draftOwner)
+      localDraftAt = null
+      draftUnavailable = false
       choosingTemplate = false
       selected = null
       checkedIds = []
@@ -888,7 +954,17 @@
   }
 
   async function load() {
+    const targetPeriod = periodId
+    clearAutosaveTimers()
     loading = true
+    autosaveReady = false
+    autosaveState = 'idle'
+    autosaveError = ''
+    autosaveQueued = false
+    autosaveErrorNotified = false
+    lastSaveMode = null
+    localDraftAt = null
+    draftUnavailable = false
     error = ''
     selected = null
     contextMenu = null
@@ -910,35 +986,96 @@
       hasSavedDesign = false
       choosingTemplate = false
       iframeHtml = ''
+      autosaveReady = false
       loading = false
       return
     }
     try {
       const [draft, layoutView, sourceList, templateList] = await Promise.all([
-        reportsApi.getDraft(periodId),
-        designApi.getLayout(periodId),
-        designApi.sources(periodId),
+        reportsApi.getDraft(targetPeriod),
+        designApi.getLayout(targetPeriod),
+        designApi.sources(targetPeriod),
         designApi.templates(),
       ])
+      if (targetPeriod !== periodId) return
       content = { ...emptyContent, ...draft.content }
-      layout = normalizeLayout(layoutView.layout)
       sources = sourceList
       templates = templateList
-      hasSavedDesign = layoutView.updated_at !== null
-      choosingTemplate = !hasSavedDesign
-      savedJson = hasSavedDesign ? JSON.stringify(layout) : ''
+
+      const serverLayout = normalizeLayout(layoutView.layout)
+      const serverSaved = layoutView.updated_at !== null
+      const serverJson = serverSaved ? JSON.stringify(serverLayout) : ''
+      let restoredLayout: ReportLayout | null = null
+      let restoredAt: string | null = null
+
+      const localDraft = readDesignDraft(targetPeriod, draftOwner)
+      if (localDraft) {
+        const draftLayout = parseDesignDraftLayout(localDraft)
+        if (!draftLayout) {
+          clearDesignDraft(targetPeriod, draftOwner)
+        } else {
+          const normalizedDraft = normalizeLayout(draftLayout)
+          if (serverSaved && layoutsMatch(normalizedDraft, serverLayout)) {
+            clearDesignDraft(targetPeriod, draftOwner)
+          } else {
+            const draftTime = formatDateTime(localDraft.savedAt)
+            const serverInfo = serverSaved
+              ? `Versi server terakhir disimpan ${formatDateTime(layoutView.updated_at)}${layoutView.updated_by ? ` oleh ${layoutView.updated_by}` : ''}.`
+              : 'Desain ini belum pernah disimpan di server.'
+            const changedOnServer =
+              serverSaved && localDraft.baseUpdatedAt !== layoutView.updated_at
+            const message = [
+              `Draft lokal disimpan ${draftTime}.`,
+              serverInfo,
+              changedOnServer
+                ? 'Desain di server sudah berubah sejak draft dibuat; memulihkan draft akan menimpa versi server.'
+                : '',
+              'Pulihkan draft lokal?',
+            ]
+              .filter(Boolean)
+              .join(' ')
+            const restore = await dialog.confirm({
+              title: 'Draft lokal ditemukan',
+              message,
+              confirmLabel: 'Pulihkan draft',
+              cancelLabel: serverSaved ? 'Pakai versi server' : 'Buang draft',
+            })
+            if (targetPeriod !== periodId) return
+            if (restore) {
+              restoredLayout = normalizedDraft
+              restoredAt = localDraft.savedAt
+            } else {
+              clearDesignDraft(targetPeriod, draftOwner)
+            }
+          }
+        }
+      }
+
+      layout = restoredLayout ?? serverLayout
+      hasSavedDesign = serverSaved
+      choosingTemplate = !serverSaved && !restoredLayout
+      savedJson = serverJson
       updatedAt = layoutView.updated_at
       updatedBy = layoutView.updated_by
-      if (hasSavedDesign) {
-        const preview = await reportsApi.preview(periodId, content, layout)
+      localDraftAt = restoredAt
+      autosaveReady = true
+      autosaveState = 'idle'
+      autosaveError = ''
+      lastSaveMode = null
+      if (restoredLayout) toast.success('Draft lokal dipulihkan.')
+      if (hasSavedDesign || restoredLayout) {
+        const preview = await reportsApi.preview(targetPeriod, content, layout)
+        if (targetPeriod !== periodId) return
         iframeHtml = preview.html
       } else {
         iframeHtml = ''
       }
     } catch (caught) {
+      if (targetPeriod !== periodId) return
       error = errorMessage(caught)
+      autosaveReady = false
     } finally {
-      loading = false
+      if (targetPeriod === periodId) loading = false
     }
   }
 
@@ -2323,6 +2460,7 @@
     }
     drag = null
     applyLayoutToDom()
+    scheduleAutosave()
   }
 
   function pushSnapshot(snapshot: ReportLayout) {
@@ -2369,6 +2507,7 @@
       confirmLabel: 'Mulai blank',
     })
     if (!confirmed) return
+    if (!(await flushAutosave())) return
     pushHistory()
     layout = {
       version: 1,
@@ -2384,6 +2523,9 @@
     selected = null
     checkedIds = []
     void refreshCanvasStructure()
+    clearDesignDraft(periodId, draftOwner)
+    localDraftAt = null
+    draftUnavailable = false
   }
 
   function chooseBlank() {
@@ -2405,8 +2547,16 @@
     redoStack = []
     savedJson = ''
     choosingTemplate = false
+    autosaveReady = true
+    autosaveState = 'idle'
+    autosaveError = ''
+    lastSaveMode = null
+    clearDesignDraft(periodId, draftOwner)
+    localDraftAt = null
+    draftUnavailable = false
     toast.success('Dokumen kosong siap disusun.')
     void refreshCanvasStructure()
+    scheduleAutosave()
   }
 
   async function useTemplateFromChooser(templateId: string) {
@@ -2422,6 +2572,14 @@
       updatedAt = view.updated_at
       updatedBy = view.updated_by
       hasSavedDesign = true
+      autosaveReady = true
+      autosaveState = 'idle'
+      autosaveError = ''
+      lastSaveMode = null
+      clearAutosaveTimers()
+      clearDesignDraft(periodId, draftOwner)
+      localDraftAt = null
+      draftUnavailable = false
       choosingTemplate = false
       selected = null
       checkedIds = []
@@ -3225,39 +3383,261 @@
     return Number.isFinite(parsed) ? parsed : 0
   }
 
-  async function save(silent = false): Promise<boolean> {
+  function clearAutosaveTimers(): void {
+    if (autosaveTimer !== null) {
+      clearTimeout(autosaveTimer)
+      autosaveTimer = null
+    }
+    if (autosaveMaxTimer !== null) {
+      clearTimeout(autosaveMaxTimer)
+      autosaveMaxTimer = null
+    }
+    if (autosaveRetryTimer !== null) {
+      clearTimeout(autosaveRetryTimer)
+      autosaveRetryTimer = null
+    }
+  }
+
+  function canAutosave(): boolean {
+    return (
+      hasImport &&
+      autosaveReady &&
+      !loading &&
+      !choosingTemplate &&
+      !drag &&
+      !generating &&
+      !sharing &&
+      !previewing
+    )
+  }
+
+  function scheduleAutosave(delay = AUTOSAVE_DEBOUNCE_MS): void {
+    if (!canAutosave() || !dirty) return
+    if (autosaveTimer !== null) clearTimeout(autosaveTimer)
+    if (autosaveRetryTimer !== null) {
+      clearTimeout(autosaveRetryTimer)
+      autosaveRetryTimer = null
+    }
+    autosaveTimer = setTimeout(() => {
+      autosaveTimer = null
+      void autosaveNow()
+    }, delay)
+    if (autosaveMaxTimer === null) {
+      autosaveMaxTimer = setTimeout(() => {
+        autosaveMaxTimer = null
+        if (autosaveTimer !== null) {
+          clearTimeout(autosaveTimer)
+          autosaveTimer = null
+        }
+        void autosaveNow()
+      }, AUTOSAVE_MAX_WAIT_MS)
+    }
+  }
+
+  function scheduleAutosaveRetry(): void {
+    if (autosaveRetryTimer !== null) clearTimeout(autosaveRetryTimer)
+    autosaveRetryTimer = setTimeout(() => {
+      autosaveRetryTimer = null
+      void autosaveNow()
+    }, AUTOSAVE_RETRY_MS)
+  }
+
+  async function autosaveNow(): Promise<void> {
+    if (!canAutosave() || !dirty) {
+      if (!dirty) clearAutosaveTimers()
+      return
+    }
+    if (saving) {
+      autosaveQueued = true
+      return
+    }
+
+    const targetPeriod = periodId
+    clearAutosaveTimers()
+    autosaveQueued = false
+    autosaveError = ''
+    const task = performSave({ silent: true, auto: true })
+    activeSavePromise = task
+    const ok = await task
+    if (activeSavePromise === task) activeSavePromise = null
+    if (targetPeriod !== periodId) return
+
+    if (ok) {
+      autosaveError = ''
+      autosaveErrorNotified = false
+      autosaveState = 'saved'
+      lastSaveMode = 'auto'
+      if (dirty) scheduleAutosave()
+    } else {
+      autosaveState = 'error'
+      if (!autosaveErrorNotified) {
+        autosaveErrorNotified = true
+        toast.error(
+          localDraftAt
+            ? 'Auto-save gagal. Draft tersimpan di browser.'
+            : 'Auto-save gagal. Perubahan belum tersimpan.',
+        )
+      }
+      scheduleAutosaveRetry()
+    }
+
+    if (autosaveQueued) {
+      autosaveQueued = false
+      if (dirty) scheduleAutosave()
+    }
+  }
+
+  async function performSave(options: { silent: boolean; auto: boolean }): Promise<boolean> {
     if (!hasImport) return false
+    const targetPeriod = periodId
+    const snapshot = cloneLayout(layout)
+    const snapshotJson = JSON.stringify(snapshot)
+    if (snapshotJson === savedJson) {
+      if (localDraftAt) {
+        clearDesignDraft(targetPeriod, draftOwner)
+        localDraftAt = null
+      }
+      if (!options.auto && !options.silent) toast.success('Layout desain tersimpan.')
+      return true
+    }
+
+    const draft = writeDesignDraft(targetPeriod, snapshot, updatedAt, draftOwner)
+    if (draft) {
+      localDraftAt = draft.savedAt
+      draftUnavailable = false
+    } else {
+      localDraftAt = null
+      draftUnavailable = true
+    }
+
     saving = true
-    error = ''
-    const beforeStructure = layoutStructure(layout)
+    if (!options.auto) {
+      error = ''
+      autosaveState = 'idle'
+      autosaveError = ''
+    }
+    const beforeStructure = layoutStructure(snapshot)
+
     try {
-      const view = await designApi.saveLayout(periodId, layout)
-      const previous = selected
-      layout = normalizeLayout(view.layout)
-      savedJson = JSON.stringify(layout)
+      const view = await designApi.saveLayout(targetPeriod, snapshot)
+      if (targetPeriod !== periodId) return false
+      clearDesignDraft(targetPeriod, draftOwner)
+      localDraftAt = null
+      draftUnavailable = false
+      const unchanged = JSON.stringify(layout) === snapshotJson
+      if (!options.auto && unchanged) {
+        const previous = selected
+        const normalized = normalizeLayout(view.layout)
+        layout = normalized
+        savedJson = JSON.stringify(normalized)
+        if (previous?.kind === 'element' && !getElement(previous.page, previous.id)) {
+          selected = null
+        } else {
+          selected = previous
+        }
+        applyLayoutToDom()
+        if (layoutStructure(normalized) !== beforeStructure) void refreshCanvasStructure()
+      } else {
+        // Autosave tidak mengganti layout/DOM agar fokus edit teks dan drag
+        // tidak terganggu. Simpan hanya penanda versi yang sudah tersimpan.
+        savedJson = snapshotJson
+      }
       updatedAt = view.updated_at
       updatedBy = view.updated_by
       hasSavedDesign = true
-      if (previous?.kind === 'element' && !getElement(previous.page, previous.id)) {
-        selected = null
-      } else {
-        selected = previous
-      }
-      applyLayoutToDom()
-      if (layoutStructure(layout) !== beforeStructure) void refreshCanvasStructure()
-      if (!silent) toast.success('Layout desain tersimpan.')
+      autosaveReady = true
+      lastSaveMode = options.auto ? 'auto' : 'manual'
+      autosaveState = options.auto ? 'saved' : 'idle'
+      autosaveError = ''
+      autosaveErrorNotified = false
+      if (!options.silent) toast.success('Layout desain tersimpan.')
       return true
     } catch (caught) {
-      error = errorMessage(caught)
+      const message = errorMessage(caught)
+      if (options.auto) {
+        autosaveError = message
+      } else {
+        error = message
+      }
       return false
     } finally {
       saving = false
     }
   }
 
+  async function save(silent = false): Promise<boolean> {
+    if (!hasImport) return false
+    const targetPeriod = periodId
+    clearAutosaveTimers()
+    autosaveQueued = false
+
+    if (saving) {
+      const current = activeSavePromise
+      if (current) await current
+      if (targetPeriod !== periodId) return false
+      if (!dirty) return true
+    }
+
+    const task = performSave({ silent, auto: false })
+    activeSavePromise = task
+    const ok = await task
+    if (activeSavePromise === task) activeSavePromise = null
+    if (targetPeriod !== periodId) return false
+    if (ok && dirty) scheduleAutosave()
+    if (autosaveQueued) {
+      autosaveQueued = false
+      if (dirty) scheduleAutosave()
+    }
+    return ok
+  }
+
+  async function flushAutosave(): Promise<boolean> {
+    clearAutosaveTimers()
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (saving) {
+        const current = activeSavePromise
+        if (current) await current
+      }
+      if (!dirty) return true
+      const ok = await save(true)
+      if (!ok) return false
+      if (!dirty) return true
+    }
+    if (dirty) {
+      error = 'Perubahan desain belum selesai disimpan. Coba lagi.'
+      return false
+    }
+    return true
+  }
+
+  function flushOnPageHide(): void {
+    if (!hasImport || !autosaveReady || !dirty) return
+    clearAutosaveTimers()
+    const snapshot = cloneLayout(layout)
+    const draft = writeDesignDraft(periodId, snapshot, updatedAt, draftOwner)
+    if (draft) localDraftAt = draft.savedAt
+    void designApi.saveLayout(periodId, snapshot, true).catch(() => {})
+  }
+
+  async function discardLocalDraft(): Promise<void> {
+    if (!localDraftAt && !draftUnavailable) return
+    const confirmed = await dialog.confirm({
+      title: 'Buang draft lokal?',
+      message:
+        'Salinan lokal periode ini akan dihapus. Desain yang sedang diedit tetap ada di layar dan akan dicoba disimpan lagi.',
+      confirmLabel: 'Buang draft',
+      tone: 'danger',
+    })
+    if (!confirmed) return
+    clearDesignDraft(periodId, draftOwner)
+    localDraftAt = null
+    draftUnavailable = false
+    toast.success('Draft lokal dibuang.')
+  }
+
   async function preview() {
     if (!hasImport) return
-    if (dirty && !(await save(true))) return
+    if (!(await flushAutosave())) return
     const target = window.open('', '_blank')
     if (!target) {
       toast.error('Izinkan popup untuk membuka pratinjau.')
@@ -3279,7 +3659,7 @@
 
   async function sharePresentation() {
     if (!hasImport || generating || sharing) return
-    if (dirty && !(await save(true))) return
+    if (!(await flushAutosave())) return
     sharing = true
     error = ''
     try {
@@ -3296,7 +3676,7 @@
 
   async function generate() {
     if (!hasImport || sharing) return
-    if (dirty && !(await save(true))) return
+    if (!(await flushAutosave())) return
     generating = true
     error = ''
     try {
@@ -3538,21 +3918,44 @@
     <div>
       <div class="flex flex-wrap items-center gap-2">
         <span class="eyebrow">EDITOR DESAIN</span>
-        {#if dirty}
+        {#if saving}
+          <span class="badge badge-progress">Menyimpan…</span>
+        {:else if autosaveState === 'error' && dirty}
+          <span class="badge badge-danger">Gagal autosave</span>
+        {:else if dirty}
           <span class="badge badge-progress">Belum disimpan</span>
+        {:else if lastSaveMode === 'auto'}
+          <span class="badge badge-success"><Check size={11} /> Tersimpan otomatis</span>
         {:else}
           <span class="badge badge-success"><Check size={11} /> Tersimpan</span>
         {/if}
       </div>
-      <p class="mt-1 text-xs text-ink-muted">
-        {#if updatedAt}
+      {#if autosaveState === 'error' && dirty && autosaveError}
+        <p class="mt-1 max-w-2xl text-xs text-red-700">Auto-save gagal: {autosaveError}</p>
+      {/if}
+      {#if updatedAt}
+        <p class="mt-1 text-xs text-ink-muted">
           Terakhir disimpan {formatDateTime(updatedAt)}{#if updatedBy} oleh {updatedBy}{/if}
-        {:else}
-          Belum pernah disimpan
-        {/if}
-      </p>
+        </p>
+      {:else}
+        <p class="mt-1 text-xs text-ink-muted">Belum pernah disimpan di server</p>
+      {/if}
+      {#if dirty && localDraftAt}
+        <p class="mt-1 text-xs text-ink-muted">Draft lokal tersimpan {formatDateTime(localDraftAt)}</p>
+      {/if}
+      {#if draftUnavailable && dirty}
+        <p class="mt-1 max-w-2xl text-xs text-amber-700">
+          Draft lokal tidak tersedia (penyimpanan browser penuh atau desain terlalu besar).
+        </p>
+      {/if}
     </div>
     <div class="flex flex-wrap items-center gap-2">
+      {#if autosaveState === 'error' && dirty}
+        <Button variant="secondary" size="sm" loading={saving} onclick={() => autosaveNow()}><RefreshCw size={14} /> Coba lagi</Button>
+        {#if localDraftAt}
+          <Button variant="ghost" size="sm" onclick={discardLocalDraft}><Trash2 size={14} /> Buang draft</Button>
+        {/if}
+      {/if}
       <Button variant="secondary" size="sm" loading={previewing} onclick={preview}><Eye size={14} /> Pratinjau</Button>
       <Button variant="secondary" size="sm" loading={saving} onclick={() => save()}><Save size={14} /> Simpan</Button>
       <Button size="sm" loading={generating} disabled={sharing} onclick={generate}><FileDown size={14} /> Buat PDF</Button>
