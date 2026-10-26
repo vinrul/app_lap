@@ -126,6 +126,10 @@ export interface LayoutPage {
   page: number
   blocks: Record<string, LayoutBlockOffset>
   elements: LayoutElement[]
+  background?: string
+  background_mode?: 'solid' | 'linear' | 'radial'
+  gradient_angle?: number
+  gradient_colors?: string[]
 }
 
 export interface ReportLayout {
@@ -543,12 +547,89 @@ export interface QuickWinDetail {
   date_start: string
   date_end: string
   total_rows: number
+  personel: number
+  bibit: number
+  area_m2: number
+  jamaah: number
   polres_count: number
   satker_count: number
   by_polres: UnitBreakdown[]
   by_satker: UnitBreakdown[]
   codes: QuickWinCodeCoverage[]
   activities: QuickWinActivity[]
+}
+
+export interface CoverageResponse {
+  date_start: string
+  date_end: string
+  total_rows: number
+  active_polres: number
+  active_satker: number
+  known_polres: string[]
+  known_satker: string[]
+  groups: CoverageGroup[]
+  programs: CoverageProgram[]
+}
+
+export interface CoverageGroup {
+  code: string
+  title: string
+  rows: number
+  polres: number
+  satker: number
+  polres_missing: string[]
+  satker_missing: string[]
+  codes: CoverageCode[]
+}
+
+export interface CoverageCode {
+  code: string
+  title: string
+  rows: number
+  polres: number
+  satker: number
+  polres_missing: number
+  satker_missing: number
+}
+
+export interface CoverageProgram {
+  key: string
+  title: string
+  code: string
+  rows: number
+  polres: number
+  satker: number
+  polres_total: number
+  satker_total: number
+  polres_missing: string[]
+  satker_missing: string[]
+  metrics: CoverageMetric[]
+  by_polres: CoverageUnit[]
+  by_satker: CoverageUnit[]
+}
+
+export interface CoverageMetric {
+  key: string
+  label: string
+  unit: string
+  total: number
+  filled_rows: number
+  missing_rows: number
+  filled_polres: number
+  filled_satker: number
+}
+
+export interface CoverageUnit {
+  label: string
+  rows: number
+  values: CoverageUnitValue[]
+  missing: string[]
+}
+
+export interface CoverageUnitValue {
+  key: string
+  value: number
+  filled: boolean
 }
 
 export interface DashboardCounts {

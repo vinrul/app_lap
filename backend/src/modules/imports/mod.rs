@@ -1,5 +1,6 @@
 mod handlers;
 pub mod analysis;
+pub mod coverage;
 pub mod drive;
 pub mod evidence;
 pub mod models;
@@ -31,6 +32,7 @@ pub fn routes() -> Router<AppState> {
 pub fn period_routes() -> Router<AppState> {
     Router::new()
         .route("/periods/{period_id}/analysis", get(handlers::analysis))
+        .route("/periods/{period_id}/coverage", get(handlers::coverage))
         .route(
             "/periods/{period_id}/unit-detail",
             get(handlers::unit_detail),

@@ -8,7 +8,7 @@ use crate::{
     modules::reports::{
         fonts, icons,
         layout::{
-            DesignSource, LayoutElement, PAGE_HEIGHT_MM, PAGE_WIDTH_MM, ReportLayout,
+            DesignSource, LayoutElement, PAGE_HEIGHT_MM, PAGE_WIDTH_MM, PageLayout, ReportLayout,
             image_id_from_src, valid_id,
         },
         models::{GroupMetrics, ReportContent, ReportMetrics, RowSummary},
@@ -213,10 +213,11 @@ pub fn render_with_layout(
     );
 
     let css = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         fonts::face_css(),
         REPORT_CSS.replace("__LOGO_DATA_URI__", logo_data_uri()),
-        block_css(layout)
+        block_css(layout),
+        page_background_css(layout)
     );
     format!(
         "<!doctype html><html lang=\"id\"><head><meta charset=\"utf-8\">\
@@ -322,7 +323,7 @@ Data disusun dari {} baris laporan yang diimpor dari {}.",
     let footer_right = text_or(ctx, 1, "cover-footer", "right", &metrics.period_label);
 
     format!(
-        "<section class=\"page cover\">\
+        "<section class=\"page cover\" data-page=\"1\">\
   <div class=\"cover-top\" data-block=\"cover-top\">\
     <div class=\"cover-brand\"><span class=\"crest-logo cover-crest\" role=\"img\" aria-label=\"Logo Polda Bali\"></span><span><strong data-text-id=\"polda\">{polda}</strong><small>LAPORAN MINGGUAN PBM</small></span></div>\
     <span class=\"cover-doc\" data-text-id=\"doc\">{doc}</span>\
@@ -369,10 +370,11 @@ fn render_blank_document(
         ));
     }
     let mut css = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         fonts::face_css(),
         REPORT_CSS.replace("__LOGO_DATA_URI__", logo_data_uri()),
-        block_css(layout)
+        block_css(layout),
+        page_background_css(layout)
     );
     css.push_str(&format!(
         "\n@page {{ size: A4 {}; margin: 0; }}\nbody.blank-doc {{ background: #fff; }}\n.blank-page {{ width: {page_width}mm; height: {page_height}mm; padding: 0; display: block; }}\n",
@@ -782,7 +784,7 @@ fn page(
     );
     let foot_text = text_or(ctx, page_no, &foot_id, "left", &foot_default);
     format!(
-        "<section class=\"page {extra_class}\">\
+        "<section class=\"page {extra_class}\" data-page=\"{page_no}\">\
   <header class=\"page-head\" data-block=\"page-{page_no}-head\"><div class=\"page-head-text\"><span class=\"eyebrow gold\" data-text-id=\"eyebrow\">{eyebrow}</span><h1 data-text-id=\"title\">{title}</h1><p data-text-id=\"subtitle\">{subtitle}</p></div><span class=\"crest-logo page-crest\" role=\"img\" aria-label=\"Logo Polda Bali\"></span></header>\
   <div class=\"page-body\">{body}</div>\
   <footer class=\"page-foot\" data-block=\"page-{page_no}-foot\"><span data-text-id=\"left\">{foot}</span>{page_number}</footer>\
@@ -1726,6 +1728,50 @@ fn block_css(layout: &ReportLayout) -> String {
     css
 }
 
+fn page_background_css(layout: &ReportLayout) -> String {
+    let mut css = String::new();
+    for page in &layout.pages {
+        let declarations = page_background_declarations(page);
+        if declarations.is_empty() {
+            continue;
+        }
+        css.push_str(&format!(
+            ".page[data-page=\"{}\"]{{{declarations}}}",
+            page.page
+        ));
+    }
+    css
+}
+
+fn page_background_declarations(page: &PageLayout) -> String {
+    let gradient = page.background_mode == "linear" || page.background_mode == "radial";
+    if gradient && page.gradient_colors.len() >= 2 {
+        let last = (page.gradient_colors.len() - 1) as f64;
+        let stops = page
+            .gradient_colors
+            .iter()
+            .enumerate()
+            .map(|(index, color)| {
+                format!("{} {:.1}%", escape_html(color), index as f64 / last * 100.0)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return if page.background_mode == "radial" {
+            format!("background:radial-gradient(circle, {stops});")
+        } else {
+            format!(
+                "background:linear-gradient({}deg, {stops});",
+                page.gradient_angle
+            )
+        };
+    }
+    if page.background.is_empty() {
+        String::new()
+    } else {
+        format!("background:{};", escape_html(&page.background))
+    }
+}
+
 fn kpi_row(items: &[(&str, i64, &str)], block_id: &str, ctx: &DesignContext) -> String {
     let page_no = block_id
         .strip_prefix("page-")
@@ -2193,6 +2239,7 @@ mod tests {
                         },
                     )]),
                     elements: Vec::new(),
+                    ..PageLayout::default()
                 },
                 crate::modules::reports::layout::PageLayout {
                     page: 3,
@@ -2204,6 +2251,7 @@ mod tests {
                         },
                     )]),
                     elements: Vec::new(),
+                    ..PageLayout::default()
                 },
             ],
         };
@@ -2220,6 +2268,44 @@ mod tests {
         assert!(html.contains(">999<"));
         assert!(html.contains(">pohon<"));
         assert!(!html.contains("Bibit ditanam"));
+    }
+
+    #[test]
+    fn renders_page_backgrounds() {
+        let metrics = ReportMetrics::default();
+        let layout = ReportLayout {
+            version: 1,
+            mode: "report".into(),
+            orientation: "portrait".into(),
+            pages: vec![
+                PageLayout {
+                    page: 1,
+                    background: "#f5f1e8".into(),
+                    background_mode: "solid".into(),
+                    ..PageLayout::default()
+                },
+                PageLayout {
+                    page: 2,
+                    background_mode: "linear".into(),
+                    gradient_angle: 135.0,
+                    gradient_colors: vec!["#143d30".into(), "#b8894b".into()],
+                    ..PageLayout::default()
+                },
+            ],
+        };
+
+        let html = render_with_layout(
+            &metrics,
+            &ReportContent::default(),
+            &Config::test_config(),
+            &layout,
+            &HashMap::new(),
+        );
+        assert!(html.contains("<section class=\"page cover\" data-page=\"1\">"));
+        assert!(html.contains(".page[data-page=\"1\"]{background:#f5f1e8;}"));
+        assert!(html.contains(
+            ".page[data-page=\"2\"]{background:linear-gradient(135deg, #143d30 0.0%, #b8894b 100.0%);}"
+        ));
     }
 
     #[test]
@@ -2243,6 +2329,7 @@ mod tests {
                     font_family: "playfair-display".into(),
                     ..Default::default()
                 }],
+                ..PageLayout::default()
             }],
         };
 
@@ -2405,6 +2492,7 @@ mod tests {
                         text: "Halaman kosong satu".into(),
                         ..Default::default()
                     }],
+                    ..PageLayout::default()
                 },
                 crate::modules::reports::layout::PageLayout {
                     page: 2,
@@ -2419,6 +2507,7 @@ mod tests {
                         text: "Halaman kosong dua".into(),
                         ..Default::default()
                     }],
+                    ..PageLayout::default()
                 },
             ],
         };
@@ -2465,6 +2554,7 @@ mod tests {
                     valign: "middle".into(),
                     ..Default::default()
                 }],
+                ..PageLayout::default()
             }],
         };
 
@@ -2503,6 +2593,7 @@ mod tests {
                     icon_stroke: 1.5,
                     ..Default::default()
                 }],
+                ..PageLayout::default()
             }],
         };
 
@@ -2576,6 +2667,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                ..PageLayout::default()
             }],
         };
 
@@ -2636,6 +2728,7 @@ mod tests {
                     font_size: 9.0,
                     ..Default::default()
                 }],
+                ..PageLayout::default()
             }],
         };
 
@@ -2706,6 +2799,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                ..PageLayout::default()
             }],
         };
 

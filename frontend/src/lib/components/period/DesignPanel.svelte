@@ -238,6 +238,12 @@
     if (!selected || selected.kind !== 'element') return null
     return getElement(selected.page, selected.id)
   })
+  const activePage = $derived(getPage(currentPage))
+  const pageBackgroundMode = $derived(
+    activePage?.background_mode === 'linear' || activePage?.background_mode === 'radial'
+      ? activePage.background_mode
+      : 'solid',
+  )
   const activeCardTemplate = $derived(
     cardTemplate(activeElement?.type === 'card' ? activeElement.card_template : undefined),
   )
@@ -382,6 +388,7 @@
         page: index + 1,
         blocks: {},
         elements: (page.elements ?? []).map((element) => ({ ...element })),
+        ...pageStyle(page),
       }))
       return {
         version: 1,
@@ -400,8 +407,23 @@
           page: index + 1,
           blocks: { ...(found?.blocks ?? {}) },
           elements: (found?.elements ?? []).map((element) => ({ ...element })),
+          ...pageStyle(found),
         }
       }),
+    }
+  }
+
+  function pageStyle(
+    page: LayoutPage | undefined,
+  ): Pick<LayoutPage, 'background' | 'background_mode' | 'gradient_angle' | 'gradient_colors'> {
+    return {
+      background: page?.background ?? '',
+      background_mode:
+        page?.background_mode === 'linear' || page?.background_mode === 'radial'
+          ? page.background_mode
+          : 'solid',
+      gradient_angle: page?.gradient_angle ?? 90,
+      gradient_colors: [...(page?.gradient_colors ?? [])],
     }
   }
 
@@ -1965,6 +1987,8 @@
       const page = getPage(pageNo)
       if (!page) return
 
+      pageEl.style.background = pageBackgroundCss(page)
+
       pageEl.querySelectorAll<HTMLElement>('[data-block]').forEach((blockEl) => {
         const id = blockEl.dataset.block
         if (!id) return
@@ -2643,6 +2667,7 @@
       return copy
     })
     layout.pages.splice(currentPage, 0, {
+      ...source,
       page: currentPage + 1,
       blocks: {},
       elements,
@@ -3376,6 +3401,121 @@
     if (colors.length <= 2) return
     pushHistory()
     updateElement({ gradient_colors: colors.filter((_, itemIndex) => itemIndex !== index) })
+  }
+
+  function pageGradientColors(page: LayoutPage | undefined): string[] {
+    const colors = page?.gradient_colors ?? []
+    if (colors.length >= 2) return colors
+    return [pickerColor(page?.background, '#ffffff'), '#b8894b']
+  }
+
+  function pageBackgroundCss(page: LayoutPage | undefined): string {
+    if (!page) return '#ffffff'
+    const colors = page.gradient_colors ?? []
+    const mode = page.background_mode
+    if ((mode === 'linear' || mode === 'radial') && colors.length >= 2) {
+      const last = colors.length - 1
+      const stops = colors
+        .map((color, index) => `${color} ${((index / last) * 100).toFixed(1)}%`)
+        .join(', ')
+      return mode === 'radial'
+        ? `radial-gradient(circle, ${stops})`
+        : `linear-gradient(${page.gradient_angle ?? 90}deg, ${stops})`
+    }
+    return pickerColor(page.background, '#ffffff')
+  }
+
+  function applyPageBackgroundToDom() {
+    const doc = iframeEl?.contentDocument
+    if (!doc) return
+    Array.from(doc.querySelectorAll<HTMLElement>('.page')).forEach((pageEl, index) => {
+      const page = getPage(index + 1)
+      if (page) pageEl.style.background = pageBackgroundCss(page)
+    })
+  }
+
+  function setPageBackgroundMode(mode: 'solid' | 'linear' | 'radial') {
+    const page = activePage
+    if (!page) return
+    pushHistory()
+    page.background_mode = mode
+    if (mode !== 'solid' && (page.gradient_colors?.length ?? 0) < 2) {
+      page.gradient_colors = pageGradientColors(page)
+    }
+    applyPageBackgroundToDom()
+  }
+
+  function setPageBackgroundColor(color: string) {
+    const page = activePage
+    if (!page) return
+    page.background = color
+    applyPageBackgroundToDom()
+  }
+
+  function setPageGradientColor(index: number, color: string) {
+    const page = activePage
+    if (!page) return
+    const colors = [...pageGradientColors(page)]
+    colors[index] = color
+    page.gradient_colors = colors
+    applyPageBackgroundToDom()
+  }
+
+  function addPageGradientColor() {
+    const page = activePage
+    if (!page) return
+    const colors = pageGradientColors(page)
+    if (colors.length >= 8) return
+    pushHistory()
+    const palette = ['#143d30', '#b8894b', '#3f765d', '#5b8fa8', '#a4743d', '#d9b87e', '#7a857f', '#2f5d7c']
+    page.gradient_colors = [...colors, palette[colors.length % palette.length]]
+    applyPageBackgroundToDom()
+  }
+
+  function removePageGradientColor(index: number) {
+    const page = activePage
+    if (!page) return
+    const colors = pageGradientColors(page)
+    if (colors.length <= 2) return
+    pushHistory()
+    page.gradient_colors = colors.filter((_, itemIndex) => itemIndex !== index)
+    applyPageBackgroundToDom()
+  }
+
+  function setPageGradientAngle(value: number) {
+    const page = activePage
+    if (!page) return
+    page.gradient_angle = value
+    applyPageBackgroundToDom()
+  }
+
+  function resetPageBackground() {
+    const page = activePage
+    if (!page) return
+    pushHistory()
+    page.background = '#ffffff'
+    page.background_mode = 'solid'
+    page.gradient_angle = 90
+    page.gradient_colors = []
+    applyPageBackgroundToDom()
+  }
+
+  function applyPageBackgroundToAll() {
+    const source = activePage
+    if (!source) return
+    pushHistory()
+    const background = source.background ?? ''
+    const mode = source.background_mode ?? 'solid'
+    const angle = source.gradient_angle ?? 90
+    const colors = [...(source.gradient_colors ?? [])]
+    for (const page of layout.pages) {
+      page.background = background
+      page.background_mode = mode
+      page.gradient_angle = angle
+      page.gradient_colors = [...colors]
+    }
+    applyPageBackgroundToDom()
+    toast.success('Latar diterapkan ke semua halaman.')
   }
 
   function numberValue(value: string): number {
@@ -4848,6 +4988,79 @@
           </ul>
         </section>
       {/if}
+
+      <section class="card overflow-hidden">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">LATAR HALAMAN</span>
+            <h2 class="panel-title mt-1">Halaman {currentPage}</h2>
+          </div>
+          <Shapes size={18} class="text-gold-500" />
+        </div>
+        <div class="space-y-3 p-4">
+          <label class="block">
+            <span class="label">Tipe latar</span>
+            <select class="input py-1.5 text-xs" value={pageBackgroundMode}
+              data-page-background-mode
+              onchange={(event) => setPageBackgroundMode((event.currentTarget as HTMLSelectElement).value as 'solid' | 'linear' | 'radial')}>
+              <option value="solid">Warna solid</option>
+              <option value="linear">Gradien linear</option>
+              <option value="radial">Gradien radial</option>
+            </select>
+          </label>
+          {#if pageBackgroundMode === 'solid'}
+            <label class="block">
+              <span class="label">Warna latar</span>
+              <input class="input h-9 py-1" type="color" value={pickerColor(activePage?.background, '#ffffff')}
+                data-page-background
+                onfocus={pushHistory}
+                oninput={(event) => setPageBackgroundColor((event.currentTarget as HTMLInputElement).value)} />
+            </label>
+          {:else}
+            <div class="space-y-2.5 rounded-xl border border-line p-3">
+              <span class="block h-9 rounded-md border border-line" data-page-gradient-preview
+                style={`background:${pageBackgroundCss(activePage)}`}></span>
+              <div class="space-y-1.5">
+                {#each pageGradientColors(activePage) as color, index (index)}
+                  <div class="flex items-center gap-2">
+                    <input class="input h-8 min-w-0 flex-1 py-1" type="color" value={pickerColor(color, '#ffffff')}
+                      data-page-gradient-color={index}
+                      onfocus={pushHistory}
+                      oninput={(event) => setPageGradientColor(index, (event.currentTarget as HTMLInputElement).value)} />
+                    <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100 disabled:opacity-30"
+                      title="Hapus warna" data-page-gradient-remove={index}
+                      disabled={pageGradientColors(activePage).length <= 2}
+                      onclick={() => removePageGradientColor(index)}>
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                {/each}
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <Button variant="secondary" size="sm" disabled={pageGradientColors(activePage).length >= 8}
+                  onclick={addPageGradientColor}>
+                  <Plus size={13} /> Tambah warna
+                </Button>
+                {#if pageBackgroundMode === 'linear'}
+                  <label class="flex items-center gap-1.5 text-[10px] text-ink-muted">Sudut
+                    <input class="input w-16 py-1 text-xs" type="number" min="0" max="360" step="5"
+                      value={activePage?.gradient_angle ?? 90}
+                      data-page-gradient-angle
+                      onfocus={pushHistory}
+                      oninput={(event) => setPageGradientAngle(numberValue((event.currentTarget as HTMLInputElement).value))} />°
+                  </label>
+                {/if}
+              </div>
+              <p class="text-[10px] leading-relaxed text-ink-muted">Warna tersebar merata dari 0% sampai 100%. Bisa memakai 2–8 warna.</p>
+            </div>
+          {/if}
+          <div class="flex flex-wrap gap-2">
+            <Button variant="secondary" size="sm" onclick={resetPageBackground}>Putih</Button>
+            <Button variant="ghost" size="sm" onclick={applyPageBackgroundToAll}>Terapkan ke semua halaman</Button>
+          </div>
+          <p class="text-[10px] leading-relaxed text-ink-muted">Latar halaman tampil di kanvas, pratinjau, dan PDF. Duplikat halaman menyalin latar halaman aktif.</p>
+        </div>
+      </section>
 
       <section class="card overflow-hidden">
         <div class="panel-heading">

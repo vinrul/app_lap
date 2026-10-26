@@ -14,7 +14,8 @@ use crate::{
         imports::{
             analysis,
             models::{
-                EvidenceView, ImportPreview, ImportView, ParsedRow, QuickWinActivity,
+                CoverageResponse, EvidenceView, ImportPreview, ImportView, ParsedRow,
+                QuickWinActivity,
                 QuickWinCodeCoverage, QuickWinDetailResponse, RecordQuery, RecordView,
                 RecordsResponse, UnitDetailResponse,
             },
@@ -735,6 +736,17 @@ pub async fn analysis_for_period(
     Ok(build_analysis(&start, &end, source_count, duplicate_rows, &rows))
 }
 
+pub async fn coverage_for_period(
+    db: &SqlitePool,
+    period_id: &str,
+) -> ApiResult<CoverageResponse> {
+    let (start, end, _) = periods::service::dates(db, period_id).await?;
+    let (rows, _, _) = load_period_rows(db, &start, &end).await?;
+    Ok(crate::modules::imports::coverage::build_coverage(
+        &start, &end, &rows,
+    ))
+}
+
 pub async fn unit_detail_for_period(
     db: &SqlitePool,
     config: &Config,
@@ -972,6 +984,11 @@ pub async fn quick_win_detail_for_period(
         qw::title(&normalized).to_string()
     };
 
+    let personel: i64 = matching.iter().map(|row| row.personel_count).sum();
+    let bibit: i64 = matching.iter().map(|row| row.bibit_count).sum();
+    let area_m2: f64 = matching.iter().map(|row| row.area_m2).sum();
+    let jamaah: i64 = matching.iter().map(|row| row.jamaah_count).sum();
+
     Ok(QuickWinDetailResponse {
         code: if is_group {
             group_code.to_string()
@@ -984,6 +1001,10 @@ pub async fn quick_win_detail_for_period(
         date_start: start,
         date_end: end,
         total_rows: matching.len() as i64,
+        personel,
+        bibit,
+        area_m2: (area_m2 * 100.0).round() / 100.0,
+        jamaah,
         polres_count: by_polres.len() as i64,
         satker_count: by_satker.len() as i64,
         by_polres,
@@ -1109,7 +1130,7 @@ fn build_analysis(
     }
 }
 
-fn record_is_polda(row: &RecordView) -> bool {
+pub(crate) fn record_is_polda(row: &RecordView) -> bool {
     let level = if row.level.trim().is_empty() {
         row.tingkat.trim()
     } else {
@@ -1118,7 +1139,7 @@ fn record_is_polda(row: &RecordView) -> bool {
     level.eq_ignore_ascii_case("polda")
 }
 
-fn record_satker_label(row: &RecordView) -> String {
+pub(crate) fn record_satker_label(row: &RecordView) -> String {
     for value in [
         row.pejabat_pelaksana.as_str(),
         row.pelaksana.as_str(),

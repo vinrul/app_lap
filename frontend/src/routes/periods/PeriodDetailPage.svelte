@@ -12,6 +12,7 @@
   import Tabs from '../../lib/components/ui/Tabs.svelte'
   import PeriodOverview from '../../lib/components/period/PeriodOverview.svelte'
   import AnalysisPanel from '../../lib/components/period/AnalysisPanel.svelte'
+  import CoveragePanel from '../../lib/components/period/CoveragePanel.svelte'
   import RecordsPanel from '../../lib/components/period/RecordsPanel.svelte'
   import DesignPanel from '../../lib/components/period/DesignPanel.svelte'
   import DocumentsPanel from '../../lib/components/period/DocumentsPanel.svelte'
@@ -27,7 +28,7 @@
   let error = $state('')
 
   const activeTab = $derived(
-    ['overview', 'analysis', 'records', 'design', 'documents'].includes(tab)
+    ['overview', 'analysis', 'coverage', 'records', 'design', 'documents'].includes(tab)
       ? tab
       : 'overview',
   )
@@ -79,6 +80,7 @@
   const tabs = $derived([
     { id: 'overview', label: 'Ringkasan' },
     { id: 'analysis', label: 'Analisis' },
+    { id: 'coverage', label: 'Cakupan' },
     { id: 'records', label: 'Data sumber' },
     { id: 'design', label: 'Desain' },
     { id: 'documents', label: 'Dokumen', count: detail?.reports.length ?? 0 },
@@ -157,6 +159,8 @@
     <PeriodOverview {detail} {metrics} {metricsLoading} onnavigate={(path: string) => navigate(`/periods/${periodId}/${path}`)} />
   {:else if activeTab === 'analysis'}
     <AnalysisPanel {periodId} />
+  {:else if activeTab === 'coverage'}
+    <CoveragePanel {periodId} />
   {:else if activeTab === 'records'}
     <RecordsPanel {periodId} />
   {:else if activeTab === 'design'}

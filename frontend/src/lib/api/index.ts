@@ -1,6 +1,7 @@
 import type {
   AdminUser,
   AnalysisResponse,
+  CoverageResponse,
   Dashboard,
   DesignSource,
   DesignTemplateView,
@@ -83,6 +84,8 @@ export const importsApi = {
     ),
   analysis: (periodId: string) =>
     request<AnalysisResponse>(`/periods/${periodId}/analysis`),
+  coverage: (periodId: string) =>
+    request<CoverageResponse>(`/periods/${periodId}/coverage`),
   retryEvidence: (importId: string) =>
     request<{ queued: number }>(`/imports/${importId}/evidence/retry`, { method: 'POST' }),
   unitDetail: (periodId: string, scope: 'polres' | 'satker', label: string) =>

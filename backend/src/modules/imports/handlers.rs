@@ -12,7 +12,8 @@ use crate::{
         imports::{
             evidence,
             models::{
-                AnalysisResponse, ImportPreview, ImportView, QuickWinDetailResponse, RecordQuery,
+                AnalysisResponse, CoverageResponse, ImportPreview, ImportView,
+                QuickWinDetailResponse, RecordQuery,
                 RecordsResponse, UnitDetailResponse,
             },
             service,
@@ -123,6 +124,14 @@ pub async fn analysis(
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<AnalysisResponse>> {
     Ok(Json(service::analysis_for_period(&state.db, &period_id).await?))
+}
+
+pub async fn coverage(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(period_id): Path<String>,
+) -> ApiResult<Json<CoverageResponse>> {
+    Ok(Json(service::coverage_for_period(&state.db, &period_id).await?))
 }
 
 #[derive(Debug, serde::Deserialize)]

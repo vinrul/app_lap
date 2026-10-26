@@ -1,5 +1,5 @@
 export type RouteName = 'dashboard' | 'periods' | 'period' | 'imports' | 'users' | 'present'
-export type PeriodTab = 'overview' | 'analysis' | 'records' | 'design' | 'documents'
+export type PeriodTab = 'overview' | 'analysis' | 'coverage' | 'records' | 'design' | 'documents'
 
 export interface Route {
   name: RouteName
@@ -8,7 +8,7 @@ export interface Route {
   path: string
 }
 
-const periodTabs: PeriodTab[] = ['overview', 'analysis', 'records', 'design', 'documents']
+const periodTabs: PeriodTab[] = ['overview', 'analysis', 'coverage', 'records', 'design', 'documents']
 
 function parseRoute(): Route {
   const raw = window.location.hash.replace(/^#/, '') || '/dashboard'

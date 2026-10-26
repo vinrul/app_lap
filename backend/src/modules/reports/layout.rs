@@ -26,6 +26,10 @@ pub struct PageLayout {
     pub page: usize,
     pub blocks: BTreeMap<String, BlockLayout>,
     pub elements: Vec<LayoutElement>,
+    pub background: String,
+    pub background_mode: String,
+    pub gradient_angle: f64,
+    pub gradient_colors: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -298,6 +302,34 @@ impl PageLayout {
         page_height: f64,
     ) -> Self {
         let page = self.page;
+        let background = {
+            let color = optional_color(&self.background);
+            if color.eq_ignore_ascii_case("transparent") {
+                String::new()
+            } else {
+                color
+            }
+        };
+        let background_mode = match self.background_mode.trim().to_ascii_lowercase().as_str() {
+            "linear" => "linear".to_string(),
+            "radial" => "radial".to_string(),
+            _ => "solid".to_string(),
+        };
+        let gradient_angle = clamp_num(self.gradient_angle, -360.0, 360.0, 90.0);
+        let mut gradient_colors = self
+            .gradient_colors
+            .iter()
+            .take(MAX_GRADIENT_COLORS)
+            .map(|color| normalize_transparent(safe_color(color, "#ffffff")))
+            .collect::<Vec<_>>();
+        if gradient_colors.len() < 2 {
+            gradient_colors.clear();
+        }
+        let background_mode = if gradient_colors.len() >= 2 {
+            background_mode
+        } else {
+            "solid".to_string()
+        };
         let blocks = self
             .blocks
             .into_iter()
@@ -365,6 +397,10 @@ impl PageLayout {
             page,
             blocks,
             elements,
+            background,
+            background_mode,
+            gradient_angle,
+            gradient_colors,
         }
     }
 }
@@ -852,6 +888,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                ..PageLayout::default()
             }],
         };
 
@@ -909,6 +946,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                ..PageLayout::default()
             }],
         };
 
@@ -951,6 +989,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                ..PageLayout::default()
             }],
         };
 
@@ -1010,6 +1049,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                ..PageLayout::default()
             }],
         };
 
@@ -1024,6 +1064,44 @@ mod tests {
         assert_eq!(page.elements[2].gradient_colors[2], "transparent");
         assert_eq!(page.elements[3].gradient_colors.len(), MAX_GRADIENT_COLORS);
         assert_eq!(page.elements[3].gradient_angle, 360.0);
+    }
+
+    #[test]
+    fn sanitizes_page_backgrounds() {
+        let layout = ReportLayout {
+            version: 1,
+            mode: "blank".into(),
+            orientation: "portrait".into(),
+            pages: vec![
+                PageLayout {
+                    page: 1,
+                    background: "not-a-color".into(),
+                    background_mode: "linear".into(),
+                    gradient_angle: 999.0,
+                    gradient_colors: vec!["#ffffff".into(), "bad".into(), "#000".into()],
+                    ..PageLayout::default()
+                },
+                PageLayout {
+                    page: 2,
+                    background: "#f5f1e8".into(),
+                    background_mode: "radial".into(),
+                    gradient_colors: vec!["#143d30".into()],
+                    ..PageLayout::default()
+                },
+            ],
+        };
+
+        let sanitized = layout.sanitize();
+        let first = &sanitized.pages[0];
+        assert_eq!(first.background, "");
+        assert_eq!(first.background_mode, "linear");
+        assert_eq!(first.gradient_angle, 360.0);
+        assert_eq!(first.gradient_colors, vec!["#ffffff", "#ffffff", "#000"]);
+
+        let second = &sanitized.pages[1];
+        assert_eq!(second.background, "#f5f1e8");
+        assert_eq!(second.background_mode, "solid");
+        assert!(second.gradient_colors.is_empty());
     }
 
     #[test]
@@ -1058,6 +1136,7 @@ mod tests {
                         height: 40.0,
                         ..Default::default()
                     }],
+                    ..PageLayout::default()
                 },
                 PageLayout {
                     page: 2,
@@ -1125,6 +1204,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                ..PageLayout::default()
             }],
         };
 
@@ -1169,6 +1249,7 @@ mod tests {
                     font_size: 100.0,
                     ..Default::default()
                 }],
+                ..PageLayout::default()
             }],
         };
 
@@ -1222,6 +1303,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                ..PageLayout::default()
             }],
         };
         let sanitized = layout.sanitize();
@@ -1260,6 +1342,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                ..PageLayout::default()
             }],
         };
         let sanitized = layout.sanitize();
@@ -1294,6 +1377,7 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                ..PageLayout::default()
             }],
         };
 
@@ -1320,6 +1404,7 @@ mod tests {
                     chart_type: "HBAR".into(),
                     ..Default::default()
                 }],
+                ..PageLayout::default()
             }],
         };
         let sanitized = layout.sanitize();
@@ -1354,6 +1439,7 @@ mod tests {
                 page: 2,
                 blocks: BTreeMap::new(),
                 elements: vec![table, chart],
+                ..PageLayout::default()
             }],
         };
 

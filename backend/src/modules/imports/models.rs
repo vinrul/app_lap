@@ -299,10 +299,94 @@ pub struct QuickWinDetailResponse {
     pub date_start: String,
     pub date_end: String,
     pub total_rows: i64,
+    pub personel: i64,
+    pub bibit: i64,
+    pub area_m2: f64,
+    pub jamaah: i64,
     pub polres_count: i64,
     pub satker_count: i64,
     pub by_polres: Vec<UnitBreakdown>,
     pub by_satker: Vec<UnitBreakdown>,
     pub codes: Vec<QuickWinCodeCoverage>,
     pub activities: Vec<QuickWinActivity>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CoverageResponse {
+    pub date_start: String,
+    pub date_end: String,
+    pub total_rows: i64,
+    pub active_polres: i64,
+    pub active_satker: i64,
+    pub known_polres: Vec<String>,
+    pub known_satker: Vec<String>,
+    pub groups: Vec<CoverageGroup>,
+    pub programs: Vec<CoverageProgram>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CoverageGroup {
+    pub code: String,
+    pub title: String,
+    pub rows: i64,
+    pub polres: i64,
+    pub satker: i64,
+    pub polres_missing: Vec<String>,
+    pub satker_missing: Vec<String>,
+    pub codes: Vec<CoverageCode>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CoverageCode {
+    pub code: String,
+    pub title: String,
+    pub rows: i64,
+    pub polres: i64,
+    pub satker: i64,
+    pub polres_missing: i64,
+    pub satker_missing: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CoverageProgram {
+    pub key: String,
+    pub title: String,
+    pub code: String,
+    pub rows: i64,
+    pub polres: i64,
+    pub satker: i64,
+    pub polres_total: i64,
+    pub satker_total: i64,
+    pub polres_missing: Vec<String>,
+    pub satker_missing: Vec<String>,
+    pub metrics: Vec<CoverageMetric>,
+    pub by_polres: Vec<CoverageUnit>,
+    pub by_satker: Vec<CoverageUnit>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CoverageMetric {
+    pub key: String,
+    pub label: String,
+    pub unit: String,
+    pub total: f64,
+    pub filled_rows: i64,
+    pub missing_rows: i64,
+    pub filled_polres: i64,
+    pub filled_satker: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CoverageUnit {
+    pub label: String,
+    pub rows: i64,
+    pub values: Vec<CoverageUnitValue>,
+    pub missing: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CoverageUnitValue {
+    pub key: String,
+    pub value: f64,
+    pub filled: bool,
 }
