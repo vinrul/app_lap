@@ -747,6 +747,32 @@ pub async fn coverage_for_period(
     ))
 }
 
+pub async fn record_detail_for_period(
+    db: &SqlitePool,
+    period_id: &str,
+    record_id: i64,
+) -> ApiResult<RecordView> {
+    let (start, end, _) = periods::service::dates(db, period_id).await?;
+    let mut qb = QueryBuilder::<Sqlite>::new(ranked_cte());
+    apply_range(&mut qb, &start, &end);
+    qb.push(" SELECT * FROM ranked WHERE rn = 1 AND id = ");
+    qb.push_bind(record_id);
+    qb.push(" LIMIT 1");
+    let row = qb
+        .build()
+        .fetch_optional(db)
+        .await
+        .map_err(ApiError::internal)?;
+    let Some(row) = row else {
+        return Err(ApiError::not_found(
+            "Data kegiatan tidak ditemukan pada periode ini.",
+        ));
+    };
+    let id: i64 = row.get("id");
+    let evidence = load_evidence_for_rows(db, &[id]).await?;
+    Ok(record_from_row(&row, &evidence))
+}
+
 pub async fn unit_detail_for_period(
     db: &SqlitePool,
     config: &Config,
@@ -943,6 +969,7 @@ pub async fn quick_win_detail_for_period(
     let mut activities: Vec<QuickWinActivity> = matching
         .iter()
         .map(|row| QuickWinActivity {
+            record_id: row.id,
             tanggal: row.tanggal.clone(),
             kode: row.kode.clone(),
             title: if row.qw_title.trim().is_empty() {
@@ -985,9 +1012,6 @@ pub async fn quick_win_detail_for_period(
     };
 
     let personel: i64 = matching.iter().map(|row| row.personel_count).sum();
-    let bibit: i64 = matching.iter().map(|row| row.bibit_count).sum();
-    let area_m2: f64 = matching.iter().map(|row| row.area_m2).sum();
-    let jamaah: i64 = matching.iter().map(|row| row.jamaah_count).sum();
 
     Ok(QuickWinDetailResponse {
         code: if is_group {
@@ -1002,9 +1026,6 @@ pub async fn quick_win_detail_for_period(
         date_end: end,
         total_rows: matching.len() as i64,
         personel,
-        bibit,
-        area_m2: (area_m2 * 100.0).round() / 100.0,
-        jamaah,
         polres_count: by_polres.len() as i64,
         satker_count: by_satker.len() as i64,
         by_polres,
@@ -1267,5 +1288,15 @@ mod tests {
         assert_eq!(code.code, "QW1.2");
         assert!(code.total_rows <= group.total_rows);
         assert_eq!(code.codes.len(), 14);
+
+        let (rows, _, _) = super::load_period_rows(&db, "2026-10-15", "2026-10-19")
+            .await
+            .unwrap();
+        let first = rows.first().unwrap();
+        let detail = super::record_detail_for_period(&db, "p1", first.id)
+            .await
+            .unwrap();
+        assert_eq!(detail.id, first.id);
+        assert!(super::record_detail_for_period(&db, "p1", -1).await.is_err());
     }
 }

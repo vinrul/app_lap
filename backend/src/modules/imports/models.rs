@@ -275,6 +275,7 @@ pub struct QuickWinCodeCoverage {
 
 #[derive(Debug, Serialize)]
 pub struct QuickWinActivity {
+    pub record_id: i64,
     pub tanggal: String,
     pub kode: String,
     pub title: String,
@@ -300,9 +301,6 @@ pub struct QuickWinDetailResponse {
     pub date_end: String,
     pub total_rows: i64,
     pub personel: i64,
-    pub bibit: i64,
-    pub area_m2: f64,
-    pub jamaah: i64,
     pub polres_count: i64,
     pub satker_count: i64,
     pub by_polres: Vec<UnitBreakdown>,

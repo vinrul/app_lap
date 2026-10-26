@@ -42,4 +42,8 @@ pub fn period_routes() -> Router<AppState> {
             get(handlers::quick_win_detail),
         )
         .route("/periods/{period_id}/records", get(handlers::period_records))
+        .route(
+            "/periods/{period_id}/records/{record_id}",
+            get(handlers::record_detail),
+        )
 }

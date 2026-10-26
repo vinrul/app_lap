@@ -524,6 +524,7 @@ export interface QuickWinCodeCoverage {
 }
 
 export interface QuickWinActivity {
+  record_id: number
   tanggal: string
   kode: string
   title: string
@@ -548,9 +549,6 @@ export interface QuickWinDetail {
   date_end: string
   total_rows: number
   personel: number
-  bibit: number
-  area_m2: number
-  jamaah: number
   polres_count: number
   satker_count: number
   by_polres: UnitBreakdown[]

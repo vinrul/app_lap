@@ -13,7 +13,7 @@ use crate::{
             evidence,
             models::{
                 AnalysisResponse, CoverageResponse, ImportPreview, ImportView,
-                QuickWinDetailResponse, RecordQuery,
+                QuickWinDetailResponse, RecordQuery, RecordView,
                 RecordsResponse, UnitDetailResponse,
             },
             service,
@@ -115,6 +115,16 @@ pub async fn period_records(
 ) -> ApiResult<Json<RecordsResponse>> {
     Ok(Json(
         service::records_for_period(&state.db, &period_id, &query).await?,
+    ))
+}
+
+pub async fn record_detail(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path((period_id, record_id)): Path<(String, i64)>,
+) -> ApiResult<Json<RecordView>> {
+    Ok(Json(
+        service::record_detail_for_period(&state.db, &period_id, record_id).await?,
     ))
 }
 

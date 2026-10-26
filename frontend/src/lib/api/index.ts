@@ -14,6 +14,7 @@ import type {
   Period,
   PeriodDetail,
   QuickWinDetail,
+  RecordItem,
   RecordsResponse,
   PublicShareView,
   ReportContent,
@@ -94,6 +95,8 @@ export const importsApi = {
     ),
   quickWinDetail: (periodId: string, code: string) =>
     request<QuickWinDetail>(`/periods/${periodId}/quick-wins/${encodeURIComponent(code)}`),
+  recordDetail: (periodId: string, recordId: number) =>
+    request<RecordItem>(`/periods/${periodId}/records/${recordId}`),
 }
 
 export interface RecordFilters {

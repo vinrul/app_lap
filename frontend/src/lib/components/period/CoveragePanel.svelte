@@ -18,10 +18,14 @@
     CoverageUnit,
     QuickWinActivity,
     QuickWinDetail,
+    RecordItem,
     UnitBreakdown,
   } from '../../types'
   import { formatDate, formatNumber } from '../../utils/format'
+  import { evidencePreview } from '../../stores/evidencePreview.svelte'
   import Button from '../ui/Button.svelte'
+  import EvidenceList from '../ui/EvidenceList.svelte'
+  import LocationMap from '../ui/LocationMap.svelte'
   import Modal from '../ui/Modal.svelte'
 
   type Props = { periodId: string }
@@ -41,6 +45,11 @@
   let modalDetail = $state<QuickWinDetail | null>(null)
   let modalLoading = $state(false)
   let modalError = $state('')
+  let activityOpen = $state(false)
+  let activityTarget = $state<QuickWinActivity | null>(null)
+  let activityRecord = $state<RecordItem | null>(null)
+  let activityLoading = $state(false)
+  let activityError = $state('')
 
   onMount(load)
 
@@ -107,6 +116,28 @@
     )
     return data.known_satker.filter((label) => !performed.has(label.trim().toLowerCase()))
   })
+  const activityTitle = $derived(
+    activityRecord
+      ? `${activityRecord.kode} · ${activityRecord.qw_title}`
+      : activityTarget
+        ? `${activityTarget.kode} · ${activityTarget.title}`
+        : 'Detail kegiatan',
+  )
+  const activityDescription = $derived(
+    activityRecord
+      ? `${formatDate(activityRecord.tanggal)} · ${activityRecord.polres || activityRecord.satuan || '—'}${activityRecord.polsek ? ` · ${activityRecord.polsek}` : ''}`
+      : activityTarget
+        ? `${formatDate(activityTarget.tanggal)} · ${activityTarget.polres || activityTarget.satker || '—'}`
+        : '',
+  )
+  const activityImages = $derived(
+    (activityRecord?.evidence ?? []).filter(
+      (item) => item.status === 'ready' && item.content_type.startsWith('image/'),
+    ),
+  )
+  const activityReadyEvidence = $derived(
+    (activityRecord?.evidence ?? []).filter((item) => item.status === 'ready'),
+  )
 
   function percent(value: number, total: number): number {
     if (total <= 0) return 0
@@ -177,6 +208,35 @@
     modalDetail = null
     modalError = ''
   }
+
+  async function openActivityDetail(activity: QuickWinActivity) {
+    activityOpen = true
+    activityTarget = activity
+    activityRecord = null
+    activityError = ''
+    activityLoading = true
+    try {
+      const record = await importsApi.recordDetail(periodId, activity.record_id)
+      if (activityTarget?.record_id !== activity.record_id) return
+      activityRecord = record
+    } catch (caught) {
+      if (activityTarget?.record_id !== activity.record_id) return
+      activityError = errorMessage(caught)
+    } finally {
+      if (activityTarget?.record_id === activity.record_id) activityLoading = false
+    }
+  }
+
+  function closeActivityDetail() {
+    activityOpen = false
+    activityTarget = null
+    activityRecord = null
+    activityError = ''
+  }
+
+  function retryActivityDetail() {
+    if (activityTarget) void openActivityDetail(activityTarget)
+  }
 </script>
 
 {#snippet coverageStat(label: string, value: number, total: number)}
@@ -213,9 +273,6 @@
             <th class="whitespace-nowrap px-3 py-2 text-right">Kegiatan</th>
             {#if scope === 'polres'}<th class="whitespace-nowrap px-3 py-2 text-right">Polsek</th>{/if}
             <th class="whitespace-nowrap px-3 py-2 text-right">Personel</th>
-            <th class="whitespace-nowrap px-3 py-2 text-right">Bibit</th>
-            <th class="whitespace-nowrap px-3 py-2 text-right">Luas</th>
-            <th class="whitespace-nowrap px-3 py-2 text-right">Jemaah</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-line">
@@ -225,9 +282,6 @@
               <td class="px-3 py-2 text-right">{formatNumber(item.rows)}</td>
               {#if scope === 'polres'}<td class="px-3 py-2 text-right text-ink-muted">{formatNumber(item.polsek)}</td>{/if}
               <td class="px-3 py-2 text-right">{formatNumber(item.personel)}</td>
-              <td class="px-3 py-2 text-right">{formatNumber(item.bibit)}</td>
-              <td class="px-3 py-2 text-right">{formatValue(item.area_m2, 'm²')}</td>
-              <td class="px-3 py-2 text-right">{formatNumber(item.jamaah)}</td>
             </tr>
           {/each}
         </tbody>
@@ -242,33 +296,39 @@
   {#if items.length}
     <div class="max-h-96 space-y-2 overflow-y-auto pr-1">
       {#each items as activity, index (index)}
-        <article class="rounded-xl border border-line bg-white p-3">
+        <button
+          type="button"
+          class="w-full rounded-xl border border-line bg-white p-3 text-left transition-colors hover:border-gold-300 hover:bg-gold-50/40"
+          onclick={() => openActivityDetail(activity)}
+        >
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="flex flex-wrap items-center gap-2">
               <span class="rounded-md bg-forest-50 px-1.5 py-0.5 text-[10px] font-bold text-forest-700">{activity.kode}</span>
               <span class="text-[10px] text-ink-muted">{formatDate(activity.tanggal)}</span>
               <span class="text-[10px] text-ink-muted">{activity.polres || activity.satker}{#if activity.polsek} · {activity.polsek}{/if}</span>
             </div>
-            {#if activity.map_url}
-              <a class="inline-flex items-center gap-1 text-[10px] font-semibold text-forest-700 hover:underline" href={activity.map_url} target="_blank" rel="noreferrer">
-                <MapPin size={12} /> Peta
-              </a>
-            {/if}
           </div>
           <p class="mt-1.5 text-[11px] leading-relaxed text-ink">{activity.kegiatan || activity.title || 'Kegiatan'}</p>
-          <div class="mt-1.5 flex flex-wrap gap-2 text-[10px] text-ink-muted">
-            {#if activity.personel}<span>{formatNumber(activity.personel)} personel</span>{/if}
-            {#if activity.bibit}<span>{formatNumber(activity.bibit)} bibit</span>{/if}
-            {#if activity.area_m2}<span>{formatValue(activity.area_m2, 'm²')}</span>{/if}
-            {#if activity.jamaah}<span>{formatNumber(activity.jamaah)} jemaah</span>{/if}
-            {#if activity.pelaksana}<span>{activity.pelaksana}</span>{/if}
+          <div class="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+            <div class="flex flex-wrap gap-2 text-[10px] text-ink-muted">
+              {#if activity.personel}<span>{formatNumber(activity.personel)} personel</span>{/if}
+              {#if activity.pelaksana}<span>{activity.pelaksana}</span>{/if}
+            </div>
+            <span class="shrink-0 text-[10px] font-semibold text-forest-700">Lihat detail →</span>
           </div>
-        </article>
+        </button>
       {/each}
     </div>
   {:else}
     <p class="text-[11px] text-ink-muted">Belum ada kegiatan pada kode ini.</p>
   {/if}
+{/snippet}
+
+{#snippet info(label: string, value: string)}
+  <div class="rounded-xl border border-line bg-stone-50/60 px-3 py-2.5">
+    <p class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">{label}</p>
+    <p class="mt-0.5 text-[11px] font-semibold text-ink">{value || '—'}</p>
+  </div>
 {/snippet}
 
 {#if loading}
@@ -568,8 +628,8 @@
 >
   {#if modalLoading}
     <div class="space-y-4">
-      <div class="grid gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
-        {#each Array(7) as _}<div class="skeleton h-20"></div>{/each}
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {#each Array(4) as _}<div class="skeleton h-20"></div>{/each}
       </div>
       <div class="grid gap-4 xl:grid-cols-2">
         <div class="skeleton h-52"></div>
@@ -584,15 +644,12 @@
     </div>
   {:else if modalDetail}
     <div class="space-y-5">
-      <div class="grid gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {#each [
           { label: 'Kegiatan', value: formatNumber(modalDetail.total_rows) },
           { label: 'Polres', value: formatNumber(modalDetail.polres_count) },
           { label: 'Satker Polda', value: formatNumber(modalDetail.satker_count) },
           { label: 'Personel', value: formatNumber(modalDetail.personel) },
-          { label: 'Bibit', value: formatNumber(modalDetail.bibit) },
-          { label: 'Luas', value: formatValue(modalDetail.area_m2, 'm²') },
-          { label: 'Jemaah', value: formatNumber(modalDetail.jamaah) },
         ] as card}
           <div class="rounded-xl border border-line bg-stone-50/60 px-3 py-2.5">
             <p class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">{card.label}</p>
@@ -632,6 +689,124 @@
           <span class="text-[10px] text-ink-muted">{modalDetail.activities.length} kegiatan</span>
         </div>
         {@render activityList(modalDetail.activities)}
+      </section>
+    </div>
+  {/if}
+</Modal>
+
+<Modal
+  open={activityOpen}
+  title={activityTitle}
+  description={activityDescription}
+  onclose={closeActivityDetail}
+  width="max-w-5xl"
+>
+  {#if activityLoading}
+    <div class="space-y-4">
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {#each Array(4) as _}<div class="skeleton h-20"></div>{/each}
+      </div>
+      <div class="skeleton h-40"></div>
+      <div class="skeleton h-40"></div>
+    </div>
+  {:else if activityError}
+    <div class="flex flex-wrap items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+      <AlertCircle size={17} /> {activityError}
+      {#if activityTarget}
+        <Button variant="secondary" size="sm" onclick={retryActivityDetail}>Coba lagi</Button>
+      {/if}
+    </div>
+  {:else if activityRecord}
+    <div class="space-y-5">
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {@render info('Tanggal', formatDate(activityRecord.tanggal))}
+        {@render info('Unit', [activityRecord.polres, activityRecord.polsek].filter(Boolean).join(' · ') || activityRecord.satuan)}
+        {@render info('Status penerimaan', activityRecord.status_penerimaan)}
+        {@render info('Personel', formatNumber(activityRecord.personel_count))}
+      </div>
+
+      <section class="space-y-3">
+        <div>
+          <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan</p>
+          <p class="mt-1 text-sm font-semibold text-ink">{activityRecord.kegiatan || activityRecord.qw_title || '—'}</p>
+        </div>
+        <div>
+          <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Detail laporan</p>
+          <p class="mt-1 whitespace-pre-line break-words rounded-xl border border-line bg-stone-50/60 p-3 text-[11px] leading-relaxed text-ink-soft">
+            {activityRecord.isian_laporan || 'Tidak ada isian laporan.'}
+          </p>
+        </div>
+        <div class="grid gap-3 sm:grid-cols-2">
+          {@render info('Pelaksana', activityRecord.pelaksana)}
+          {@render info('Pejabat pelaksana', activityRecord.pejabat_pelaksana)}
+          {@render info('Jabatan', activityRecord.jabatan)}
+          {@render info('Pelapor', activityRecord.pelapor)}
+        </div>
+        {#if activityRecord.bukti_dukung}
+          <div>
+            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Bukti dukung</p>
+            <p class="mt-1 break-words whitespace-pre-line text-[11px] text-ink-soft">{activityRecord.bukti_dukung}</p>
+          </div>
+        {/if}
+        {#if activityRecord.links.length}
+          <div class="flex flex-wrap gap-2">
+            {#each activityRecord.links as link (link)}
+              <a class="btn btn-secondary btn-sm" href={link} target="_blank" rel="noreferrer">Buka tautan</a>
+            {/each}
+          </div>
+        {/if}
+      </section>
+
+      <section>
+        <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Dokumentasi</p>
+            <p class="mt-0.5 text-[10px] text-ink-muted">Klik foto untuk pratinjau. Berkas PDF dapat dipratinjau lewat daftar.</p>
+          </div>
+          <span class="text-[10px] text-ink-muted">{activityRecord.evidence.length} berkas</span>
+        </div>
+        {#if activityImages.length}
+          <div class="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {#each activityImages as item (item.id)}
+              <button
+                type="button"
+                class="group overflow-hidden rounded-xl border border-line bg-stone-100 text-left"
+                onclick={() => evidencePreview.open(item, activityReadyEvidence)}
+              >
+                <img
+                  src={item.url}
+                  alt={item.filename || 'Dokumentasi kegiatan'}
+                  class="h-32 w-full object-cover transition-transform group-hover:scale-105"
+                  loading="lazy"
+                />
+                <span class="block truncate px-2 py-1.5 text-[10px] text-ink-muted">{item.filename || 'Foto kegiatan'}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+        {#if activityRecord.evidence.length}
+          <EvidenceList items={activityRecord.evidence} />
+        {:else}
+          <p class="rounded-xl border border-dashed border-line px-3 py-4 text-center text-[11px] text-ink-muted">Tidak ada dokumentasi terunduh.</p>
+        {/if}
+      </section>
+
+      <section>
+        <p class="mb-2 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Lokasi</p>
+        {#if activityRecord.latitude !== null && activityRecord.longitude !== null}
+          <LocationMap
+            latitude={activityRecord.latitude}
+            longitude={activityRecord.longitude}
+            label={activityRecord.kegiatan || 'Lokasi kegiatan'}
+            detail={[activityRecord.polres, activityRecord.polsek].filter(Boolean).join(' · ')}
+          />
+        {:else if activityRecord.map_url}
+          <a class="btn btn-secondary btn-sm" href={activityRecord.map_url} target="_blank" rel="noreferrer">
+            <MapPin size={14} /> Buka peta
+          </a>
+        {:else}
+          <p class="rounded-xl border border-dashed border-line px-3 py-4 text-center text-[11px] text-ink-muted">Tidak ada lokasi peta pada kegiatan ini.</p>
+        {/if}
       </section>
     </div>
   {/if}

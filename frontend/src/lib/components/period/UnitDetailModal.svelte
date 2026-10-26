@@ -202,6 +202,7 @@
               <UnitBreakdownTable
                 items={quickWin.by_polres}
                 showPolsek
+                showMetrics={false}
                 unitHeading="Polres"
                 empty="Belum ada polres yang melaksanakan kode ini."
                 onselect={onopenunit ? (item) => onopenunit('polres', item.label) : undefined}
@@ -217,6 +218,7 @@
               </div>
               <UnitBreakdownTable
                 items={quickWin.by_satker}
+                showMetrics={false}
                 unitHeading="Satker / pejabat"
                 empty="Belum ada satker Polda yang melaksanakan kode ini."
                 onselect={onopenunit ? (item) => onopenunit('satker', item.label) : undefined}
@@ -241,7 +243,7 @@
                       <th>Kode</th>
                       <th>Unit pelaksana</th>
                       <th>Kegiatan</th>
-                      <th class="text-right">Analisis</th>
+                      <th class="text-right">Personel</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -261,11 +263,7 @@
                           <span class="text-[10px] text-ink-muted">{activity.pelaksana || '—'}</span>
                         </td>
                         <td class="whitespace-nowrap text-right text-[10px] text-ink-muted">
-                          {#if activity.personel}{formatNumber(activity.personel)} personel · {/if}
-                          {#if activity.bibit}{formatNumber(activity.bibit)} bibit · {/if}
-                          {#if activity.area_m2}{formatNumber(activity.area_m2)} m² · {/if}
-                          {#if activity.jamaah}{formatNumber(activity.jamaah)} jemaah{/if}
-                          {#if !activity.personel && !activity.bibit && !activity.area_m2 && !activity.jamaah}—{/if}
+                          {#if activity.personel}{formatNumber(activity.personel)} personel{:else}—{/if}
                         </td>
                       </tr>
                     {/each}
