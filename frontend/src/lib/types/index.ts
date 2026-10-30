@@ -606,6 +606,8 @@ export interface CoverageResponse {
   active_satker: number
   known_polres: string[]
   known_satker: string[]
+  polres_options: string[]
+  filter_polres: string
   groups: CoverageGroup[]
   programs: CoverageProgram[]
 }

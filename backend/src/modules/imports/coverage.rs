@@ -14,8 +14,17 @@ use crate::{
 use super::service::{record_is_polda, record_satker_label};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Scope {
+pub(crate) enum Scope {
     Satker,
+    Polres,
+}
+
+/// Cakupan unit yang dipakai saat mengelompokkan baris.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnitMode {
+    /// Seluruh Polda: dimensi polres dan satker Polda.
+    Polda,
+    /// Satu polres: dimensi polsek dan satker polres.
     Polres,
 }
 
@@ -25,11 +34,11 @@ struct KnownUnits {
 }
 
 impl KnownUnits {
-    fn from_rows(rows: &[RecordView]) -> Self {
+    fn from_rows(rows: &[RecordView], mode: UnitMode) -> Self {
         let mut polres = BTreeMap::new();
         let mut satker = BTreeMap::new();
         for row in rows {
-            let Some((scope, label)) = row_unit(row) else {
+            let Some((scope, label)) = row_unit(row, mode) else {
                 continue;
             };
             let key = label.to_lowercase();
@@ -332,7 +341,38 @@ fn unit_counts(counts: Option<&BTreeMap<String, (String, i64)>>) -> Vec<Coverage
 }
 
 pub fn build_coverage(start: &str, end: &str, rows: &[RecordView]) -> CoverageResponse {
-    let known = KnownUnits::from_rows(rows);
+    build_coverage_scoped(start, end, rows, None)
+}
+
+/// Cakupan yang bisa dipersempit ke satu polres. Saat difilter, dimensi
+/// `polres` berisi polsek dan dimensi `satker` berisi satker polres.
+pub fn build_coverage_scoped(
+    start: &str,
+    end: &str,
+    rows: &[RecordView],
+    polres: Option<&str>,
+) -> CoverageResponse {
+    let polres_options: Vec<String> = KnownUnits::from_rows(rows, UnitMode::Polda)
+        .set(Scope::Polres)
+        .values()
+        .cloned()
+        .collect();
+    let filter = polres.map(str::trim).filter(|value| !value.is_empty());
+    let scoped_rows: Vec<RecordView> = match filter {
+        Some(label) => rows
+            .iter()
+            .filter(|row| row.polres.trim().eq_ignore_ascii_case(label))
+            .cloned()
+            .collect(),
+        None => Vec::new(),
+    };
+    let rows: &[RecordView] = if filter.is_some() { &scoped_rows } else { rows };
+    let mode = if filter.is_some() {
+        UnitMode::Polres
+    } else {
+        UnitMode::Polda
+    };
+    let known = KnownUnits::from_rows(rows, mode);
 
     let mut group_rows: BTreeMap<&'static str, i64> =
         qw::GROUPS.iter().map(|group| (group.code, 0)).collect();
@@ -369,7 +409,7 @@ pub fn build_coverage(start: &str, end: &str, rows: &[RecordView]) -> CoverageRe
         if let Some(count) = group_rows.get_mut(group.code) {
             *count += 1;
         }
-        if let Some((scope, label)) = row_unit(row) {
+        if let Some((scope, label)) = row_unit(row, mode) {
             let key = label.to_lowercase();
             match scope {
                 Scope::Polres => {
@@ -395,7 +435,7 @@ pub fn build_coverage(start: &str, end: &str, rows: &[RecordView]) -> CoverageRe
         if let Some(count) = code_rows.get_mut(item.code) {
             *count += 1;
         }
-        if let Some((scope, label)) = row_unit(row) {
+        if let Some((scope, label)) = row_unit(row, mode) {
             let key = label.to_lowercase();
             match scope {
                 Scope::Polres => {
@@ -455,7 +495,7 @@ pub fn build_coverage(start: &str, end: &str, rows: &[RecordView]) -> CoverageRe
 
     let programs = PROGRAM_SPECS
         .iter()
-        .map(|spec| build_program(spec, rows, &known))
+        .map(|spec| build_program(spec, rows, &known, mode))
         .collect();
 
     CoverageResponse {
@@ -474,12 +514,19 @@ pub fn build_coverage(start: &str, end: &str, rows: &[RecordView]) -> CoverageRe
             .values()
             .cloned()
             .collect::<Vec<_>>(),
+        polres_options,
+        filter_polres: filter.unwrap_or_default().to_string(),
         groups,
         programs,
     }
 }
 
-fn build_program(spec: &ProgramSpec, rows: &[RecordView], known: &KnownUnits) -> CoverageProgram {
+fn build_program(
+    spec: &ProgramSpec,
+    rows: &[RecordView],
+    known: &KnownUnits,
+    mode: UnitMode,
+) -> CoverageProgram {
     let program_rows: Vec<&RecordView> = rows
         .iter()
         .filter(|row| {
@@ -498,7 +545,7 @@ fn build_program(spec: &ProgramSpec, rows: &[RecordView], known: &KnownUnits) ->
         spec.metrics.iter().map(|_| MetricAcc::default()).collect();
 
     for row in &program_rows {
-        let unit = row_unit(row);
+        let unit = row_unit(row, mode);
         if let Some((scope, label)) = &unit {
             let key = label.to_lowercase();
             let acc = match scope {
@@ -557,7 +604,19 @@ fn build_program(spec: &ProgramSpec, rows: &[RecordView], known: &KnownUnits) ->
     }
 }
 
-fn row_unit(row: &RecordView) -> Option<(Scope, String)> {
+/// Mengelompokkan baris ke dimensi unit sesuai mode cakupan.
+pub(crate) fn row_unit(row: &RecordView, mode: UnitMode) -> Option<(Scope, String)> {
+    if mode == UnitMode::Polres {
+        let polsek = row.polsek.trim();
+        if !is_noise(polsek) {
+            return Some((Scope::Polres, polsek.to_string()));
+        }
+        let label = record_satker_label(row);
+        if !is_noise(&label) {
+            return Some((Scope::Satker, label));
+        }
+        return None;
+    }
     if record_is_polda(row) {
         let label = record_satker_label(row);
         if !is_noise(&label) {
@@ -1311,5 +1370,57 @@ mod tests {
             assert_eq!(metric.total, 1.0);
             assert_eq!(metric.filled_rows, 1);
         }
+    }
+
+    #[test]
+    fn scopes_coverage_to_one_polres() {
+        let mut polsek_row = row("QW1.5", "Polsek", "Polres Buleleng", &[], 3, 0, 0.0, 0);
+        polsek_row.polsek = "Polsek Kuta".into();
+        polsek_row.unit = "Polsek Kuta".into();
+
+        let mut polres_row = row("QW1.5", "Polres", "Polres Buleleng", &[], 4, 0, 0.0, 0);
+        polres_row.pelaksana = "Lantas Polres".into();
+        polres_row.unit = "Polres Buleleng".into();
+
+        let other_row = row("QW1.5", "Polres", "Polres Bangli", &[], 1, 0, 0.0, 0);
+        let rows = vec![polsek_row, polres_row, other_row];
+
+        let plain = build_coverage("2026-10-15", "2026-10-23", &rows);
+        assert_eq!(plain.filter_polres, "");
+        assert_eq!(plain.total_rows, 3);
+        assert_eq!(plain.polres_options.len(), 2);
+        assert_eq!(plain.known_polres.len(), 2);
+
+        let scoped =
+            build_coverage_scoped("2026-10-15", "2026-10-23", &rows, Some("polres buleleng"));
+        assert_eq!(scoped.filter_polres, "polres buleleng");
+        assert_eq!(scoped.total_rows, 2);
+        assert_eq!(scoped.polres_options.len(), 2);
+        assert_eq!(scoped.known_polres, vec!["Polsek Kuta".to_string()]);
+        assert_eq!(scoped.known_satker, vec!["Lantas Polres".to_string()]);
+        assert_eq!(scoped.active_polres, 1);
+        assert_eq!(scoped.active_satker, 1);
+
+        let green = scoped
+            .programs
+            .iter()
+            .find(|program| program.key == "green_policing")
+            .unwrap();
+        assert_eq!(green.rows, 2);
+        assert_eq!(green.polres, 1);
+        assert_eq!(green.satker, 1);
+        assert_eq!(green.by_polres.len(), 1);
+        assert_eq!(green.by_polres[0].label, "Polsek Kuta");
+        assert_eq!(green.by_polres[0].rows, 1);
+        assert_eq!(green.by_satker.len(), 1);
+        assert_eq!(green.by_satker[0].label, "Lantas Polres");
+        assert_eq!(green.by_satker[0].rows, 1);
+
+        let narkoba = scoped
+            .programs
+            .iter()
+            .find(|program| program.key != "green_policing")
+            .unwrap();
+        assert_eq!(narkoba.rows, 0);
     }
 }

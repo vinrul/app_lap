@@ -13,6 +13,7 @@ use crate::{
     modules::{
         imports::{
             analysis,
+            coverage::{self, Scope, UnitMode},
             models::{
                 CoverageResponse, EvidenceView, ImportPreview, ImportView, ParsedRow,
                 QuickWinActivity, QuickWinCodeCoverage, QuickWinDetailResponse, RecordQuery,
@@ -728,12 +729,15 @@ pub async fn analysis_for_period(
     ))
 }
 
-pub async fn coverage_for_period(db: &SqlitePool, period_id: &str) -> ApiResult<CoverageResponse> {
+pub async fn coverage_for_period(
+    db: &SqlitePool,
+    period_id: &str,
+    polres: Option<&str>,
+) -> ApiResult<CoverageResponse> {
     let (start, end, _) = periods::service::dates(db, period_id).await?;
     let (rows, _, _) = load_period_rows(db, &start, &end).await?;
-    Ok(crate::modules::imports::coverage::build_coverage(
-        &start, &end, &rows,
-    ))
+    let polres = polres.map(str::trim).filter(|value| !value.is_empty());
+    Ok(coverage::build_coverage_scoped(&start, &end, &rows, polres))
 }
 
 pub async fn record_detail_for_period(
@@ -854,8 +858,15 @@ pub async fn quick_win_detail_for_period(
     period_id: &str,
     code: &str,
     unit: Option<(&str, &str)>,
+    polres: Option<&str>,
 ) -> ApiResult<QuickWinDetailResponse> {
     let unit = resolve_unit_filter(unit)?;
+    let polres = polres.map(str::trim).filter(|value| !value.is_empty());
+    let mode = if polres.is_some() {
+        UnitMode::Polres
+    } else {
+        UnitMode::Polda
+    };
     let normalized = qw::normalize(code);
     let group = qw::group_of(&normalized)
         .ok_or_else(|| ApiError::bad_request("Kode Quick Wins tidak dikenali."))?;
@@ -871,6 +882,11 @@ pub async fn quick_win_detail_for_period(
     let group_rows: Vec<&RecordView> = rows
         .iter()
         .filter(|row| {
+            if let Some(filter) = polres {
+                if !row.polres.trim().eq_ignore_ascii_case(filter) {
+                    return false;
+                }
+            }
             let row_code = qw::normalize(&row.kode);
             row_code == group_code || row_code.starts_with(&prefix)
         })
@@ -885,42 +901,31 @@ pub async fn quick_win_detail_for_period(
             .collect()
     };
 
-    let by_polres = unit_breakdown(
-        matching.iter().filter_map(|row| {
-            if is_noise(&row.polres) {
-                return None;
-            }
-            Some((
-                row.polres.clone(),
-                row.polsek.clone(),
-                row.personel_count,
-                row.bibit_count,
-                row.area_m2,
-                row.jamaah_count,
-            ))
-        }),
-        200,
-    );
-    let by_satker = unit_breakdown(
-        matching.iter().filter_map(|row| {
-            if !record_is_polda(row) {
-                return None;
-            }
-            let label = record_satker_label(row);
-            if is_noise(&label) {
-                return None;
-            }
-            Some((
-                label,
-                String::new(),
-                row.personel_count,
-                row.bibit_count,
-                row.area_m2,
-                row.jamaah_count,
-            ))
-        }),
-        200,
-    );
+    let mut polres_items: Vec<(String, String, i64, i64, f64, i64)> = Vec::new();
+    let mut satker_items: Vec<(String, String, i64, i64, f64, i64)> = Vec::new();
+    for row in &matching {
+        let Some((scope, label)) = coverage::row_unit(row, mode) else {
+            continue;
+        };
+        let item = (
+            label,
+            if mode == UnitMode::Polres {
+                String::new()
+            } else {
+                row.polsek.clone()
+            },
+            row.personel_count,
+            row.bibit_count,
+            row.area_m2,
+            row.jamaah_count,
+        );
+        match scope {
+            Scope::Polres => polres_items.push(item),
+            Scope::Satker => satker_items.push(item),
+        }
+    }
+    let by_polres = unit_breakdown(polres_items, 200);
+    let by_satker = unit_breakdown(satker_items, 200);
 
     let mut code_counts: BTreeMap<String, (i64, BTreeSet<String>, BTreeSet<String>)> =
         BTreeMap::new();
@@ -931,13 +936,15 @@ pub async fn quick_win_detail_for_period(
         }
         let entry = code_counts.entry(row_code).or_default();
         entry.0 += 1;
-        if !is_noise(&row.polres) {
-            entry.1.insert(row.polres.trim().to_ascii_lowercase());
-        }
-        if record_is_polda(row) {
-            let satker = record_satker_label(row);
-            if !is_noise(&satker) {
-                entry.2.insert(satker.to_lowercase());
+        if let Some((scope, label)) = coverage::row_unit(row, mode) {
+            let key = label.trim().to_ascii_lowercase();
+            match scope {
+                Scope::Polres => {
+                    entry.1.insert(key);
+                }
+                Scope::Satker => {
+                    entry.2.insert(key);
+                }
             }
         }
     }
@@ -961,7 +968,7 @@ pub async fn quick_win_detail_for_period(
         Some((scope, label)) => matching
             .iter()
             .copied()
-            .filter(|row| record_matches_unit(row, scope, label))
+            .filter(|row| record_matches_unit(row, scope, label, mode))
             .collect(),
         None => matching.clone(),
     };
@@ -1056,7 +1063,15 @@ fn resolve_unit_filter(unit: Option<(&str, &str)>) -> ApiResult<Option<(String, 
 }
 
 /// Mengecek apakah sebuah baris dikerjakan oleh unit yang difilter.
-fn record_matches_unit(row: &RecordView, scope: &str, label: &str) -> bool {
+fn record_matches_unit(row: &RecordView, scope: &str, label: &str, mode: UnitMode) -> bool {
+    if mode == UnitMode::Polres {
+        return match scope {
+            "polres" => !is_noise(&row.polsek) && row.polsek.trim().eq_ignore_ascii_case(label),
+            _ => {
+                is_noise(&row.polsek) && record_satker_label(row).trim().eq_ignore_ascii_case(label)
+            }
+        };
+    }
     if scope == "polres" {
         return !is_noise(&row.polres) && row.polres.trim().eq_ignore_ascii_case(label);
     }
@@ -1289,7 +1304,7 @@ mod tests {
                 .unwrap();
         assert_eq!(satker_detail.metrics.total_rows, satker.rows);
 
-        let group = super::quick_win_detail_for_period(&db, "p1", "QW1", None)
+        let group = super::quick_win_detail_for_period(&db, "p1", "QW1", None, None)
             .await
             .unwrap();
         assert_eq!(group.group, "QW1");
@@ -1298,7 +1313,7 @@ mod tests {
         assert!(group.polres_count > 0);
         assert!(!group.activities.is_empty());
 
-        let code = super::quick_win_detail_for_period(&db, "p1", "QW1.2", None)
+        let code = super::quick_win_detail_for_period(&db, "p1", "QW1.2", None, None)
             .await
             .unwrap();
         assert_eq!(code.code, "QW1.2");
@@ -1307,10 +1322,15 @@ mod tests {
         assert_eq!(code.activities_total, code.total_rows);
 
         let target = group.by_polres.first().unwrap().label.clone();
-        let scoped =
-            super::quick_win_detail_for_period(&db, "p1", "QW1", Some(("polres", target.as_str())))
-                .await
-                .unwrap();
+        let scoped = super::quick_win_detail_for_period(
+            &db,
+            "p1",
+            "QW1",
+            Some(("polres", target.as_str())),
+            None,
+        )
+        .await
+        .unwrap();
         assert!(!scoped.activities.is_empty());
         assert!(
             scoped
@@ -1323,10 +1343,29 @@ mod tests {
             assert!(scoped.activities_total < group.activities_total);
         }
         assert_eq!(scoped.total_rows, group.total_rows);
-        assert!(
-            super::quick_win_detail_for_period(&db, "p1", "QW1", Some(("polda", target.as_str())))
+
+        let polres_scoped =
+            super::quick_win_detail_for_period(&db, "p1", "QW1", None, Some(target.as_str()))
                 .await
-                .is_err()
+                .unwrap();
+        assert!(polres_scoped.total_rows <= group.total_rows);
+        assert!(
+            polres_scoped
+                .by_polres
+                .iter()
+                .all(|item| !item.label.is_empty())
+        );
+
+        assert!(
+            super::quick_win_detail_for_period(
+                &db,
+                "p1",
+                "QW1",
+                Some(("polda", target.as_str())),
+                None
+            )
+            .await
+            .is_err()
         );
 
         let (rows, _, _) = super::load_period_rows(&db, "2026-10-15", "2026-10-19")

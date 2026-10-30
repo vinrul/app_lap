@@ -112,8 +112,8 @@ export const importsApi = {
     ),
   analysis: (periodId: string) =>
     request<AnalysisResponse>(`/periods/${periodId}/analysis`),
-  coverage: (periodId: string) =>
-    request<CoverageResponse>(`/periods/${periodId}/coverage`),
+  coverage: (periodId: string, polres?: string) =>
+    request<CoverageResponse>(`/periods/${periodId}/coverage${queryString({ polres })}`),
   retryEvidence: (importId: string) =>
     request<{ queued: number }>(`/imports/${importId}/evidence/retry`, { method: 'POST' }),
   unitDetail: (periodId: string, scope: 'polres' | 'satker', label: string) =>
@@ -124,11 +124,13 @@ export const importsApi = {
     periodId: string,
     code: string,
     unit?: { scope: 'polres' | 'satker'; label: string },
+    polres?: string,
   ) =>
     request<QuickWinDetail>(
       `/periods/${periodId}/quick-wins/${encodeURIComponent(code)}${queryString({
         scope: unit?.scope,
         label: unit?.label,
+        polres,
       })}`,
     ),
   recordDetail: (periodId: string, recordId: number) =>

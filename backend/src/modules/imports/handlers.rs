@@ -145,13 +145,19 @@ pub async fn analysis(
     ))
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct CoverageQuery {
+    pub polres: Option<String>,
+}
+
 pub async fn coverage(
     State(state): State<AppState>,
     _user: AuthUser,
     Path(period_id): Path<String>,
+    Query(query): Query<CoverageQuery>,
 ) -> ApiResult<Json<CoverageResponse>> {
     Ok(Json(
-        service::coverage_for_period(&state.db, &period_id).await?,
+        service::coverage_for_period(&state.db, &period_id, query.polres.as_deref()).await?,
     ))
 }
 
@@ -183,6 +189,7 @@ pub async fn unit_detail(
 pub struct QuickWinActivityQuery {
     pub scope: Option<String>,
     pub label: Option<String>,
+    pub polres: Option<String>,
 }
 
 pub async fn quick_win_detail(
@@ -198,7 +205,14 @@ pub async fn quick_win_detail(
         _ => None,
     };
     Ok(Json(
-        service::quick_win_detail_for_period(&state.db, &period_id, &code, unit).await?,
+        service::quick_win_detail_for_period(
+            &state.db,
+            &period_id,
+            &code,
+            unit,
+            query.polres.as_deref(),
+        )
+        .await?,
     ))
 }
 

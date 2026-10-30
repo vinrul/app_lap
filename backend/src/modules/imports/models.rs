@@ -320,6 +320,10 @@ pub struct CoverageResponse {
     pub active_satker: i64,
     pub known_polres: Vec<String>,
     pub known_satker: Vec<String>,
+    /// Semua polres pada periode, dipakai sebagai pilihan filter.
+    pub polres_options: Vec<String>,
+    /// Polres yang sedang difilter; kosong berarti seluruh Polda.
+    pub filter_polres: String,
     pub groups: Vec<CoverageGroup>,
     pub programs: Vec<CoverageProgram>,
 }

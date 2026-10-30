@@ -36,6 +36,10 @@
   let error = $state('')
   let expandedGroup = $state<string | null>(null)
   let activeProgram = $state('')
+  let polresFilter = $state('')
+  let polresLoading = $state(false)
+  let polresError = $state('')
+  let polresRequest = 0
   let groupDetail = $state<QuickWinDetail | null>(null)
   let groupDetailCode = $state('')
   let groupDetailLoading = $state(false)
@@ -62,7 +66,7 @@
     loading = true
     error = ''
     try {
-      data = await importsApi.coverage(periodId)
+      data = await importsApi.coverage(periodId, polresFilter || undefined)
       if (!data.programs.some((program) => program.key === activeProgram)) {
         activeProgram = data.programs[0]?.key ?? ''
       }
@@ -91,13 +95,24 @@
       data?.programs[0] ??
       null,
   )
+  const polresOptions = $derived(data?.polres_options ?? [])
+  const activePolres = $derived(data?.filter_polres ?? '')
+  const primaryLabel = $derived(activePolres ? 'Polsek' : 'Polres')
+  const secondaryLabel = $derived(activePolres ? 'Satker Polres' : 'Satker Polda')
+  const primaryLower = $derived(activePolres ? 'polsek' : 'polres')
+  const secondaryLower = $derived(activePolres ? 'satker polres' : 'satker')
   const unitScopes = $derived(
     active
       ? [
-          { label: 'Satker Polda', units: active.by_satker },
-          { label: 'Polres', units: active.by_polres },
+          { label: secondaryLabel, units: active.by_satker },
+          { label: primaryLabel, units: active.by_polres },
         ]
       : [],
+  )
+  const unitScopeHint = $derived(
+    activePolres
+      ? `Rincian ${activePolres}: ${secondaryLower} dan ${primaryLower} pelaksana.`
+      : 'Nilai metrik dan penanda isian.',
   )
   const modalTitle = $derived(
     modalDetail ? `${modalDetail.code} · ${modalDetail.title}` : modalCode || 'Detail sub-kode',
@@ -179,6 +194,30 @@
     return unit.values.find((value) => value.key === key)
   }
 
+  async function changePolres(value: string) {
+    polresFilter = value
+    polresError = ''
+    expandedGroup = null
+    groupDetail = null
+    groupDetailCode = ''
+    const current = ++polresRequest
+    polresLoading = true
+    try {
+      const result = await importsApi.coverage(periodId, value || undefined)
+      if (current !== polresRequest) return
+      data = result
+      if (!result.programs.some((program) => program.key === activeProgram)) {
+        activeProgram = result.programs[0]?.key ?? ''
+      }
+    } catch (caught) {
+      if (current !== polresRequest) return
+      polresError = errorMessage(caught)
+      polresFilter = data?.filter_polres ?? ''
+    } finally {
+      if (current === polresRequest) polresLoading = false
+    }
+  }
+
   async function toggleGroup(code: string) {
     if (expandedGroup === code) {
       expandedGroup = null
@@ -196,7 +235,12 @@
     groupDetailError = ''
     groupDetailLoading = true
     try {
-      const result = await importsApi.quickWinDetail(periodId, target)
+      const result = await importsApi.quickWinDetail(
+        periodId,
+        target,
+        undefined,
+        activePolres || undefined,
+      )
       if (groupDetailCode !== target) return
       groupDetail = result
     } catch (caught) {
@@ -215,7 +259,12 @@
     modalError = ''
     modalLoading = true
     try {
-      const result = await importsApi.quickWinDetail(periodId, code)
+      const result = await importsApi.quickWinDetail(
+        periodId,
+        code,
+        undefined,
+        activePolres || undefined,
+      )
       if (modalCode !== code) return
       modalDetail = result
     } catch (caught) {
@@ -240,7 +289,7 @@
     filterError = ''
     filterLoading = true
     try {
-      const result = await importsApi.quickWinDetail(periodId, code, { scope, label })
+      const result = await importsApi.quickWinDetail(periodId, code, { scope, label }, activePolres || undefined)
       if (modalCode !== code) return
       filteredActivities = result.activities
       filteredTotal = result.activities_total
@@ -336,7 +385,7 @@
           <tr>
             <th class="whitespace-nowrap px-3 py-2">Unit</th>
             <th class="whitespace-nowrap px-3 py-2 text-right">Kegiatan</th>
-            {#if scope === 'polres'}<th class="whitespace-nowrap px-3 py-2 text-right">Polsek</th>{/if}
+            {#if scope === 'polres' && !activePolres}<th class="whitespace-nowrap px-3 py-2 text-right">Polsek</th>{/if}
             <th class="whitespace-nowrap px-3 py-2 text-right">Personel</th>
           </tr>
         </thead>
@@ -363,7 +412,7 @@
                 {/if}
               </td>
               <td class="px-3 py-2 text-right">{formatNumber(item.rows)}</td>
-              {#if scope === 'polres'}<td class="px-3 py-2 text-right text-ink-muted">{formatNumber(item.polsek)}</td>{/if}
+              {#if scope === 'polres' && !activePolres}<td class="px-3 py-2 text-right text-ink-muted">{formatNumber(item.polsek)}</td>{/if}
               <td class="px-3 py-2 text-right">{formatNumber(item.personel)}</td>
             </tr>
           {/each}
@@ -428,12 +477,43 @@
   </div>
 {:else if data}
   <div class="space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-white px-4 py-3">
+      <div>
+        <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Filter cakupan</p>
+        <p class="mt-0.5 text-[11px] text-ink-muted">
+          {polresFilter
+            ? `Menampilkan ${polresFilter} saja: rincian per ${primaryLower} dan ${secondaryLower}.`
+            : 'Menampilkan seluruh Polda. Pilih polres untuk melihat rincian polsek dan satker polres.'}
+        </p>
+      </div>
+      <label class="flex items-center gap-2 text-[10px] font-bold tracking-[0.1em] text-ink-muted uppercase">
+        Polres
+        <select
+          class="input w-60 py-1.5 text-xs font-normal tracking-normal normal-case"
+          value={polresFilter}
+          disabled={polresLoading}
+          onchange={(event) => changePolres(event.currentTarget.value)}
+        >
+          <option value="">Semua polres</option>
+          {#each polresOptions as option (option)}
+            <option value={option}>{option}</option>
+          {/each}
+        </select>
+      </label>
+    </div>
+
+    {#if polresError}
+      <div class="flex flex-wrap items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+        <AlertCircle size={17} /> {polresError}
+      </div>
+    {/if}
+
     <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
       {#each [
         { label: 'Kelompok QW', value: `${groupsPerformed}/${data.groups.length}`, hint: 'kelompok dengan kegiatan', icon: Layers },
         { label: 'Sub-kode', value: `${codesPerformed}/${totalCodes}`, hint: 'sub-kode dengan kegiatan', icon: Check },
-        { label: 'Polres aktif', value: `${data.active_polres}/${data.known_polres.length}`, hint: 'melapor pada periode', icon: Users },
-        { label: 'Satker Polda aktif', value: `${data.active_satker}/${data.known_satker.length}`, hint: 'melapor pada periode', icon: ShieldCheck },
+        { label: `${primaryLabel} aktif`, value: `${data.active_polres}/${data.known_polres.length}`, hint: 'melapor pada periode', icon: Users },
+        { label: `${secondaryLabel} aktif`, value: `${data.active_satker}/${data.known_satker.length}`, hint: 'melapor pada periode', icon: ShieldCheck },
         { label: 'Baris dianalisis', value: formatNumber(data.total_rows), hint: `${formatDate(data.date_start)} – ${formatDate(data.date_end)}`, icon: Rows3 },
       ] as card}
         <article class="card p-4">
@@ -450,7 +530,9 @@
         <div>
           <span class="eyebrow">CAKUPAN QUICK WINS</span>
           <h2 class="panel-title mt-0.5">Pelaksanaan per kelompok & sub-kode</h2>
-          <p class="mt-1 text-[10px] text-ink-muted">Dihitung dari satker/polres yang memiliki baris pada periode ini.</p>
+          <p class="mt-1 text-[10px] text-ink-muted">
+            Dihitung dari {secondaryLower}/{primaryLower} yang memiliki baris pada periode ini.
+          </p>
         </div>
         <span class="badge badge-neutral">{data.groups.length} kelompok</span>
       </div>
@@ -471,8 +553,8 @@
                 </div>
               </div>
               <div class="flex flex-wrap items-center gap-5">
-                {@render coverageStat('Polres', group.polres, data.known_polres.length)}
-                {@render coverageStat('Satker', group.satker, data.known_satker.length)}
+                {@render coverageStat(primaryLabel, group.polres, data.known_polres.length)}
+                {@render coverageStat(secondaryLabel, group.satker, data.known_satker.length)}
                 <ChevronRight size={16} class="shrink-0 text-ink-muted transition-transform {open ? 'rotate-90' : ''}" />
               </div>
             </button>
@@ -491,11 +573,11 @@
                 {:else if groupDetail && groupDetail.code === group.code}
                   <div class="grid gap-4 xl:grid-cols-2">
                     <div>
-                      <p class="mb-2 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per polres</p>
+                      <p class="mb-2 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per {primaryLower}</p>
                       {@render unitTable(groupDetail.by_polres, 'polres', null)}
                     </div>
                     <div>
-                      <p class="mb-2 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per satker Polda</p>
+                      <p class="mb-2 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per {secondaryLower}</p>
                       {@render unitTable(groupDetail.by_satker, 'satker', null)}
                     </div>
                   </div>
@@ -504,7 +586,7 @@
                 <div>
                   <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
                     <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Sub-kode {group.code}</p>
-                    <span class="text-[10px] text-ink-muted">Klik sub-kode untuk rincian per polres.</span>
+                    <span class="text-[10px] text-ink-muted">Klik sub-kode untuk rincian per {primaryLower}.</span>
                   </div>
                   <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                     {#each group.codes as code (code.code)}
@@ -519,9 +601,9 @@
                         </div>
                         <p class="mt-1.5 line-clamp-2 text-[11px] font-medium leading-snug text-ink">{code.title}</p>
                         <p class="mt-1.5 text-[10px] text-ink-muted">
-                          {code.polres} polres · {code.satker} satker
+                          {code.polres} {primaryLower} · {code.satker} {secondaryLower}
                           {#if code.polres_missing || code.satker_missing}
-                            <span class="text-red-700"> · belum {code.polres_missing} polres / {code.satker_missing} satker</span>
+                            <span class="text-red-700"> · belum {code.polres_missing} {primaryLower} / {code.satker_missing} {secondaryLower}</span>
                           {/if}
                         </p>
                         <p class="mt-1.5 text-[10px] font-semibold text-forest-700">Lihat rincian →</p>
@@ -576,13 +658,13 @@
                 {#if active.code}<span class="ml-2 text-[11px] font-normal text-ink-muted">{active.code}</span>{/if}
               </p>
               <p class="mt-1 text-[11px] text-ink-muted">
-                {formatNumber(active.rows)} baris · {active.polres}/{active.polres_total} polres · {active.satker}/{active.satker_total} satker
+                {formatNumber(active.rows)} baris · {active.polres}/{active.polres_total} {primaryLower} · {active.satker}/{active.satker_total} {secondaryLower}
               </p>
             </div>
             {#if active.key !== 'media'}
               <div class="flex flex-wrap gap-4">
-                {@render coverageStat('Polres', active.polres, active.polres_total)}
-                {@render coverageStat('Satker', active.satker, active.satker_total)}
+                {@render coverageStat(primaryLabel, active.polres, active.polres_total)}
+                {@render coverageStat(secondaryLabel, active.satker, active.satker_total)}
               </div>
             {/if}
           </div>
@@ -593,7 +675,7 @@
                 <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{metric.label}</p>
                 <p class="mt-1 font-display text-xl text-forest-900">{formatValue(metric.total, metric.unit)}</p>
                 <p class="mt-1 text-[10px] text-ink-muted">
-                  {metric.filled_polres}/{active.polres} polres · {metric.filled_satker}/{active.satker} satker mengisi
+                  {metric.filled_polres}/{active.polres} {primaryLower} · {metric.filled_satker}/{active.satker} {secondaryLower} mengisi
                 </p>
                 <p class="mt-0.5 text-[10px] {active.rows === 0 ? 'text-ink-muted' : metric.missing_rows > 0 ? 'text-red-700' : 'text-forest-600'}">
                   {#if active.rows === 0}
@@ -611,11 +693,11 @@
           {#if active.key !== 'media'}
             <div class="grid gap-4 xl:grid-cols-2">
               <div class="rounded-xl border border-line p-3.5">
-                <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Polres belum melaksanakan</p>
+                <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{primaryLabel} belum melaksanakan</p>
                 <div class="mt-2">{@render chips(active.polres_missing)}</div>
               </div>
               <div class="rounded-xl border border-line p-3.5">
-                <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Satker Polda belum melaksanakan</p>
+                <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{secondaryLabel} belum melaksanakan</p>
                 <div class="mt-2">{@render chips(active.satker_missing)}</div>
               </div>
             </div>
@@ -654,7 +736,7 @@
               <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
                 <div>
                   <p class="text-xs font-bold tracking-[0.12em] text-ink-muted uppercase">{scope.label}</p>
-                  <p class="mt-0.5 text-[10px] text-ink-muted">Nilai metrik dan penanda isian.</p>
+                  <p class="mt-0.5 text-[10px] text-ink-muted">{unitScopeHint}</p>
                 </div>
                 <span class="text-[10px] text-ink-muted">{scope.units.length} unit</span>
               </div>
@@ -730,8 +812,8 @@
       <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {#each [
           { label: 'Kegiatan', value: formatNumber(modalDetail.total_rows) },
-          { label: 'Polres', value: formatNumber(modalDetail.polres_count) },
-          { label: 'Satker Polda', value: formatNumber(modalDetail.satker_count) },
+          { label: primaryLabel, value: formatNumber(modalDetail.polres_count) },
+          { label: secondaryLabel, value: formatNumber(modalDetail.satker_count) },
           { label: 'Personel', value: formatNumber(modalDetail.personel) },
         ] as card}
           <div class="rounded-xl border border-line bg-stone-50/60 px-3 py-2.5">
@@ -744,14 +826,14 @@
       <div class="grid gap-4 xl:grid-cols-2">
         <section>
           <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per polres</p>
+            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per {primaryLower}</p>
             <span class="text-[10px] text-ink-muted">Klik unit untuk filter</span>
           </div>
           {@render unitTable(modalDetail.by_polres, 'polres', (label) => filterByUnit('polres', label))}
         </section>
         <section>
           <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per satker Polda</p>
+            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per {secondaryLower}</p>
             <span class="text-[10px] text-ink-muted">Klik unit untuk filter</span>
           </div>
           {@render unitTable(modalDetail.by_satker, 'satker', (label) => filterByUnit('satker', label))}
@@ -760,11 +842,11 @@
 
       <div class="grid gap-4 xl:grid-cols-2">
         <div class="rounded-xl border border-line p-3.5">
-          <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Polres belum melaksanakan</p>
+          <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{primaryLabel} belum melaksanakan</p>
           <div class="mt-2">{@render chips(modalMissingPolres)}</div>
         </div>
         <div class="rounded-xl border border-line p-3.5">
-          <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Satker Polda belum melaksanakan</p>
+          <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{secondaryLabel} belum melaksanakan</p>
           <div class="mt-2">{@render chips(modalMissingSatker)}</div>
         </div>
       </div>
@@ -778,7 +860,7 @@
             {#if activityFilter}
               <p class="mt-0.5 flex flex-wrap items-center gap-2 text-[10px] text-ink-muted">
                 <span class="rounded-md bg-forest-50 px-1.5 py-0.5 font-semibold text-forest-700">
-                  {activityFilter.scope === 'polres' ? 'Polres' : 'Satker Polda'}: {activityFilter.label}
+                  {activityFilter.scope === 'polres' ? primaryLabel : secondaryLabel}: {activityFilter.label}
                 </span>
                 <button
                   type="button"
@@ -790,7 +872,7 @@
               </p>
             {:else}
               <p class="mt-0.5 text-[10px] text-ink-muted">
-                Klik nama polres atau satker pada tabel di atas untuk memfilter kegiatan.
+                Klik nama {primaryLower} atau {secondaryLower} pada tabel di atas untuk memfilter kegiatan.
               </p>
             {/if}
           </div>
