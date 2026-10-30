@@ -32,6 +32,8 @@
   type Props = { periodId: string }
   let { periodId }: Props = $props()
 
+  type ActivityScope = 'polres' | 'satker' | 'masyarakat'
+
   let data = $state<CoverageResponse | null>(null)
   let loading = $state(true)
   let error = $state('')
@@ -56,7 +58,7 @@
   let activityRecord = $state<RecordItem | null>(null)
   let activityLoading = $state(false)
   let activityError = $state('')
-  let activityFilter = $state<{ scope: 'polres' | 'satker'; label: string } | null>(null)
+  let activityFilter = $state<{ scope: ActivityScope; label: string } | null>(null)
   let filteredActivities = $state<QuickWinActivity[] | null>(null)
   let filteredTotal = $state(0)
   let filterLoading = $state(false)
@@ -266,7 +268,7 @@
     clearActivityFilter()
   }
 
-  async function loadActivityFilter(code: string, scope: 'polres' | 'satker', label: string) {
+  async function loadActivityFilter(code: string, scope: ActivityScope, label: string) {
     filteredActivities = null
     filteredTotal = 0
     filterError = ''
@@ -291,6 +293,15 @@
     }
     activityFilter = { scope, label }
     void loadActivityFilter(modalCode, scope, label)
+  }
+
+  function filterByCommunity(label: string) {
+    if (activityFilter?.scope === 'masyarakat' && activityFilter?.label === label) {
+      clearActivityFilter()
+      return
+    }
+    activityFilter = { scope: 'masyarakat', label }
+    void loadActivityFilter(modalCode, 'masyarakat', label)
   }
 
   function clearActivityFilter() {
@@ -813,6 +824,32 @@
         </section>
       </div>
 
+      {#if modalDetail.communities.length}
+        <section class="rounded-xl border border-line p-3.5">
+          <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Masyarakat yang terlibat</p>
+            <span class="text-[10px] text-ink-muted">Klik kategori untuk filter kegiatan</span>
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            {#each modalDetail.communities as item (item.label)}
+              {@const selected = activityFilter?.scope === 'masyarakat' && activityFilter?.label === item.label}
+              <button
+                type="button"
+                class="rounded-md border px-2 py-1 text-[10px] transition-colors {selected
+                  ? 'border-forest-700 bg-forest-50 font-semibold text-forest-900'
+                  : 'border-line bg-white text-ink hover:border-gold-300 hover:bg-gold-50/40'}"
+                aria-pressed={selected}
+                title="Tampilkan kegiatan yang melibatkan {item.label} saja"
+                onclick={() => filterByCommunity(item.label)}
+              >
+                {item.label}
+                <span class="ml-1 font-semibold text-forest-700">{formatNumber(item.count)}</span>
+              </button>
+            {/each}
+          </div>
+        </section>
+      {/if}
+
       <div class="grid gap-4 xl:grid-cols-2">
         <div class="rounded-xl border border-line p-3.5">
           <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{primaryLabel} belum melaksanakan</p>
@@ -833,7 +870,11 @@
             {#if activityFilter}
               <p class="mt-0.5 flex flex-wrap items-center gap-2 text-[10px] text-ink-muted">
                 <span class="rounded-md bg-forest-50 px-1.5 py-0.5 font-semibold text-forest-700">
-                  {activityFilter.scope === 'polres' ? primaryLabel : secondaryLabel}: {activityFilter.label}
+                  {activityFilter.scope === 'polres'
+                    ? primaryLabel
+                    : activityFilter.scope === 'satker'
+                      ? secondaryLabel
+                      : 'Masyarakat'}: {activityFilter.label}
                 </span>
                 <button
                   type="button"
@@ -845,7 +886,7 @@
               </p>
             {:else}
               <p class="mt-0.5 text-[10px] text-ink-muted">
-                Klik nama {primaryLower} atau {secondaryLower} pada tabel di atas untuk memfilter kegiatan.
+                Klik nama {primaryLower}, {secondaryLower}, atau kategori masyarakat di atas untuk memfilter kegiatan.
               </p>
             {/if}
           </div>

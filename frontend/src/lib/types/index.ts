@@ -591,6 +591,7 @@ export interface QuickWinDetail {
   personel: number
   polres_count: number
   satker_count: number
+  communities: LabeledCount[]
   by_polres: UnitBreakdown[]
   by_satker: UnitBreakdown[]
   codes: QuickWinCodeCoverage[]

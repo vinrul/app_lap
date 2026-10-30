@@ -123,7 +123,7 @@ export const importsApi = {
   quickWinDetail: (
     periodId: string,
     code: string,
-    unit?: { scope: 'polres' | 'satker'; label: string },
+    unit?: { scope: 'polres' | 'satker' | 'masyarakat'; label: string },
     polres?: string,
   ) =>
     request<QuickWinDetail>(

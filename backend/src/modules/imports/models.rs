@@ -303,6 +303,8 @@ pub struct QuickWinDetailResponse {
     pub personel: i64,
     pub polres_count: i64,
     pub satker_count: i64,
+    /// Kategori masyarakat yang terlibat beserta jumlah laporannya.
+    pub communities: Vec<LabeledCount>,
     pub by_polres: Vec<UnitBreakdown>,
     pub by_satker: Vec<UnitBreakdown>,
     pub codes: Vec<QuickWinCodeCoverage>,

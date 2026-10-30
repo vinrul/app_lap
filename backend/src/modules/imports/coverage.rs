@@ -8,7 +8,7 @@ use crate::{
         },
         qw,
     },
-    shared::{LabeledCount, extract_links, is_noise, parse_count},
+    shared::{extract_links, is_noise, parse_count, LabeledCount},
 };
 
 use super::duties::{self, DutyLevel};
@@ -454,6 +454,1235 @@ fn personnel_label(key: &str) -> Option<&'static str> {
     None
 }
 
+/// Field angka yang mencatat jumlah personel Polri.
+fn is_polri_personnel_key(key: &str) -> bool {
+    let lower = key.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    if [
+        "keluhan",
+        "problem",
+        "komplain",
+        "saran",
+        "pendapat",
+        "tindak lanjut",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+    {
+        return false;
+    }
+    if [
+        "bnn",
+        "tni",
+        "warga",
+        "masyarakat",
+        "siswa",
+        "guru",
+        "sekolah",
+        "pemda",
+        "instansi",
+        "keluarga",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+    {
+        return false;
+    }
+    ["polri", "polisi", "personel", "personil"]
+        .iter()
+        .any(|word| lower.contains(word))
+}
+
+fn polri_field_count(value: &str) -> Option<i64> {
+    let lower = value.to_ascii_lowercase();
+    if [
+        "keluhan",
+        "ditindaklanjuti",
+        "tindak lanjut",
+        "problem",
+        "saran",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+    {
+        return None;
+    }
+    parse_count(value)
+}
+
+/// Field teks yang wajar memuat rincian personel/peserta kegiatan.
+fn is_personnel_text_key(key: &str) -> bool {
+    let lower = key.trim().to_ascii_lowercase();
+    if [
+        "pertimbangan",
+        "alasan",
+        "saran",
+        "problem",
+        "keluhan",
+        "komplain",
+        "tindak lanjut",
+        "pendapat",
+        "dokumentasi",
+        "link",
+        "nama dan pangkat",
+        "materi",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+    {
+        return false;
+    }
+    [
+        "peserta",
+        "cara bertindak",
+        "kegiatan",
+        "uraian",
+        "personel",
+        "personil",
+        "hadir",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+}
+
+/// Membuang keterangan dalam kurung, mis. `Warga (anggota organisasi)`.
+fn without_parenthetical(text: &str) -> String {
+    let mut output = String::new();
+    let mut depth = 0_i32;
+    for character in text.chars() {
+        match character {
+            '(' => depth += 1,
+            ')' => depth = (depth - 1).max(0),
+            _ if depth == 0 => output.push(character),
+            _ => {}
+        }
+    }
+    output
+}
+
+/// Kategori personel dari label pendek, mis. `Polri`, `Guru dan Staf`, `Siswa kelas VII`.
+fn personnel_category(label: &str) -> Option<&'static str> {
+    let lower = without_parenthetical(&label.trim().to_ascii_lowercase());
+    let lower = lower.strip_prefix("jumlah ").unwrap_or(&lower);
+    let cleaned = lower
+        .trim_matches(|character: char| !character.is_alphanumeric() && character != '/')
+        .trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    let normalized = cleaned.replace('/', " ");
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    if words.is_empty() || words.len() > 4 {
+        return None;
+    }
+    let banned = [
+        "problem",
+        "keluhan",
+        "komplain",
+        "saran",
+        "masukan",
+        "tindak",
+        "lanjut",
+        "menghimbau",
+        "mengikuti",
+        "hadir",
+        "diikuti",
+        "terdiri",
+        "melaksanakan",
+        "memberikan",
+        "menyampaikan",
+        "berkoordinasi",
+        "melalui",
+        "polsek",
+        "polres",
+    ];
+    if words.iter().any(|word| banned.contains(word)) {
+        return None;
+    }
+    if words
+        .iter()
+        .any(|word| word.chars().all(|character| character.is_ascii_digit()))
+    {
+        return None;
+    }
+
+    let exact = |allowed: &[&str]| {
+        words.len() == allowed.len() && words.iter().zip(allowed).all(|(a, b)| a == b)
+    };
+
+    if exact(&["polri"])
+        || exact(&["polisi"])
+        || exact(&["personel"])
+        || exact(&["personil"])
+        || exact(&["anggota", "polri"])
+        || exact(&["anggota", "polisi"])
+        || exact(&["personel", "polri"])
+        || exact(&["personil", "polri"])
+        || exact(&["personel", "polisi"])
+        || exact(&["personil", "polisi"])
+    {
+        return Some("Polri");
+    }
+    if exact(&["bnn"]) || exact(&["personel", "bnn"]) || exact(&["personil", "bnn"]) {
+        return Some("BNN");
+    }
+    if exact(&["tni"]) || exact(&["personel", "tni"]) || exact(&["personil", "tni"]) {
+        return Some("TNI");
+    }
+    if exact(&["guru"])
+        || exact(&["staf"])
+        || exact(&["staff"])
+        || exact(&["guru", "staf"])
+        || exact(&["guru", "staff"])
+        || exact(&["guru", "dan", "staf"])
+        || exact(&["guru", "dan", "staff"])
+        || exact(&["guru", "&", "staf"])
+        || exact(&["guru", "&", "staff"])
+    {
+        return Some("Guru/staf");
+    }
+    if exact(&["siswa"])
+        || exact(&["siswi"])
+        || exact(&["pelajar"])
+        || exact(&["murid"])
+        || exact(&["siswa", "siswi"])
+        || exact(&["siswa", "dan", "siswi"])
+        || exact(&["peserta", "didik"])
+        || (words.len() <= 3
+            && words
+                .first()
+                .is_some_and(|word| matches!(*word, "siswa" | "siswi" | "pelajar" | "murid")))
+    {
+        return Some("Siswa/pelajar");
+    }
+    if exact(&["mahasiswa"]) || exact(&["mahasiswi"]) {
+        return Some("Mahasiswa");
+    }
+    if exact(&["warga"]) || exact(&["masyarakat"]) || exact(&["warga", "masyarakat"]) {
+        return Some("Warga/masyarakat");
+    }
+    if exact(&["pemuda"]) || exact(&["karang", "taruna"]) {
+        return Some("Pemuda");
+    }
+    if exact(&["pecalang"]) {
+        return Some("Pecalang");
+    }
+    if exact(&["prajuru"]) || exact(&["prajuru", "adat"]) {
+        return Some("Prajuru adat");
+    }
+    if exact(&["keluarga"]) {
+        return Some("Keluarga");
+    }
+    if exact(&["pemda"]) || exact(&["instansi"]) || exact(&["pemda", "instansi"]) {
+        return Some("Pemda/instansi");
+    }
+    if exact(&["dinas"]) || exact(&["dinas", "terkait"]) {
+        return Some("Pemda/instansi");
+    }
+    if exact(&["jamaah"])
+        || exact(&["jemaah"])
+        || exact(&["warga", "jamaah"])
+        || exact(&["warga", "jemaah"])
+        || exact(&["jamaah", "masjid"])
+        || exact(&["jemaah", "masjid"])
+    {
+        return Some("Jamaah");
+    }
+    if exact(&["jemaat"]) || exact(&["umat"]) || exact(&["jemaat", "ibadah"]) {
+        return Some("Jemaat");
+    }
+    if exact(&["komunitas"]) || exact(&["paguyuban"]) || exact(&["komunitas", "paguyuban"]) {
+        return Some("Komunitas");
+    }
+    if exact(&["tokoh", "masyarakat"])
+        || exact(&["tokoh", "masyarakat", "adat"])
+        || exact(&["tokoh", "adat"])
+        || exact(&["tokoh", "agama"])
+    {
+        return Some("Tokoh masyarakat/adat");
+    }
+    if exact(&["nelayan"]) || exact(&["abk"]) || exact(&["abk", "nelayan"]) {
+        return Some("Nelayan");
+    }
+    if exact(&["ojek", "online"])
+        || exact(&["ojol"])
+        || exact(&["driver", "online"])
+        || exact(&["pengemudi", "online"])
+    {
+        return Some("Ojek online/driver");
+    }
+    if exact(&["petani"]) || exact(&["kelompok", "tani"]) {
+        return Some("Petani");
+    }
+    if exact(&["peternak"]) || exact(&["kelompok", "peternak"]) {
+        return Some("Peternak");
+    }
+    if exact(&["pedagang"]) || exact(&["pedagang", "pasar"]) {
+        return Some("Pedagang");
+    }
+    if exact(&["buruh"]) || exact(&["karyawan"]) || exact(&["pekerja"]) {
+        return Some("Buruh/pekerja");
+    }
+    if exact(&["lansia"]) {
+        return Some("Lansia");
+    }
+    None
+}
+
+fn digits_before(text: &str) -> Option<i64> {
+    let trimmed = text.trim_end();
+    let token: String = trimmed
+        .chars()
+        .rev()
+        .take_while(|character| character.is_ascii_digit() || matches!(character, '.' | ','))
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if token.is_empty() {
+        return None;
+    }
+    parse_count(&token)
+}
+
+/// Menjumlahkan angka sebelum frasa, mis. `1 saran atau keluhan`.
+fn sum_number_before(text: &str, needle: &str) -> i64 {
+    let lower = text.to_ascii_lowercase();
+    let mut total = 0_i64;
+    let mut start = 0;
+    while let Some(offset) = lower[start..].find(needle) {
+        let position = start + offset;
+        if let Some(count) = digits_before(&text[..position]) {
+            total += count;
+        }
+        start = position + needle.len();
+    }
+    total
+}
+
+fn strip_list_marker(text: &str) -> &str {
+    let mut trimmed = text.trim();
+    for _ in 0..2 {
+        trimmed = trimmed
+            .trim_start_matches(['-', '•', '*', '–', '—'])
+            .trim_start();
+        let digits = trimmed
+            .chars()
+            .take_while(|character| character.is_ascii_digit())
+            .count();
+        if digits > 0 {
+            let rest = &trimmed[digits..];
+            if let Some(rest) = rest.strip_prefix('.').or_else(|| rest.strip_prefix(')')) {
+                trimmed = rest.trim_start();
+                continue;
+            }
+        }
+        let mut characters = trimmed.chars();
+        if let (Some(first), Some(second)) = (characters.next(), characters.next()) {
+            if first.is_ascii_alphabetic()
+                && matches!(second, '.' | ')')
+                && characters.next().is_some_and(char::is_whitespace)
+            {
+                trimmed = &trimmed[first.len_utf8() + second.len_utf8()..];
+                trimmed = trimmed.trim_start();
+                continue;
+            }
+        }
+        break;
+    }
+    trimmed
+}
+
+fn leading_count(text: &str) -> Option<i64> {
+    let trimmed = text.trim_start_matches(|character: char| {
+        character.is_whitespace() || matches!(character, ':' | '-' | '=' | '(')
+    });
+    let token: String = trimmed
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || matches!(character, '.' | ','))
+        .collect();
+    if token.is_empty() {
+        return None;
+    }
+    parse_count(&token)
+}
+
+fn leading_count_and_rest(text: &str) -> Option<(i64, &str)> {
+    let trimmed = text.trim_start();
+    let mut digits = String::new();
+    let mut end = 0;
+    for (index, character) in trimmed.char_indices() {
+        if character.is_ascii_digit() || (matches!(character, '.' | ',') && !digits.is_empty()) {
+            digits.push(character);
+            end = index + character.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if digits.is_empty() {
+        return None;
+    }
+    let rest = trimmed[end..].trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+    Some((parse_count(&digits)?, rest))
+}
+
+/// Memecah teks menjadi baris angka, termasuk daftar `1. Polri : 10 Personel. 2. ...`.
+fn personnel_segments(value: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    for line in value.split(['\n', ';']) {
+        let characters: Vec<char> = line.chars().collect();
+        let mut current = String::new();
+        let mut index = 0;
+        while index < characters.len() {
+            if characters[index] == '.'
+                && index + 1 < characters.len()
+                && characters[index + 1].is_whitespace()
+            {
+                let mut next = index + 1;
+                while next < characters.len() && characters[next].is_whitespace() {
+                    next += 1;
+                }
+                let mut digits_end = next;
+                while digits_end < characters.len() && characters[digits_end].is_ascii_digit() {
+                    digits_end += 1;
+                }
+                if digits_end > next
+                    && digits_end + 1 < characters.len()
+                    && matches!(characters[digits_end], '.' | ')')
+                    && characters[digits_end + 1].is_whitespace()
+                {
+                    segments.push(current.trim().to_string());
+                    current.clear();
+                    index = digits_end + 1;
+                    continue;
+                }
+            }
+            current.push(characters[index]);
+            index += 1;
+        }
+        segments.push(current.trim().to_string());
+    }
+    segments
+}
+
+fn personnel_segment_count(segment: &str) -> Option<(&'static str, i64)> {
+    let text = strip_list_marker(segment);
+    if text.is_empty() {
+        return None;
+    }
+    if let Some((label, rest)) = text.split_once(':') {
+        if let Some(count) = leading_count(rest) {
+            if let Some(category) = personnel_category(label) {
+                if count > 0 {
+                    return Some((category, count));
+                }
+            }
+        }
+    }
+    if let Some((label, rest)) = text.split_once('=') {
+        if let Some(count) = leading_count(rest) {
+            if let Some(category) = personnel_category(label) {
+                if count > 0 {
+                    return Some((category, count));
+                }
+            }
+        }
+    }
+    let lower = text.to_ascii_lowercase();
+    if let Some(position) = lower.find("sebanyak") {
+        let label = &text[..position];
+        let rest = &text[position + "sebanyak".len()..];
+        if let Some(count) = leading_count(rest) {
+            if let Some(category) = personnel_category(label) {
+                if count > 0 {
+                    return Some((category, count));
+                }
+            }
+        }
+    }
+    if let Some((count, rest)) = leading_count_and_rest(text) {
+        if let Some(category) = personnel_category(rest) {
+            if count > 0 {
+                return Some((category, count));
+            }
+        }
+    }
+    None
+}
+
+/// Rincian personel yang ditulis dalam teks, mis. `Polri : 10 Personel`.
+fn embedded_personnel(value: &str) -> BTreeMap<&'static str, i64> {
+    let mut counts: BTreeMap<&'static str, i64> = BTreeMap::new();
+    for segment in personnel_segments(value) {
+        if let Some((category, count)) = personnel_segment_count(&segment) {
+            *counts.entry(category).or_default() += count;
+        }
+    }
+    counts
+}
+
+/// Membaca pasangan label/nilai pada satu baris, mis. `Polri = 9 Dinas = 0`.
+fn scan_labeled_counts(value: &str) -> BTreeMap<&'static str, i64> {
+    let characters: Vec<char> = value.chars().collect();
+    let mut counts: BTreeMap<&'static str, i64> = BTreeMap::new();
+    let mut label_start = 0;
+    let mut index = 0;
+    while index < characters.len() {
+        let character = characters[index];
+        if matches!(character, '\n' | ';') {
+            label_start = index + 1;
+            index += 1;
+            continue;
+        }
+        if matches!(character, ':' | '=') {
+            let label: String = characters[label_start..index].iter().collect();
+            let mut next = index + 1;
+            while next < characters.len() && characters[next].is_whitespace() {
+                next += 1;
+            }
+            let mut end = next;
+            while end < characters.len()
+                && (characters[end].is_ascii_digit() || matches!(characters[end], '.' | ','))
+            {
+                end += 1;
+            }
+            if end > next {
+                let token: String = characters[next..end].iter().collect();
+                if let Some(count) = parse_count(&token) {
+                    if let Some(category) = personnel_category(strip_list_marker(&label)) {
+                        *counts.entry(category).or_default() += count;
+                    }
+                }
+                label_start = end;
+                index = end;
+                continue;
+            }
+            label_start = index + 1;
+        }
+        index += 1;
+    }
+    counts
+}
+
+fn number_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut start: Option<usize> = None;
+    for (index, character) in text.char_indices() {
+        if character.is_ascii_digit() || (matches!(character, '.' | ',') && start.is_some()) {
+            if start.is_none() {
+                start = Some(index);
+            }
+        } else if let Some(begin) = start.take() {
+            spans.push((begin, index));
+        }
+    }
+    if let Some(begin) = start {
+        spans.push((begin, text.len()));
+    }
+    spans
+}
+
+/// Jumlah jamaah dari teks, mis. `jamaah sekitar 450 orang` atau `450 jamaah`.
+fn count_near(value: &str, anchors: &[&str]) -> Option<i64> {
+    let mut best: Option<(usize, i64)> = None;
+    for line in value.split(['\n', ';']) {
+        let lower = line.to_ascii_lowercase();
+        for anchor_word in anchors {
+            let Some(anchor) = lower.find(anchor_word) else {
+                continue;
+            };
+            let anchor_end = anchor + anchor_word.len();
+            for (start, end) in number_spans(line) {
+                let Some(count) = parse_count(&line[start..end]) else {
+                    continue;
+                };
+                if count <= 0 || count > 1_000_000 {
+                    continue;
+                }
+                let distance = if end <= anchor {
+                    anchor - end
+                } else if start >= anchor_end {
+                    start - anchor_end
+                } else {
+                    0
+                };
+                if distance <= 20 && best.map_or(true, |(closest, _)| distance < closest) {
+                    best = Some((distance, count));
+                }
+            }
+        }
+    }
+    best.map(|(_, count)| count)
+}
+
+fn jamaah_from_text(value: &str) -> Option<i64> {
+    count_near(value, &["jamaah", "jemaah"])
+}
+
+fn jemaat_from_text(value: &str) -> Option<i64> {
+    count_near(value, &["jemaat", "umat"])
+}
+
+fn merge_best(best: &mut Option<i64>, count: i64) {
+    *best = Some(best.map_or(count, |current| current.max(count)));
+}
+
+#[derive(Default)]
+struct Attendance {
+    polri: Option<i64>,
+    jamaah: Option<i64>,
+    jemaat: Option<i64>,
+    masyarakat: Option<i64>,
+}
+
+/// Jumlah personel Polri, jamaah/jemaat, dan masyarakat yang hadir pada satu laporan.
+fn row_attendance(row: &RecordView) -> Attendance {
+    let mut polri: Option<i64> = None;
+    let mut jamaah: Option<i64> = None;
+    let mut jemaat: Option<i64> = None;
+    for (key, value) in &row.fields {
+        if is_polri_personnel_key(key) {
+            if let Some(count) = polri_field_count(value) {
+                merge_best(&mut polri, count);
+            }
+        }
+        if is_jamaah_key(key) {
+            if let Some(count) = first_count(value) {
+                merge_best(&mut jamaah, count);
+            }
+        }
+        if is_jemaat_key(key) {
+            if let Some(count) = first_count(value) {
+                merge_best(&mut jemaat, count);
+            }
+        }
+    }
+
+    let mut counts: BTreeMap<&'static str, i64> = BTreeMap::new();
+    let scan_pertimbangan = row
+        .fields
+        .keys()
+        .any(|key| key.trim().eq_ignore_ascii_case("peran") || is_jamaah_key(key));
+    for (key, value) in &row.fields {
+        let mut per_field: BTreeMap<&'static str, i64> = BTreeMap::new();
+        if is_personnel_text_key(key) {
+            for (category, count) in embedded_personnel(value) {
+                per_field
+                    .entry(category)
+                    .and_modify(|current| *current = (*current).max(count))
+                    .or_insert(count);
+            }
+        }
+        if is_attendance_scan_key(key) {
+            let lower = key.trim().to_ascii_lowercase();
+            let allowed = !lower.contains("pertimbangan") || scan_pertimbangan;
+            if allowed {
+                for (category, count) in scan_labeled_counts(value) {
+                    per_field
+                        .entry(category)
+                        .and_modify(|current| *current = (*current).max(count))
+                        .or_insert(count);
+                }
+                if let Some(count) = jamaah_from_text(value) {
+                    per_field
+                        .entry("Jamaah")
+                        .and_modify(|current| *current = (*current).max(count))
+                        .or_insert(count);
+                }
+                if let Some(count) = jemaat_from_text(value) {
+                    per_field
+                        .entry("Jemaat")
+                        .and_modify(|current| *current = (*current).max(count))
+                        .or_insert(count);
+                }
+            }
+        }
+        for (category, count) in per_field {
+            let entry = counts.entry(category).or_default();
+            *entry = (*entry).max(count);
+        }
+    }
+    if let Some(count) = counts.get("Polri") {
+        merge_best(&mut polri, *count);
+    }
+    if let Some(count) = counts.get("Jamaah") {
+        merge_best(&mut jamaah, *count);
+    }
+    if let Some(count) = counts.get("Jemaat") {
+        merge_best(&mut jemaat, *count);
+    }
+
+    let masyarakat: i64 = counts
+        .iter()
+        .filter(|(category, _)| **category != "Polri" && **category != "Pemda/instansi")
+        .map(|(_, count)| *count)
+        .sum();
+    Attendance {
+        polri,
+        jamaah,
+        jemaat,
+        masyarakat: (masyarakat > 0).then_some(masyarakat),
+    }
+}
+
+fn is_area_key(key: &str) -> bool {
+    let lower = key.trim().to_ascii_lowercase();
+    (lower.contains("luas area")
+        || lower.contains("luas kegiatan")
+        || lower.contains("area kegiatan"))
+        && !lower.contains("uraian")
+        && !lower.contains("rincian")
+}
+
+fn is_bibit_key(key: &str) -> bool {
+    let lower = key.trim().to_ascii_lowercase();
+    if lower.contains("uraian") || lower.contains("rincian") {
+        return false;
+    }
+    lower.contains("bibit") || (lower.contains("jumlah pohon") && lower.contains("ditanam"))
+}
+
+fn is_jamaah_key(key: &str) -> bool {
+    let lower = key.trim().to_ascii_lowercase();
+    if ["uraian", "rincian", "keluhan", "problem", "saran"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        return false;
+    }
+    lower.contains("jamaah") || lower.contains("jemaah")
+}
+
+fn is_jemaat_key(key: &str) -> bool {
+    let lower = key.trim().to_ascii_lowercase();
+    if ["uraian", "rincian", "keluhan", "problem", "saran"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        return false;
+    }
+    lower.contains("jemaat")
+        || (lower.contains("jumlah") && (lower.contains("ibadah") || lower.contains("umat")))
+}
+
+fn is_ibadah_place_key(key: &str) -> bool {
+    let lower = key.trim().to_ascii_lowercase();
+    lower.contains("tempat ibadah")
+        && !lower.contains("jumlah")
+        && !lower.contains("uraian")
+        && !lower.contains("rincian")
+}
+
+/// Jenis tempat ibadah dari namanya. `None` bila nama bukan tempat ibadah.
+fn ibadah_kind(value: &str) -> Option<&'static str> {
+    let lower = value.to_ascii_lowercase();
+    if lower.contains("gereja") || lower.contains("kapel") {
+        return Some("Gereja");
+    }
+    let tokens: Vec<&str> = lower
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect();
+    if tokens.iter().any(|token| {
+        matches!(
+            *token,
+            "gpi" | "gkii" | "gki" | "hkbp" | "gpib" | "gbi" | "bethel"
+        )
+    }) {
+        return Some("Gereja");
+    }
+    if lower.contains("pura")
+        || lower.contains("pure")
+        || lower.contains("kuil")
+        || lower.contains("penglukatan")
+    {
+        return Some("Pura");
+    }
+    if lower.contains("vihara") || lower.contains("wihara") {
+        return Some("Wihara");
+    }
+    if lower.contains("klenteng") {
+        return Some("Klenteng");
+    }
+    if lower.contains("candi") {
+        return Some("Candi");
+    }
+    if lower.contains("sinagog") {
+        return Some("Sinagog");
+    }
+    if lower.contains("ashram") {
+        return Some("Ashram");
+    }
+    if lower.contains("rumah ibadah") || lower.contains("tempat ibadah") {
+        return Some("Lainnya");
+    }
+    None
+}
+
+/// QW1.8 hanya untuk agama non-Islam; laporan bertema masjid tidak dihitung.
+fn is_masjid_place(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("masjid")
+        || lower.contains("mesjid")
+        || lower.contains("musholla")
+        || lower.contains("musala")
+        || lower.contains("mushola")
+}
+
+fn row_is_masjid(row: &RecordView) -> bool {
+    row.fields
+        .iter()
+        .any(|(key, value)| is_ibadah_place_key(key) && is_masjid_place(value))
+}
+
+fn ibadah_kind_counts(matching: &[&RecordView]) -> (Vec<LabeledCount>, i64) {
+    let mut counts: BTreeMap<&'static str, i64> = BTreeMap::new();
+    let mut filled = 0_i64;
+    for row in matching {
+        for (key, value) in &row.fields {
+            if is_ibadah_place_key(key) && !is_card_noise(value) {
+                if let Some(kind) = ibadah_kind(value) {
+                    *counts.entry(kind).or_default() += 1;
+                    filled += 1;
+                    break;
+                }
+            }
+        }
+    }
+    let mut values: Vec<LabeledCount> = counts
+        .into_iter()
+        .map(|(label, count)| LabeledCount::new(label, count))
+        .collect();
+    values.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    (values, filled)
+}
+
+/// Nama tempat tanpa koordinat di ujung, dipakai saat menghitung lokasi unik.
+fn place_name(value: &str) -> String {
+    let mut name = value.trim().to_ascii_lowercase();
+    if name.ends_with(')') {
+        if let Some(position) = name.rfind('(') {
+            let inner = &name[position + 1..name.len() - 1];
+            if inner.contains(',') || inner.chars().any(|character| character.is_ascii_digit()) {
+                name.truncate(position);
+            }
+        }
+    }
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Field teks yang boleh dipindai untuk rincian kehadiran.
+fn is_attendance_scan_key(key: &str) -> bool {
+    let lower = key.trim().to_ascii_lowercase();
+    if [
+        "dokumentasi",
+        "link",
+        "nama dan pangkat",
+        "pelaksana",
+        "pelapor",
+        "status",
+        "saran",
+        "problem",
+        "keluhan",
+        "materi",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+    {
+        return false;
+    }
+    lower.contains("peran")
+        || lower.contains("pertimbangan pilihan lokasi")
+        || lower.contains("kegiatan lain")
+}
+
+/// Angka pertama pada nilai, mis. `50 Pohon, terdiri dari ...` -> 50.
+fn first_count(value: &str) -> Option<i64> {
+    let trimmed = value.trim();
+    let token: String = trimmed
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || matches!(character, '.' | ','))
+        .collect();
+    if token.is_empty() {
+        parse_count(trimmed)
+    } else {
+        parse_count(&token)
+    }
+}
+
+fn is_green_text_key(key: &str) -> bool {
+    let lower = key.trim().to_ascii_lowercase();
+    if [
+        "dokumentasi",
+        "link",
+        "nama dan pangkat",
+        "pelaksana",
+        "pelapor",
+        "status",
+        "saran",
+        "problem",
+        "keluhan",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+    {
+        return false;
+    }
+    lower.contains("nama lokasi")
+        || lower.contains("lokasi kegiatan")
+        || lower.contains("nama tempat")
+        || lower.contains("pertimbangan pilihan lokasi")
+        || lower.contains("rincian")
+        || lower == "kegiatan"
+        || lower.contains("kegiatan lain")
+}
+
+fn green_text(row: &RecordView) -> String {
+    let mut text = String::new();
+    for (key, value) in &row.fields {
+        if is_green_text_key(key) && !is_card_noise(value) {
+            text.push_str(value);
+            text.push(' ');
+        }
+    }
+    text
+}
+
+/// Jenis area kegiatan dari lokasi, pertimbangan, atau rincian pohon.
+fn area_kind(text: &str) -> Option<&'static str> {
+    let lower = text.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return None;
+    }
+    if lower.contains("mangrove") || lower.contains("bakau") {
+        return Some("Hutan mangrove");
+    }
+    if ["pantai", "pesisir", "segara", "laut", "pulau"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        return Some("Pantai/pesisir");
+    }
+    if [
+        "taman",
+        "lapangan",
+        "alun",
+        "gor ",
+        "shelter",
+        "parkir",
+        "ruang terbuka",
+        "ruang publik",
+        "pedestrian",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+    {
+        return Some("Ruang publik");
+    }
+    if lower.contains("hutan") {
+        return Some("Hutan");
+    }
+    if ["sungai", "bantaran", "saluran", "selokan"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        return Some("Bantaran sungai");
+    }
+    if ["danau", "embung", "waduk", "bendungan", "telaga"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        return Some("Danau/embung");
+    }
+    if ["trotoar", "simpang", "jalan"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        return Some("Jalan/trotoar");
+    }
+    if ["pura", "masjid", "gereja", "vihara", "klenteng"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        return Some("Tempat ibadah");
+    }
+    if ["pasar", "terminal", "sekolah", "kampus", "kantor"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        return Some("Fasilitas umum");
+    }
+    Some("Lainnya")
+}
+
+fn area_kind_counts(matching: &[&RecordView]) -> (Vec<LabeledCount>, i64) {
+    let mut counts: BTreeMap<&'static str, i64> = BTreeMap::new();
+    let mut filled = 0_i64;
+    for row in matching {
+        if let Some(kind) = area_kind(&green_text(row)) {
+            *counts.entry(kind).or_default() += 1;
+            filled += 1;
+        }
+    }
+    let mut values: Vec<LabeledCount> = counts
+        .into_iter()
+        .map(|(label, count)| LabeledCount::new(label, count))
+        .collect();
+    values.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    (values, filled)
+}
+
+fn is_community_key(key: &str) -> bool {
+    let lower = key.trim().to_ascii_lowercase();
+    if lower.contains("saran") || lower.contains("problem") || lower.contains("keluhan") {
+        return false;
+    }
+    lower.contains("komunitas") || lower.contains("paguyuban")
+}
+
+fn is_community_noise(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    is_card_noise(value)
+        || lower.starts_with("tidak melaksanakan")
+        || lower.starts_with("tidak dilaksanakan")
+        || lower.starts_with("masih proses")
+        || lower == "nihl"
+}
+
+const COMMUNITY_RULES: &[(&str, &[&str])] = &[
+    (
+        "Nelayan",
+        &["nelayan", "abk", "kapal", "perahu", "perikanan", "tpi"],
+    ),
+    (
+        "Ojek online/driver",
+        &["ojek", "ojol", "driver", "gojek", "grab", "taksi", "angkot"],
+    ),
+    ("Petani", &["tani", "subak", "sawah", "ladang"]),
+    ("Peternak", &["ternak", "peternak", "ayam", "sapi", "babi"]),
+    (
+        "Pedagang",
+        &[
+            "pedagang", "pasar", "warung", "toko", "usaha", "pkl", "tiket",
+        ],
+    ),
+    (
+        "Pelajar/mahasiswa",
+        &[
+            "siswa",
+            "siswi",
+            "pelajar",
+            "guru",
+            "sekolah",
+            "smp",
+            "sma",
+            "smk",
+            "mahasiswa",
+            "kampus",
+            "universitas",
+        ],
+    ),
+    (
+        "Pariwisata",
+        &["wisata", "pariwisata", "obyek", "hotel", "pemandu", "tour"],
+    ),
+    (
+        "Buruh/pekerja",
+        &[
+            "buruh",
+            "karyawan",
+            "pekerja",
+            "porter",
+            "petugas",
+            "pengelola",
+            "kebersihan",
+        ],
+    ),
+    ("Lansia", &["lansia", "jompo"]),
+    (
+        "Tokoh masyarakat/adat",
+        &[
+            "tokoh", "adat", "prajuru", "pecalang", "bendesa", "pemangku", "krama", "toga",
+            "tomas", "todat",
+        ],
+    ),
+    (
+        "Perangkat desa/kelurahan",
+        &[
+            "perangkat",
+            "aparatur",
+            "kepala desa",
+            "lurah",
+            "perbekel",
+            "kantor desa",
+            "kadus",
+            "dinas",
+            "instansi",
+        ],
+    ),
+    (
+        "Komunitas/paguyuban",
+        &[
+            "komunitas",
+            "paguyuban",
+            "forum",
+            "ormas",
+            "organisasi",
+            "sekehe",
+            "perkumpulan",
+            "klub",
+            "himpunan",
+            "pesemetonan",
+            "banjar",
+        ],
+    ),
+    (
+        "Warga/masyarakat umum",
+        &[
+            "warga",
+            "masyarakat",
+            "penduduk",
+            "umum",
+            "setempat",
+            "keluarga",
+            "kampung",
+            "desa",
+            "kelurahan",
+        ],
+    ),
+];
+
+fn community_kinds(value: &str) -> BTreeSet<&'static str> {
+    let mut kinds = BTreeSet::new();
+    if is_community_noise(value) {
+        return kinds;
+    }
+    let lower = value.to_ascii_lowercase();
+    for (label, needles) in COMMUNITY_RULES {
+        if needles.iter().any(|needle| lower.contains(needle)) {
+            kinds.insert(*label);
+        }
+    }
+    if kinds.is_empty() {
+        kinds.insert("Lainnya");
+    }
+    kinds
+}
+
+/// Kategori masyarakat yang terlibat pada satu laporan.
+pub(crate) fn row_community_kinds(row: &RecordView) -> BTreeSet<&'static str> {
+    let mut kinds = BTreeSet::new();
+    for (key, value) in &row.fields {
+        if is_community_key(key) {
+            kinds.extend(community_kinds(value));
+        }
+    }
+    kinds
+}
+
+/// Jumlah laporan per kategori masyarakat yang terlibat.
+pub(crate) fn community_counts(matching: &[&RecordView]) -> Vec<LabeledCount> {
+    let mut counts: BTreeMap<&'static str, i64> = BTreeMap::new();
+    for row in matching {
+        for kind in row_community_kinds(row) {
+            *counts.entry(kind).or_default() += 1;
+        }
+    }
+    let mut values: Vec<LabeledCount> = counts
+        .into_iter()
+        .map(|(label, count)| LabeledCount::new(label, count))
+        .collect();
+    values.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    values
+}
+
+/// Total personel Polri pada sekumpulan laporan.
+pub(crate) fn polri_total(matching: &[&RecordView]) -> i64 {
+    matching
+        .iter()
+        .filter_map(|row| row_attendance(row).polri)
+        .sum()
+}
+
+fn is_public_feedback_key(key: &str) -> bool {
+    let lower = key.trim().to_ascii_lowercase();
+    if lower.contains("personel") || lower.contains("polri") {
+        return false;
+    }
+    (lower.contains("saran") || lower.contains("masukan") || lower.contains("keluhan"))
+        && (lower.contains("masyarakat") || lower.contains("warga"))
+}
+
+fn public_feedback(row: &RecordView) -> Option<&str> {
+    row.fields.iter().find_map(|(key, value)| {
+        (is_public_feedback_key(key) && !is_card_noise(value)).then_some(value.as_str())
+    })
+}
+
+#[derive(Default)]
+struct FeedbackSummary {
+    apresiasi: i64,
+    keluhan: i64,
+    tindak_lanjut: i64,
+    filled: i64,
+}
+
+fn feedback_summary(matching: &[&RecordView]) -> FeedbackSummary {
+    let mut summary = FeedbackSummary::default();
+    for row in matching {
+        let Some(text) = public_feedback(row) else {
+            continue;
+        };
+        let lower = text.to_ascii_lowercase();
+        summary.filled += 1;
+        if lower.contains("apresiasi")
+            || lower.contains("terima kasih")
+            || lower.contains("trimakasih")
+            || lower.contains("ucapan terima")
+        {
+            summary.apresiasi += 1;
+        }
+        summary.keluhan += sum_number_before(text, "saran atau keluhan");
+        summary.tindak_lanjut += sum_number_before(text, "ditindaklanjuti");
+    }
+    summary
+}
+
+fn strip_list_prefix(key: &str) -> &str {
+    let trimmed = key.trim_start();
+    let digits = trimmed
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .count();
+    if digits > 0 {
+        let rest = &trimmed[digits..];
+        if let Some(rest) = rest.strip_prefix('.').or_else(|| rest.strip_prefix(')')) {
+            return rest.trim_start();
+        }
+    }
+    trimmed
+}
+
 /// Jenis barang bukti dari teks rincian.
 fn barang_jenis(value: &str) -> &'static str {
     let lower = value.to_ascii_lowercase();
@@ -516,6 +1745,221 @@ fn build_code_cards(matching: &[&RecordView]) -> (Vec<CoverageMetric>, Vec<Cover
     let mut breakdowns: Vec<CoverageBreakdown> = Vec::new();
     let mut jenjang_done = false;
 
+    let has_community = matching
+        .iter()
+        .any(|row| row.fields.keys().any(|key| is_community_key(key)));
+    let has_ibadah_place = matching
+        .iter()
+        .any(|row| row.fields.keys().any(|key| is_ibadah_place_key(key)));
+
+    // Personel Polri dan masyarakat yang hadir dari field angka maupun teks laporan.
+    // Laporan masjid tidak dihitung pada QW1.8 (khusus non-Islam).
+    let attendance: Vec<Attendance> = matching
+        .iter()
+        .map(|row| {
+            if has_ibadah_place && row_is_masjid(row) {
+                Attendance::default()
+            } else {
+                row_attendance(row)
+            }
+        })
+        .collect();
+    let polri_total: i64 = attendance.iter().filter_map(|item| item.polri).sum();
+    let polri_filled = attendance
+        .iter()
+        .filter(|item| item.polri.is_some())
+        .count();
+    if polri_filled > 0 {
+        metrics.push(card_metric(
+            "jumlah-personel",
+            "Jumlah personel",
+            "orang",
+            polri_total as f64,
+            polri_filled,
+            total,
+        ));
+    }
+
+    let jamaah_total: i64 = attendance.iter().filter_map(|item| item.jamaah).sum();
+    let jamaah_filled = attendance
+        .iter()
+        .filter(|item| item.jamaah.is_some())
+        .count();
+    if jamaah_filled > 0 {
+        metrics.push(card_metric(
+            "jumlah-jamaah",
+            "Jumlah jamaah",
+            "orang",
+            jamaah_total as f64,
+            jamaah_filled,
+            total,
+        ));
+    }
+
+    let jemaat_total: i64 = attendance.iter().filter_map(|item| item.jemaat).sum();
+    let jemaat_filled = attendance
+        .iter()
+        .filter(|item| item.jemaat.is_some())
+        .count();
+    if jemaat_filled > 0 {
+        metrics.push(card_metric(
+            "jumlah-jemaat",
+            "Jumlah jemaat",
+            "orang",
+            jemaat_total as f64,
+            jemaat_filled,
+            total,
+        ));
+    }
+
+    if has_ibadah_place {
+        let (kinds, filled) = ibadah_kind_counts(matching);
+        if !kinds.is_empty() {
+            breakdowns.push(CoverageBreakdown {
+                key: "jenis-ibadah".to_string(),
+                label: "Jenis tempat ibadah".to_string(),
+                filled_rows: filled,
+                values: kinds,
+            });
+        }
+    }
+
+    let has_green = matching.iter().any(|row| {
+        row.fields
+            .keys()
+            .any(|key| is_area_key(key) || is_bibit_key(key))
+    });
+    if has_green {
+        let mut area_total = 0_i64;
+        let mut area_filled = 0_usize;
+        let mut bibit_total = 0_i64;
+        let mut bibit_filled = 0_usize;
+        for row in matching {
+            let mut area: Option<i64> = None;
+            let mut bibit: Option<i64> = None;
+            for (key, value) in &row.fields {
+                if is_area_key(key) {
+                    if let Some(count) = first_count(value) {
+                        merge_best(&mut area, count);
+                    }
+                }
+                if is_bibit_key(key) {
+                    if let Some(count) = first_count(value) {
+                        merge_best(&mut bibit, count);
+                    }
+                }
+            }
+            if let Some(count) = area {
+                area_total += count;
+                area_filled += 1;
+            }
+            if let Some(count) = bibit {
+                bibit_total += count;
+                bibit_filled += 1;
+            }
+        }
+        if area_filled > 0 {
+            metrics.push(card_metric(
+                "luas-area",
+                "Luas area kegiatan",
+                "m²",
+                area_total as f64,
+                area_filled,
+                total,
+            ));
+        }
+        if bibit_filled > 0 {
+            metrics.push(card_metric(
+                "jumlah-bibit",
+                "Jumlah bibit",
+                "bibit",
+                bibit_total as f64,
+                bibit_filled,
+                total,
+            ));
+        }
+        let (kinds, filled) = area_kind_counts(matching);
+        if !kinds.is_empty() {
+            breakdowns.push(CoverageBreakdown {
+                key: "jenis-area".to_string(),
+                label: "Jenis area kegiatan".to_string(),
+                filled_rows: filled,
+                values: kinds,
+            });
+        }
+    }
+
+    if has_community {
+        let masyarakat_total: i64 = attendance.iter().filter_map(|item| item.masyarakat).sum();
+        let masyarakat_filled = attendance
+            .iter()
+            .filter(|item| item.masyarakat.is_some())
+            .count();
+        if masyarakat_filled > 0 {
+            metrics.push(card_metric(
+                "jumlah-masyarakat",
+                "Jumlah masyarakat",
+                "orang",
+                masyarakat_total as f64,
+                masyarakat_filled,
+                total,
+            ));
+        }
+
+        let feedback = feedback_summary(matching);
+        if feedback.filled > 0 {
+            metrics.push(card_metric(
+                "apresiasi",
+                "Apresiasi",
+                "",
+                feedback.apresiasi as f64,
+                feedback.filled as usize,
+                total,
+            ));
+            metrics.push(card_metric(
+                "keluhan",
+                "Keluhan",
+                "",
+                feedback.keluhan as f64,
+                feedback.filled as usize,
+                total,
+            ));
+            metrics.push(card_metric(
+                "tindak-lanjut",
+                "Tindak lanjut",
+                "",
+                feedback.tindak_lanjut as f64,
+                feedback.filled as usize,
+                total,
+            ));
+        }
+
+        let polda_rows = matching.iter().filter(|row| record_is_polda(row)).count();
+        breakdowns.push(CoverageBreakdown {
+            key: "giat-polda-polres".to_string(),
+            label: "Giat Polda dan polres jajaran".to_string(),
+            filled_rows: total as i64,
+            values: vec![
+                LabeledCount::new("Polda", polda_rows as i64),
+                LabeledCount::new("Polres jajaran", (total - polda_rows) as i64),
+            ],
+        });
+
+        let communities = community_counts(matching);
+        if !communities.is_empty() {
+            let filled = matching
+                .iter()
+                .filter(|row| !row_community_kinds(row).is_empty())
+                .count() as i64;
+            breakdowns.push(CoverageBreakdown {
+                key: "masyarakat-terlibat".to_string(),
+                label: "Masyarakat yang terlibat".to_string(),
+                filled_rows: filled,
+                values: communities,
+            });
+        }
+    }
+
     // Personel/peserta yang ditulis per baris: "Polri: 5 pers", "BNN: 3 pers".
     let mut personnel: BTreeMap<&'static str, i64> = BTreeMap::new();
     let mut personnel_rows = 0_i64;
@@ -555,6 +1999,31 @@ fn build_code_cards(matching: &[&RecordView]) -> (Vec<CoverageMetric>, Vec<Cover
 
         // Field personel sudah diringkas pada kartu "Personel/peserta terlibat".
         if personnel_label(&key).is_some() {
+            continue;
+        }
+
+        // Personel Polri sudah dijumlahkan pada kartu "Jumlah personel".
+        if is_polri_personnel_key(&key) {
+            continue;
+        }
+
+        // Rincian masyarakat dan masukan sudah menjadi kartu tersendiri.
+        if (has_community && is_community_key(&key)) || is_public_feedback_key(&key) {
+            continue;
+        }
+
+        // Luas area dan bibit sudah dijumlahkan pada kartu tersendiri.
+        if is_area_key(&key) || is_bibit_key(&key) {
+            continue;
+        }
+
+        // Jumlah jamaah sudah dijumlahkan pada kartu tersendiri.
+        if is_jamaah_key(&key) {
+            continue;
+        }
+
+        // Jumlah jemaat sudah dijumlahkan pada kartu tersendiri.
+        if is_jemaat_key(&key) {
             continue;
         }
 
@@ -609,8 +2078,12 @@ fn build_code_cards(matching: &[&RecordView]) -> (Vec<CoverageMetric>, Vec<Cover
             }
             let distinct: BTreeSet<String> = values
                 .iter()
-                .map(|value| value.to_ascii_lowercase())
+                .filter(|value| card_key != "ibadah" || ibadah_kind(value).is_some())
+                .map(|value| place_name(value))
                 .collect();
+            if distinct.is_empty() {
+                continue;
+            }
             if metrics.len() < 8 {
                 metrics.push(card_metric(
                     card_key,
@@ -657,17 +2130,9 @@ fn build_code_cards(matching: &[&RecordView]) -> (Vec<CoverageMetric>, Vec<Cover
             .iter()
             .filter_map(|value| parse_count(value))
             .collect();
-        let numbers: Vec<i64> = values
-            .iter()
-            .filter_map(|value| parse_count(value))
-            .collect();
         if numbers.len() * 10 >= values.len() * 7 && metrics.len() < 8 {
             let sum: f64 = numbers.iter().map(|value| *value as f64).sum();
-            let label = if lower.contains("personel") || lower.contains("personil") {
-                "Jumlah personel".to_string()
-            } else {
-                key.clone()
-            };
+            let label = strip_list_prefix(&key).to_string();
             metrics.push(card_metric(
                 &format!("field-{}", card_slug(&key)),
                 &label,
@@ -706,7 +2171,7 @@ fn build_code_cards(matching: &[&RecordView]) -> (Vec<CoverageMetric>, Vec<Cover
         items.truncate(8);
         breakdowns.push(CoverageBreakdown {
             key: format!("field-{}", card_slug(&key)),
-            label: key.clone(),
+            label: strip_list_prefix(&key).to_string(),
             filled_rows: values.len() as i64,
             values: items,
         });
@@ -2257,16 +3722,719 @@ mod tests {
             .unwrap();
         assert_eq!(card.values[0].label, "Warga/masyarakat");
         assert_eq!(card.values[0].count, 70);
-        assert!(
-            card.values
-                .iter()
-                .any(|value| value.label == "Polri" && value.count == 8)
-        );
-        assert!(
-            card.values
-                .iter()
-                .any(|value| value.label == "BNN" && value.count == 5)
-        );
+        assert!(card
+            .values
+            .iter()
+            .any(|value| value.label == "Polri" && value.count == 8));
+        assert!(card
+            .values
+            .iter()
+            .any(|value| value.label == "BNN" && value.count == 5));
+    }
+
+    #[test]
+    fn folds_polri_personnel_into_total() {
+        let rows = vec![
+            row(
+                "QW1.2",
+                "Polda",
+                "",
+                &[
+                    ("Jumlah peserta", "1105"),
+                    ("2. Jumlah Siswa", "1035 orang"),
+                    (
+                        "Cara bertindak",
+                        "1. Polri : 10 Personel. 2. Guru dan Staf : 70 Orang. 3. Siswa : 1035 Orang.",
+                    ),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.2",
+                "Polres",
+                "Polres Klungkung",
+                &[
+                    ("Jumlah peserta", "590"),
+                    ("2. Jumlah Siswa", "590 orang"),
+                    ("Jumlah Anggota Polri", "8 Orang"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.2",
+                "Polres",
+                "Polres Bangli",
+                &[
+                    ("Jumlah peserta", "147"),
+                    ("2. Jumlah Siswa", "147 orang"),
+                    ("Cara bertindak", "Pembina upacara (irup)"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.2")
+            .unwrap();
+        let personel = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Jumlah personel")
+            .unwrap();
+        assert_eq!(personel.total, 18.0);
+        assert_eq!(personel.filled_rows, 2);
+        assert_eq!(personel.unit, "orang");
+
+        let peserta = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Jumlah peserta")
+            .unwrap();
+        assert_eq!(peserta.total, 1842.0);
+
+        let siswa = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Jumlah Siswa")
+            .unwrap();
+        assert_eq!(siswa.total, 1772.0);
+    }
+
+    #[test]
+    fn counts_polri_once_per_report() {
+        let rows = vec![row(
+            "QW1.2",
+            "Polres",
+            "Polres Klungkung",
+            &[
+                ("Jumlah Anggota Polri", "8 Orang"),
+                (
+                    "Jumlah peserta (Uraian)",
+                    "- Polri sebanyak 8 Personil\n- Guru sebanyak 10 Orang\n- Siswa sebanyak 35 Siswa",
+                ),
+            ],
+            0,
+            0,
+            0.0,
+            0,
+        )];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.2")
+            .unwrap();
+        let personel = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Jumlah personel")
+            .unwrap();
+        assert_eq!(personel.total, 8.0);
+        assert_eq!(personel.filled_rows, 1);
+    }
+
+    #[test]
+    fn ignores_numbered_list_items_as_personnel() {
+        let rows = vec![
+            row(
+                "QW1.2",
+                "Polres",
+                "Polres Karangasem",
+                &[("Cara bertindak", "4. Personel Polsek Bebandem.")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.2",
+                "Polres",
+                "Polres Karangasem",
+                &[(
+                    "Cara bertindak",
+                    "2. Kegiatan tersebut melibatkan Polri di sekolah.",
+                )],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.2",
+                "Polres",
+                "Polres Karangasem",
+                &[("Cara bertindak", "Pembina upacara")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.2")
+            .unwrap();
+        assert!(code
+            .metrics
+            .iter()
+            .all(|metric| metric.label != "Jumlah personel"));
+    }
+
+    #[test]
+    fn builds_qw14_cards() {
+        let community = "Komunitas atau paguyuban yang ditemui";
+        let feedback = "Saran masukan dan problem, masalah, keluhan, kegelisahan, atau komplain dari masyarakat";
+        let rows = vec![
+            row(
+                "QW1.4",
+                "Polda",
+                "",
+                &[
+                    (community, "Komunitas Ojek Online Kota Denpasar"),
+                    (
+                        feedback,
+                        "1) APRESIASI: 0 saran atau keluhan, 0 ditindaklanjuti. Terima kasih kepada Polri",
+                    ),
+                    (
+                        "Cara bertindak",
+                        "Jumlah personel yang hadir:\n1.Polri = 9 personel;\n2.Dinas Terkait=0\n3.Warga ( anggota organisasi )= 30 orang\n4.Komunitas= 0\n5.Tokoh Masyarakat = 4 orang",
+                    ),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.4",
+                "Polres",
+                "Polres Tabanan",
+                &[
+                    (community, "KELOMPOK NELAYAN MERTA SEGARA,DESA CANGGU"),
+                    (
+                        feedback,
+                        "1) Harkamtibmas: 1 saran atau keluhan, 1 ditindaklanjuti. Warga minta patroli",
+                    ),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.4",
+                "Polres",
+                "Polres Badung",
+                &[
+                    (community, "warga masyarakat"),
+                    (
+                        feedback,
+                        "1) Harkamtibmas: 0 saran atau keluhan, 0 ditindaklanjuti. Aman",
+                    ),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.4",
+                "Polsek",
+                "Polres Bangli",
+                &[(community, "NIHIL")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.4")
+            .unwrap();
+
+        let personel = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Jumlah personel")
+            .unwrap();
+        assert_eq!(personel.total, 9.0);
+
+        let masyarakat = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Jumlah masyarakat")
+            .unwrap();
+        assert_eq!(masyarakat.total, 34.0);
+
+        let apresiasi = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Apresiasi")
+            .unwrap();
+        assert_eq!(apresiasi.total, 1.0);
+        let keluhan = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Keluhan")
+            .unwrap();
+        assert_eq!(keluhan.total, 1.0);
+        let tindak = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Tindak lanjut")
+            .unwrap();
+        assert_eq!(tindak.total, 1.0);
+
+        let giat = code
+            .breakdowns
+            .iter()
+            .find(|item| item.key == "giat-polda-polres")
+            .unwrap();
+        assert!(giat
+            .values
+            .iter()
+            .any(|value| value.label == "Polda" && value.count == 1));
+        assert!(giat
+            .values
+            .iter()
+            .any(|value| value.label == "Polres jajaran" && value.count == 3));
+
+        let communities = code
+            .breakdowns
+            .iter()
+            .find(|item| item.key == "masyarakat-terlibat")
+            .unwrap();
+        for (label, count) in [
+            ("Warga/masyarakat umum", 2),
+            ("Nelayan", 1),
+            ("Ojek online/driver", 1),
+            ("Komunitas/paguyuban", 1),
+        ] {
+            assert!(
+                communities
+                    .values
+                    .iter()
+                    .any(|value| value.label == label && value.count == count),
+                "kategori {label} tidak ditemukan"
+            );
+        }
+    }
+
+    #[test]
+    fn builds_qw15_area_and_bibit_cards() {
+        let rows = vec![
+            row(
+                "QW1.5",
+                "Polres",
+                "Polres Tabanan",
+                &[
+                    (
+                        "Pertimbangan pilihan lokasi (Luas area yang ditangani (m²))",
+                        "500",
+                    ),
+                    (
+                        "Jumlah bibit pohon yang ditanam",
+                        "50 Pohon, terdiri dari: a. Peneduh 50",
+                    ),
+                    ("Nama lokasi dan titik koordinat", "Hutan Mangrove Tabanan"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.5",
+                "Polres",
+                "Polres Badung",
+                &[
+                    ("Luas area yang ditanami", "1.500 m²"),
+                    ("Jumlah pohon yang ditanam (Jumlah)", "25"),
+                    ("Nama lokasi dan titik koordinat", "Pantai Kuta"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.5",
+                "Polsek",
+                "Polres Bangli",
+                &[
+                    ("Luas area yang ditangani", "0"),
+                    ("Jumlah pohon yang ditanam (Rincian)", "Pohon Kopi 5 batang"),
+                    ("Nama lokasi dan titik koordinat", "Taman Lestari"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.5")
+            .unwrap();
+
+        let area = code
+            .metrics
+            .iter()
+            .find(|metric| metric.key == "luas-area")
+            .unwrap();
+        assert_eq!(area.label, "Luas area kegiatan");
+        assert_eq!(area.total, 2000.0);
+        assert_eq!(area.unit, "m²");
+        assert_eq!(area.filled_rows, 3);
+
+        let bibit = code
+            .metrics
+            .iter()
+            .find(|metric| metric.key == "jumlah-bibit")
+            .unwrap();
+        assert_eq!(bibit.label, "Jumlah bibit");
+        assert_eq!(bibit.total, 75.0);
+        assert_eq!(bibit.filled_rows, 2);
+
+        let kinds = code
+            .breakdowns
+            .iter()
+            .find(|item| item.key == "jenis-area")
+            .unwrap();
+        for (label, count) in [
+            ("Hutan mangrove", 1),
+            ("Pantai/pesisir", 1),
+            ("Ruang publik", 1),
+        ] {
+            assert!(
+                kinds
+                    .values
+                    .iter()
+                    .any(|value| value.label == label && value.count == count),
+                "jenis area {label} tidak ditemukan"
+            );
+        }
+
+        assert!(!code
+            .metrics
+            .iter()
+            .any(|metric| metric.key.starts_with("field-luas")));
+    }
+
+    #[test]
+    fn builds_qw16_jamaah_and_personel_cards() {
+        let rows = vec![
+            row(
+                "QW1.6",
+                "Polda",
+                "",
+                &[
+                    (
+                        "Nama masjid dan titik koordinat",
+                        "Masjid At Taufiq Denpasar (-8.63, 115.25)",
+                    ),
+                    (
+                        "Peran",
+                        "Adapun Jumlah personel yang hadir: Polri = 9 Dinas Terkait=0 Warga/Jemaah= 450 Komunitas= 0 Tokoh Agama = 4",
+                    ),
+                    (
+                        "Pertimbangan pilihan lokasi",
+                        "Permintaan pengurus masjid, dan jamaah sekitar 450 orang",
+                    ),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.6",
+                "Polres",
+                "Polres Tabanan",
+                &[
+                    (
+                        "Nama masjid dan titik koordinat",
+                        "Masjid Al-Amin Tabanan (-8.53, 115.12)",
+                    ),
+                    (
+                        "Pertimbangan pilihan lokasi (Perkiraan jumlah jemaah)",
+                        "150",
+                    ),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.6",
+                "Polsek",
+                "Polres Bangli",
+                &[
+                    (
+                        "Nama masjid dan titik koordinat",
+                        "Masjid Baiturrahman Bangli (-8.47, 115.35)",
+                    ),
+                    ("Peran", "Lainnya: MENGHADIRI UNDANGAN"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.6")
+            .unwrap();
+
+        let personel = code
+            .metrics
+            .iter()
+            .find(|metric| metric.key == "jumlah-personel")
+            .unwrap();
+        assert_eq!(personel.total, 9.0);
+        assert_eq!(personel.filled_rows, 1);
+
+        let jamaah = code
+            .metrics
+            .iter()
+            .find(|metric| metric.key == "jumlah-jamaah")
+            .unwrap();
+        assert_eq!(jamaah.label, "Jumlah jamaah");
+        assert_eq!(jamaah.total, 600.0);
+        assert_eq!(jamaah.filled_rows, 2);
+        assert_eq!(jamaah.unit, "orang");
+
+        let masjid = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Jumlah masjid")
+            .unwrap();
+        assert_eq!(masjid.total, 3.0);
+
+        assert!(!code
+            .metrics
+            .iter()
+            .any(|metric| metric.label.contains("Perkiraan jumlah jemaah")));
+    }
+
+    #[test]
+    fn builds_qw18_jemaat_and_ibadah_cards() {
+        let place = "Nama tempat ibadah dan titik koordinat";
+        let rows = vec![
+            row(
+                "QW1.8",
+                "Polda",
+                "",
+                &[
+                    (
+                        place,
+                        "Gereja Katolik Paroki Yesus Gembala Yang Baik, Denpasar (-8.62962, 115.19049)",
+                    ),
+                    (
+                        "Peran",
+                        "Adapun jumlah yang hadir: 1. Polri : 10 2. Dinas terkait : 0 3. Tokoh : 4 4. Jemaat : 450",
+                    ),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.8",
+                "Polres",
+                "Polres Badung",
+                &[
+                    (place, "Pura Jagat Tirtha, Tuban (-8.74, 115.17)"),
+                    (
+                        "* *jumlah masyarakat yang ibadah di Pura Jagat Tirtha",
+                        "± 200 orang*",
+                    ),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.8",
+                "Polsek",
+                "Polres Denpasar",
+                &[
+                    (place, "Vihara Dharma Bhakti (-8.65, 115.21)"),
+                    ("Peran", "Melakukan tatap muka"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.8",
+                "Polsek",
+                "Polres Denpasar",
+                &[
+                    (place, "Klenteng Caow Eng Bio (-8.72, 115.17)"),
+                    ("Peran", "Melakukan tatap muka"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.8")
+            .unwrap();
+
+        let personel = code
+            .metrics
+            .iter()
+            .find(|metric| metric.key == "jumlah-personel")
+            .unwrap();
+        assert_eq!(personel.total, 10.0);
+
+        let jemaat = code
+            .metrics
+            .iter()
+            .find(|metric| metric.key == "jumlah-jemaat")
+            .unwrap();
+        assert_eq!(jemaat.label, "Jumlah jemaat");
+        assert_eq!(jemaat.total, 650.0);
+        assert_eq!(jemaat.filled_rows, 2);
+        assert_eq!(jemaat.unit, "orang");
+
+        let lokasi = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Jumlah tempat ibadah")
+            .unwrap();
+        assert_eq!(lokasi.total, 4.0);
+
+        let kinds = code
+            .breakdowns
+            .iter()
+            .find(|item| item.key == "jenis-ibadah")
+            .unwrap();
+        for label in ["Gereja", "Pura", "Wihara", "Klenteng"] {
+            assert!(
+                kinds
+                    .values
+                    .iter()
+                    .any(|value| value.label == label && value.count == 1),
+                "jenis ibadah {label} tidak ditemukan"
+            );
+        }
+    }
+
+    #[test]
+    fn excludes_masjid_from_qw18_cards() {
+        let place = "Nama tempat ibadah dan titik koordinat";
+        let rows = vec![
+            row(
+                "QW1.8",
+                "Polres",
+                "Polres Gianyar",
+                &[(place, "Gereja A (-8.1, 115.1)"), ("Peran", "Jemaat : 100")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.8",
+                "Polres",
+                "Polres Tabanan",
+                &[(place, "Gereja B (-8.2, 115.2)"), ("Peran", "Jemaat : 100")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.8",
+                "Polsek",
+                "Polres Buleleng",
+                &[
+                    (place, "Mesjid Nurul Mubin (-8.3, 115.3)"),
+                    ("Peran", "Polri : 50 Jemaat : 300"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.8")
+            .unwrap();
+
+        assert!(!code
+            .metrics
+            .iter()
+            .any(|metric| metric.key == "jumlah-personel"));
+
+        let jemaat = code
+            .metrics
+            .iter()
+            .find(|metric| metric.key == "jumlah-jemaat")
+            .unwrap();
+        assert_eq!(jemaat.total, 200.0);
+        assert_eq!(jemaat.filled_rows, 2);
+
+        let lokasi = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Jumlah tempat ibadah")
+            .unwrap();
+        assert_eq!(lokasi.total, 2.0);
+
+        let kinds = code
+            .breakdowns
+            .iter()
+            .find(|item| item.key == "jenis-ibadah")
+            .unwrap();
+        assert!(kinds
+            .values
+            .iter()
+            .any(|value| value.label == "Gereja" && value.count == 2));
+        assert!(!kinds.values.iter().any(|value| value.label == "Masjid"));
     }
 
     #[test]
