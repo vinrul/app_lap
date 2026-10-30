@@ -119,8 +119,17 @@ export const importsApi = {
     request<UnitDetail>(
       `/periods/${periodId}/unit-detail${queryString({ scope, label })}`,
     ),
-  quickWinDetail: (periodId: string, code: string) =>
-    request<QuickWinDetail>(`/periods/${periodId}/quick-wins/${encodeURIComponent(code)}`),
+  quickWinDetail: (
+    periodId: string,
+    code: string,
+    unit?: { scope: 'polres' | 'satker'; label: string },
+  ) =>
+    request<QuickWinDetail>(
+      `/periods/${periodId}/quick-wins/${encodeURIComponent(code)}${queryString({
+        scope: unit?.scope,
+        label: unit?.label,
+      })}`,
+    ),
   recordDetail: (periodId: string, recordId: number) =>
     request<RecordItem>(`/periods/${periodId}/records/${recordId}`),
 }

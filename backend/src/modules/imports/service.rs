@@ -15,16 +15,16 @@ use crate::{
             analysis,
             models::{
                 CoverageResponse, EvidenceView, ImportPreview, ImportView, ParsedRow,
-                QuickWinActivity,
-                QuickWinCodeCoverage, QuickWinDetailResponse, RecordQuery, RecordView,
-                RecordsResponse, UnitDetailResponse,
+                QuickWinActivity, QuickWinCodeCoverage, QuickWinDetailResponse, RecordQuery,
+                RecordView, RecordsResponse, UnitDetailResponse,
             },
             parser, qw,
         },
-        periods,
-        reports,
+        periods, reports,
     },
-    shared::{LabeledCount, audit, extract_links, is_noise, parse_fields, satker_label, unit_breakdown},
+    shared::{
+        LabeledCount, audit, extract_links, is_noise, parse_fields, satker_label, unit_breakdown,
+    },
 };
 
 const DEFAULT_PAGE_SIZE: i64 = 25;
@@ -304,15 +304,9 @@ pub async fn load_period_rows(
     qb.push_bind(start_date);
     qb.push(" AND ");
     qb.push_bind(end_date);
-    qb.push(
-        ") SELECT * FROM ranked ORDER BY tanggal ASC, level ASC, unit ASC, source_row ASC",
-    );
+    qb.push(") SELECT * FROM ranked ORDER BY tanggal ASC, level ASC, unit ASC, source_row ASC");
 
-    let rows = qb
-        .build()
-        .fetch_all(db)
-        .await
-        .map_err(ApiError::internal)?;
+    let rows = qb.build().fetch_all(db).await.map_err(ApiError::internal)?;
 
     let mut result = Vec::with_capacity(rows.len());
     let mut duplicate_rows = 0_i64;
@@ -413,11 +407,7 @@ fn ranked_cte() -> &'static str {
         JOIN imports i ON i.id = r.import_id"
 }
 
-fn apply_range(
-    qb: &mut QueryBuilder<Sqlite>,
-    start_date: &str,
-    end_date: &str,
-) {
+fn apply_range(qb: &mut QueryBuilder<Sqlite>, start_date: &str, end_date: &str) {
     qb.push(" WHERE r.tanggal BETWEEN ");
     qb.push_bind(start_date.to_string());
     qb.push(" AND ");
@@ -434,7 +424,11 @@ fn push_filters(qb: &mut QueryBuilder<Sqlite>, query: &RecordQuery) {
         qb.push(" AND import_id = ")
             .push_bind(import_id.to_string());
     }
-    if let Some(level) = query.level.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(level) = query
+        .level
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         qb.push(" AND level = ").push_bind(level.to_string());
     }
     if let Some(polres) = query
@@ -456,7 +450,11 @@ fn push_filters(qb: &mut QueryBuilder<Sqlite>, query: &RecordQuery) {
         qb.push(" AND quick_wins = ")
             .push_bind(quick_wins.to_string());
     }
-    if let Some(status) = query.status.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(status) = query
+        .status
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         if status.eq_ignore_ascii_case("belum diisi") {
             qb.push(" AND trim(status_penerimaan) = ''");
         } else {
@@ -522,11 +520,7 @@ async fn query_records(
     qb.push(" OFFSET ");
     qb.push_bind(offset);
 
-    let rows = qb
-        .build()
-        .fetch_all(db)
-        .await
-        .map_err(ApiError::internal)?;
+    let rows = qb.build().fetch_all(db).await.map_err(ApiError::internal)?;
     let ids: Vec<i64> = rows.iter().map(|row| row.get("id")).collect();
     let evidence = if ids.is_empty() {
         HashMap::new()
@@ -559,11 +553,7 @@ async fn group_counts(
     ));
     push_filters(&mut qb, query);
     qb.push(" GROUP BY label ORDER BY count DESC, label ASC LIMIT 100");
-    let rows = qb
-        .build()
-        .fetch_all(db)
-        .await
-        .map_err(ApiError::internal)?;
+    let rows = qb.build().fetch_all(db).await.map_err(ApiError::internal)?;
     Ok(rows
         .iter()
         .map(|row| LabeledCount::new(row.get::<String, _>("label"), row.get("count")))
@@ -686,11 +676,7 @@ async fn load_evidence_for_rows(
         separated.push_bind(*id);
     }
     separated.push_unseparated(") ORDER BY created_at ASC, rowid ASC");
-    let rows = qb
-        .build()
-        .fetch_all(db)
-        .await
-        .map_err(ApiError::internal)?;
+    let rows = qb.build().fetch_all(db).await.map_err(ApiError::internal)?;
     let mut grouped: HashMap<i64, Vec<EvidenceView>> = HashMap::new();
     for row in rows {
         let id: String = row.get("id");
@@ -733,13 +719,16 @@ pub async fn analysis_for_period(
 ) -> ApiResult<crate::modules::imports::models::AnalysisResponse> {
     let (start, end, _) = periods::service::dates(db, period_id).await?;
     let (rows, duplicate_rows, source_count) = load_period_rows(db, &start, &end).await?;
-    Ok(build_analysis(&start, &end, source_count, duplicate_rows, &rows))
+    Ok(build_analysis(
+        &start,
+        &end,
+        source_count,
+        duplicate_rows,
+        &rows,
+    ))
 }
 
-pub async fn coverage_for_period(
-    db: &SqlitePool,
-    period_id: &str,
-) -> ApiResult<CoverageResponse> {
+pub async fn coverage_for_period(db: &SqlitePool, period_id: &str) -> ApiResult<CoverageResponse> {
     let (start, end, _) = periods::service::dates(db, period_id).await?;
     let (rows, _, _) = load_period_rows(db, &start, &end).await?;
     Ok(crate::modules::imports::coverage::build_coverage(
@@ -864,7 +853,9 @@ pub async fn quick_win_detail_for_period(
     db: &SqlitePool,
     period_id: &str,
     code: &str,
+    unit: Option<(&str, &str)>,
 ) -> ApiResult<QuickWinDetailResponse> {
+    let unit = resolve_unit_filter(unit)?;
     let normalized = qw::normalize(code);
     let group = qw::group_of(&normalized)
         .ok_or_else(|| ApiError::bad_request("Kode Quick Wins tidak dikenali."))?;
@@ -966,7 +957,17 @@ pub async fn quick_win_detail_for_period(
         })
         .collect();
 
-    let mut activities: Vec<QuickWinActivity> = matching
+    let activity_rows: Vec<&RecordView> = match unit.as_ref() {
+        Some((scope, label)) => matching
+            .iter()
+            .copied()
+            .filter(|row| record_matches_unit(row, scope, label))
+            .collect(),
+        None => matching.clone(),
+    };
+    let activities_total = activity_rows.len() as i64;
+
+    let mut activities: Vec<QuickWinActivity> = activity_rows
         .iter()
         .map(|row| QuickWinActivity {
             record_id: row.id,
@@ -1031,8 +1032,35 @@ pub async fn quick_win_detail_for_period(
         by_polres,
         by_satker,
         codes,
+        activities_total,
         activities,
     })
+}
+
+/// Memvalidasi filter unit pelaksana untuk daftar kegiatan.
+fn resolve_unit_filter(unit: Option<(&str, &str)>) -> ApiResult<Option<(String, String)>> {
+    let Some((scope, label)) = unit else {
+        return Ok(None);
+    };
+    let scope = scope.trim().to_ascii_lowercase();
+    if !matches!(scope.as_str(), "polres" | "satker") {
+        return Err(ApiError::bad_request(
+            "Scope filter kegiatan harus 'polres' atau 'satker'.",
+        ));
+    }
+    let label = label.trim();
+    if label.is_empty() {
+        return Err(ApiError::bad_request("Label unit filter wajib diisi."));
+    }
+    Ok(Some((scope, label.to_string())))
+}
+
+/// Mengecek apakah sebuah baris dikerjakan oleh unit yang difilter.
+fn record_matches_unit(row: &RecordView, scope: &str, label: &str) -> bool {
+    if scope == "polres" {
+        return !is_noise(&row.polres) && row.polres.trim().eq_ignore_ascii_case(label);
+    }
+    record_is_polda(row) && record_satker_label(row).trim().eq_ignore_ascii_case(label)
 }
 
 fn build_analysis(
@@ -1079,16 +1107,20 @@ fn build_analysis(
             format!("{} · {}", row.kode.trim(), row.qw_title)
         };
         *codes.entry(code).or_default() += 1;
-        levels.entry(if row.level.is_empty() {
-            "Polda".to_string()
-        } else {
-            row.level.clone()
-        }).or_default();
-        units.entry(if row.unit.is_empty() {
-            row.satuan.clone()
-        } else {
-            row.unit.clone()
-        }).or_default();
+        levels
+            .entry(if row.level.is_empty() {
+                "Polda".to_string()
+            } else {
+                row.level.clone()
+            })
+            .or_default();
+        units
+            .entry(if row.unit.is_empty() {
+                row.satuan.clone()
+            } else {
+                row.unit.clone()
+            })
+            .or_default();
         *dates.entry(row.tanggal.clone()).or_default() += 1;
     }
 
@@ -1216,15 +1248,9 @@ mod tests {
         .unwrap();
 
         let bytes = std::fs::read("../report-2026-10-19 (1).xlsx").unwrap();
-        super::commit(
-            &db,
-            &config,
-            "u1",
-            "report-2026-10-19.xlsx",
-            bytes,
-        )
-        .await
-        .unwrap();
+        super::commit(&db, &config, "u1", "report-2026-10-19.xlsx", bytes)
+            .await
+            .unwrap();
 
         let analysis = super::analysis_for_period(&db, "p1").await.unwrap();
         assert_eq!(analysis.total_rows, 4554);
@@ -1247,33 +1273,23 @@ mod tests {
         );
 
         let polres = analysis.by_polres_breakdown.first().unwrap();
-        let polres_detail = super::unit_detail_for_period(
-            &db,
-            &config,
-            "p1",
-            "polres",
-            &polres.label,
-        )
-        .await
-        .unwrap();
+        let polres_detail =
+            super::unit_detail_for_period(&db, &config, "p1", "polres", &polres.label)
+                .await
+                .unwrap();
         assert_eq!(polres_detail.metrics.total_rows, polres.rows);
         assert_eq!(polres_detail.metrics.cards.len(), 6);
         assert!(polres_detail.polsek_count > 0);
         assert!(!polres_detail.by_polsek.is_empty());
 
         let satker = analysis.by_satker.first().unwrap();
-        let satker_detail = super::unit_detail_for_period(
-            &db,
-            &config,
-            "p1",
-            "satker",
-            &satker.label,
-        )
-        .await
-        .unwrap();
+        let satker_detail =
+            super::unit_detail_for_period(&db, &config, "p1", "satker", &satker.label)
+                .await
+                .unwrap();
         assert_eq!(satker_detail.metrics.total_rows, satker.rows);
 
-        let group = super::quick_win_detail_for_period(&db, "p1", "QW1")
+        let group = super::quick_win_detail_for_period(&db, "p1", "QW1", None)
             .await
             .unwrap();
         assert_eq!(group.group, "QW1");
@@ -1282,12 +1298,36 @@ mod tests {
         assert!(group.polres_count > 0);
         assert!(!group.activities.is_empty());
 
-        let code = super::quick_win_detail_for_period(&db, "p1", "QW1.2")
+        let code = super::quick_win_detail_for_period(&db, "p1", "QW1.2", None)
             .await
             .unwrap();
         assert_eq!(code.code, "QW1.2");
         assert!(code.total_rows <= group.total_rows);
         assert_eq!(code.codes.len(), 14);
+        assert_eq!(code.activities_total, code.total_rows);
+
+        let target = group.by_polres.first().unwrap().label.clone();
+        let scoped =
+            super::quick_win_detail_for_period(&db, "p1", "QW1", Some(("polres", target.as_str())))
+                .await
+                .unwrap();
+        assert!(!scoped.activities.is_empty());
+        assert!(
+            scoped
+                .activities
+                .iter()
+                .all(|activity| activity.polres.eq_ignore_ascii_case(target.as_str()))
+        );
+        assert!(scoped.activities_total <= group.activities_total);
+        if group.by_polres.len() > 1 {
+            assert!(scoped.activities_total < group.activities_total);
+        }
+        assert_eq!(scoped.total_rows, group.total_rows);
+        assert!(
+            super::quick_win_detail_for_period(&db, "p1", "QW1", Some(("polda", target.as_str())))
+                .await
+                .is_err()
+        );
 
         let (rows, _, _) = super::load_period_rows(&db, "2026-10-15", "2026-10-19")
             .await
@@ -1297,6 +1337,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(detail.id, first.id);
-        assert!(super::record_detail_for_period(&db, "p1", -1).await.is_err());
+        assert!(
+            super::record_detail_for_period(&db, "p1", -1)
+                .await
+                .is_err()
+        );
     }
 }

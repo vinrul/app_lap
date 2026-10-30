@@ -582,6 +582,7 @@ export interface QuickWinDetail {
   by_polres: UnitBreakdown[]
   by_satker: UnitBreakdown[]
   codes: QuickWinCodeCoverage[]
+  activities_total: number
   activities: QuickWinActivity[]
 }
 

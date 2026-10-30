@@ -13,8 +13,8 @@ use crate::{
             evidence,
             models::{
                 AnalysisResponse, CoverageResponse, ImportPreview, ImportView,
-                QuickWinDetailResponse, RecordQuery, RecordView,
-                RecordsResponse, UnitDetailResponse,
+                QuickWinDetailResponse, RecordQuery, RecordView, RecordsResponse,
+                UnitDetailResponse,
             },
             service,
         },
@@ -22,7 +22,10 @@ use crate::{
     state::AppState,
 };
 
-pub async fn list(State(state): State<AppState>, _user: AuthUser) -> ApiResult<Json<Vec<ImportView>>> {
+pub async fn list(
+    State(state): State<AppState>,
+    _user: AuthUser,
+) -> ApiResult<Json<Vec<ImportView>>> {
     Ok(Json(service::list(&state.db).await?))
 }
 
@@ -86,7 +89,11 @@ pub async fn evidence_file(
         .collect();
     let disposition = format!(
         "inline; filename=\"{}\"",
-        if safe_name.is_empty() { "bukti-dukung" } else { &safe_name }
+        if safe_name.is_empty() {
+            "bukti-dukung"
+        } else {
+            &safe_name
+        }
     );
     let headers = [
         (header::CONTENT_TYPE, content_type),
@@ -133,7 +140,9 @@ pub async fn analysis(
     _user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<AnalysisResponse>> {
-    Ok(Json(service::analysis_for_period(&state.db, &period_id).await?))
+    Ok(Json(
+        service::analysis_for_period(&state.db, &period_id).await?,
+    ))
 }
 
 pub async fn coverage(
@@ -141,7 +150,9 @@ pub async fn coverage(
     _user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<CoverageResponse>> {
-    Ok(Json(service::coverage_for_period(&state.db, &period_id).await?))
+    Ok(Json(
+        service::coverage_for_period(&state.db, &period_id).await?,
+    ))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -168,13 +179,26 @@ pub async fn unit_detail(
     ))
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct QuickWinActivityQuery {
+    pub scope: Option<String>,
+    pub label: Option<String>,
+}
+
 pub async fn quick_win_detail(
     State(state): State<AppState>,
     _user: AuthUser,
     Path((period_id, code)): Path<(String, String)>,
+    Query(query): Query<QuickWinActivityQuery>,
 ) -> ApiResult<Json<QuickWinDetailResponse>> {
+    let unit = match query.scope.as_deref() {
+        Some(scope) if !scope.trim().is_empty() => {
+            Some((scope, query.label.as_deref().unwrap_or_default()))
+        }
+        _ => None,
+    };
     Ok(Json(
-        service::quick_win_detail_for_period(&state.db, &period_id, &code).await?,
+        service::quick_win_detail_for_period(&state.db, &period_id, &code, unit).await?,
     ))
 }
 

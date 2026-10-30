@@ -50,6 +50,11 @@
   let activityRecord = $state<RecordItem | null>(null)
   let activityLoading = $state(false)
   let activityError = $state('')
+  let activityFilter = $state<{ scope: 'polres' | 'satker'; label: string } | null>(null)
+  let filteredActivities = $state<QuickWinActivity[] | null>(null)
+  let filteredTotal = $state(0)
+  let filterLoading = $state(false)
+  let filterError = $state('')
 
   onMount(load)
 
@@ -138,6 +143,24 @@
   const activityReadyEvidence = $derived(
     (activityRecord?.evidence ?? []).filter((item) => item.status === 'ready'),
   )
+  const visibleActivities: QuickWinActivity[] = $derived(
+    activityFilter ? (filteredActivities ?? []) : (modalDetail?.activities ?? []),
+  )
+  const activitySummary = $derived.by(() => {
+    if (!modalDetail) return ''
+    if (filterLoading) return 'Memuat…'
+    if (activityFilter) {
+      return `${formatNumber(filteredActivities?.length ?? 0)} dari ${formatNumber(filteredTotal)} kegiatan`
+    }
+    return modalDetail.activities_total > modalDetail.activities.length
+      ? `${formatNumber(modalDetail.activities.length)} dari ${formatNumber(modalDetail.activities_total)} kegiatan`
+      : `${formatNumber(modalDetail.activities.length)} kegiatan`
+  })
+  const activityEmptyText = $derived(
+    activityFilter
+      ? `Belum ada kegiatan dari ${activityFilter.label} pada kode ini.`
+      : 'Belum ada kegiatan pada kode ini.',
+  )
 
   function percent(value: number, total: number): number {
     if (total <= 0) return 0
@@ -185,6 +208,7 @@
   }
 
   async function openCodeDetail(code: string) {
+    clearActivityFilter()
     modalOpen = true
     modalCode = code
     modalDetail = null
@@ -207,6 +231,47 @@
     modalCode = ''
     modalDetail = null
     modalError = ''
+    clearActivityFilter()
+  }
+
+  async function loadActivityFilter(code: string, scope: 'polres' | 'satker', label: string) {
+    filteredActivities = null
+    filteredTotal = 0
+    filterError = ''
+    filterLoading = true
+    try {
+      const result = await importsApi.quickWinDetail(periodId, code, { scope, label })
+      if (modalCode !== code) return
+      filteredActivities = result.activities
+      filteredTotal = result.activities_total
+    } catch (caught) {
+      if (modalCode !== code) return
+      filterError = errorMessage(caught)
+    } finally {
+      if (modalCode === code) filterLoading = false
+    }
+  }
+
+  function filterByUnit(scope: 'polres' | 'satker', label: string) {
+    if (activityFilter?.scope === scope && activityFilter?.label === label) {
+      clearActivityFilter()
+      return
+    }
+    activityFilter = { scope, label }
+    void loadActivityFilter(modalCode, scope, label)
+  }
+
+  function clearActivityFilter() {
+    activityFilter = null
+    filteredActivities = null
+    filteredTotal = 0
+    filterError = ''
+    filterLoading = false
+  }
+
+  function retryActivityFilter() {
+    if (!activityFilter) return
+    void loadActivityFilter(modalCode, activityFilter.scope, activityFilter.label)
   }
 
   async function openActivityDetail(activity: QuickWinActivity) {
@@ -263,7 +328,7 @@
   {/if}
 {/snippet}
 
-{#snippet unitTable(items: UnitBreakdown[], scope: 'polres' | 'satker')}
+{#snippet unitTable(items: UnitBreakdown[], scope: 'polres' | 'satker', onpick: ((label: string) => void) | null)}
   {#if items.length}
     <div class="max-h-80 overflow-auto rounded-xl border border-line">
       <table class="min-w-full text-left text-[11px]">
@@ -277,8 +342,26 @@
         </thead>
         <tbody class="divide-y divide-line">
           {#each items as item (item.label)}
-            <tr class="hover:bg-stone-50/60">
-              <td class="whitespace-nowrap px-3 py-2 font-medium text-ink">{item.label}</td>
+            {@const selected =
+              activityFilter?.scope === scope && activityFilter?.label === item.label}
+            <tr class="hover:bg-stone-50/60 {selected ? 'bg-forest-50/70' : ''}">
+              <td class="whitespace-nowrap px-3 py-2 font-medium text-ink">
+                {#if onpick}
+                  <button
+                    type="button"
+                    class="text-left {selected
+                      ? 'font-bold text-forest-900'
+                      : 'text-forest-700 hover:text-forest-900'} underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                    aria-pressed={selected}
+                    title="Tampilkan kegiatan {item.label} saja"
+                    onclick={() => onpick(item.label)}
+                  >
+                    {item.label}
+                  </button>
+                {:else}
+                  {item.label}
+                {/if}
+              </td>
               <td class="px-3 py-2 text-right">{formatNumber(item.rows)}</td>
               {#if scope === 'polres'}<td class="px-3 py-2 text-right text-ink-muted">{formatNumber(item.polsek)}</td>{/if}
               <td class="px-3 py-2 text-right">{formatNumber(item.personel)}</td>
@@ -292,7 +375,7 @@
   {/if}
 {/snippet}
 
-{#snippet activityList(items: QuickWinActivity[])}
+{#snippet activityList(items: QuickWinActivity[], emptyText: string)}
   {#if items.length}
     <div class="max-h-96 space-y-2 overflow-y-auto pr-1">
       {#each items as activity, index (index)}
@@ -320,7 +403,7 @@
       {/each}
     </div>
   {:else}
-    <p class="text-[11px] text-ink-muted">Belum ada kegiatan pada kode ini.</p>
+    <p class="text-[11px] text-ink-muted">{emptyText}</p>
   {/if}
 {/snippet}
 
@@ -409,11 +492,11 @@
                   <div class="grid gap-4 xl:grid-cols-2">
                     <div>
                       <p class="mb-2 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per polres</p>
-                      {@render unitTable(groupDetail.by_polres, 'polres')}
+                      {@render unitTable(groupDetail.by_polres, 'polres', null)}
                     </div>
                     <div>
                       <p class="mb-2 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per satker Polda</p>
-                      {@render unitTable(groupDetail.by_satker, 'satker')}
+                      {@render unitTable(groupDetail.by_satker, 'satker', null)}
                     </div>
                   </div>
                 {/if}
@@ -660,12 +743,18 @@
 
       <div class="grid gap-4 xl:grid-cols-2">
         <section>
-          <p class="mb-2 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per polres</p>
-          {@render unitTable(modalDetail.by_polres, 'polres')}
+          <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per polres</p>
+            <span class="text-[10px] text-ink-muted">Klik unit untuk filter</span>
+          </div>
+          {@render unitTable(modalDetail.by_polres, 'polres', (label) => filterByUnit('polres', label))}
         </section>
         <section>
-          <p class="mb-2 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per satker Polda</p>
-          {@render unitTable(modalDetail.by_satker, 'satker')}
+          <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per satker Polda</p>
+            <span class="text-[10px] text-ink-muted">Klik unit untuk filter</span>
+          </div>
+          {@render unitTable(modalDetail.by_satker, 'satker', (label) => filterByUnit('satker', label))}
         </section>
       </div>
 
@@ -683,12 +772,42 @@
       <section>
         <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
           <div>
-            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan</p>
-            <p class="mt-0.5 text-[10px] text-ink-muted">Menampilkan maksimal 100 kegiatan terbaru.</p>
+            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">
+              Kegiatan{activityFilter ? ` · ${activityFilter.label}` : ''}
+            </p>
+            {#if activityFilter}
+              <p class="mt-0.5 flex flex-wrap items-center gap-2 text-[10px] text-ink-muted">
+                <span class="rounded-md bg-forest-50 px-1.5 py-0.5 font-semibold text-forest-700">
+                  {activityFilter.scope === 'polres' ? 'Polres' : 'Satker Polda'}: {activityFilter.label}
+                </span>
+                <button
+                  type="button"
+                  class="font-semibold text-forest-700 underline underline-offset-2 hover:text-forest-900"
+                  onclick={clearActivityFilter}
+                >
+                  Tampilkan semua
+                </button>
+              </p>
+            {:else}
+              <p class="mt-0.5 text-[10px] text-ink-muted">
+                Klik nama polres atau satker pada tabel di atas untuk memfilter kegiatan.
+              </p>
+            {/if}
           </div>
-          <span class="text-[10px] text-ink-muted">{modalDetail.activities.length} kegiatan</span>
+          <span class="text-[10px] text-ink-muted">{activitySummary}</span>
         </div>
-        {@render activityList(modalDetail.activities)}
+        {#if filterLoading}
+          <div class="space-y-2">
+            {#each Array(3) as _}<div class="skeleton h-16"></div>{/each}
+          </div>
+        {:else if filterError}
+          <div class="flex flex-wrap items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-800">
+            <AlertCircle size={14} /> {filterError}
+            <Button variant="secondary" size="sm" onclick={retryActivityFilter}>Coba lagi</Button>
+          </div>
+        {:else}
+          {@render activityList(visibleActivities, activityEmptyText)}
+        {/if}
       </section>
     </div>
   {/if}

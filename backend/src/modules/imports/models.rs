@@ -306,6 +306,8 @@ pub struct QuickWinDetailResponse {
     pub by_polres: Vec<UnitBreakdown>,
     pub by_satker: Vec<UnitBreakdown>,
     pub codes: Vec<QuickWinCodeCoverage>,
+    /// Jumlah seluruh kegiatan yang cocok dengan filter (bisa lebih dari 100).
+    pub activities_total: i64,
     pub activities: Vec<QuickWinActivity>,
 }
 
