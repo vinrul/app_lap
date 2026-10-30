@@ -16,8 +16,8 @@ use crate::{
         imports, periods,
         reports::{
             layout::{
-                DesignTemplateView, LayoutView, MediaItem, ReportLayout, UploadedImage,
-                image_id_from_src,
+                DesignTemplateView, LayoutView, MediaFilters, MediaItem, MediaOption, ReportLayout,
+                UploadedImage, image_id_from_src,
             },
             metrics,
             models::{
@@ -517,62 +517,193 @@ pub async fn layout_image(
     ))
 }
 
-pub async fn list_media(db: &SqlitePool, period_id: &str) -> ApiResult<Vec<MediaItem>> {
+/// Ekspresi SQL yang menormalkan kode seperti `qw::normalize`.
+macro_rules! media_kode_sql {
+    () => {
+        "REPLACE(REPLACE(UPPER(TRIM(r.kode)), ' ', ''), '—', '.')"
+    };
+}
+
+/// Level baris dalam huruf kecil, padanan `record_is_polda`.
+macro_rules! media_level_sql {
+    () => {
+        "LOWER(CASE WHEN TRIM(r.level) <> '' THEN TRIM(r.level) ELSE TRIM(r.tingkat) END)"
+    };
+}
+
+/// Padanan `shared::satker_label` untuk satu kolom.
+macro_rules! media_satker_column_sql {
+    ($column:literal) => {
+        concat!(
+            "NULLIF(TRIM(CASE WHEN LOWER(TRIM(",
+            $column,
+            ")) LIKE 'kabid %' THEN SUBSTR(TRIM(",
+            $column,
+            "), 7) WHEN LOWER(TRIM(",
+            $column,
+            ")) LIKE 'ka %' THEN SUBSTR(TRIM(",
+            $column,
+            "), 4) WHEN LOWER(TRIM(",
+            $column,
+            ")) LIKE 'dir %' THEN SUBSTR(TRIM(",
+            $column,
+            "), 5) ELSE TRIM(",
+            $column,
+            ") END), '')"
+        )
+    };
+}
+
+/// Padanan `record_satker_label`: pejabat pelaksana, pelaksana, unit, lalu satuan.
+macro_rules! media_satker_sql {
+    () => {
+        concat!(
+            "COALESCE(",
+            media_satker_column_sql!("r.pejabat_pelaksana"),
+            ", ",
+            media_satker_column_sql!("r.pelaksana"),
+            ", ",
+            media_satker_column_sql!("r.unit"),
+            ", ",
+            media_satker_column_sql!("r.satuan"),
+            ", '')"
+        )
+    };
+}
+
+const MEDIA_EVIDENCE_SQL: &str = concat!(
+    "SELECT e.id, e.filename, e.content_type, e.size_bytes, e.created_at,
+            e.stored_path, i.filename AS import_filename, r.unit, r.polres, r.kegiatan, ",
+    media_kode_sql!(),
+    " AS kode
+     FROM import_evidence e
+     JOIN import_rows r ON r.id = e.row_id
+     JOIN imports i ON i.id = e.import_id
+     WHERE e.status = 'ready'
+       AND e.content_type IN ('image/png', 'image/jpeg')
+       AND r.tanggal BETWEEN ? AND ?
+       AND (? = '' OR ",
+    media_kode_sql!(),
+    " = ? OR ",
+    media_kode_sql!(),
+    " LIKE ? || '.%')
+       AND (? = '' OR TRIM(r.polres) = ?)
+       AND (? = '' OR (",
+    media_level_sql!(),
+    " = 'polda' AND ",
+    media_satker_sql!(),
+    " = ?))
+     ORDER BY e.created_at DESC, e.id DESC
+     LIMIT 400",
+);
+
+const MEDIA_CODE_SQL: &str = concat!(
+    "SELECT ",
+    media_kode_sql!(),
+    " AS label, COUNT(DISTINCT e.stored_path) AS total
+     FROM import_evidence e
+     JOIN import_rows r ON r.id = e.row_id
+     WHERE e.status = 'ready'
+       AND e.content_type IN ('image/png', 'image/jpeg')
+       AND r.tanggal BETWEEN ? AND ?
+     GROUP BY label",
+);
+
+const MEDIA_POLRES_SQL: &str =
+    "SELECT TRIM(r.polres) AS label, COUNT(DISTINCT e.stored_path) AS total
+     FROM import_evidence e
+     JOIN import_rows r ON r.id = e.row_id
+     WHERE e.status = 'ready'
+       AND e.content_type IN ('image/png', 'image/jpeg')
+       AND r.tanggal BETWEEN ? AND ?
+       AND TRIM(r.polres) <> ''
+     GROUP BY label";
+
+const MEDIA_SATKER_SQL: &str = concat!(
+    "SELECT ",
+    media_satker_sql!(),
+    " AS label, COUNT(DISTINCT e.stored_path) AS total
+     FROM import_evidence e
+     JOIN import_rows r ON r.id = e.row_id
+     WHERE e.status = 'ready'
+       AND e.content_type IN ('image/png', 'image/jpeg')
+       AND r.tanggal BETWEEN ? AND ?
+       AND ",
+    media_level_sql!(),
+    " = 'polda'
+     GROUP BY label",
+);
+
+/// Menyeragamkan nilai filter; string kosong berarti tanpa filter.
+fn media_filter_value(value: Option<&str>) -> String {
+    value.map(str::trim).unwrap_or_default().to_string()
+}
+
+pub async fn list_media(
+    db: &SqlitePool,
+    period_id: &str,
+    kode: Option<&str>,
+    polres: Option<&str>,
+    satker: Option<&str>,
+) -> ApiResult<Vec<MediaItem>> {
     periods::service::get(db, period_id).await?;
     let (start, end, _) = periods::service::dates(db, period_id).await?;
+    let kode = kode.map(imports::qw::normalize).unwrap_or_default();
+    let polres = media_filter_value(polres);
+    let satker = media_filter_value(satker);
+    let filtered = !kode.is_empty() || !polres.is_empty() || !satker.is_empty();
     let mut items = Vec::new();
 
-    let design_rows = sqlx::query(
-        "SELECT d.id, d.filename, d.content_type, d.size_bytes, d.created_at,
+    if !filtered {
+        let design_rows = sqlx::query(
+            "SELECT d.id, d.filename, d.content_type, d.size_bytes, d.created_at,
                 d.period_id, COALESCE(p.label, '') AS period_label
          FROM design_images d
          LEFT JOIN report_periods p ON p.id = d.period_id
          ORDER BY d.created_at DESC, d.id DESC
          LIMIT 200",
-    )
-    .fetch_all(db)
-    .await
-    .map_err(ApiError::internal)?;
-    for row in design_rows {
-        let id: String = row.get("id");
-        let origin_period: String = row.get("period_id");
-        let period_label: String = row.get("period_label");
-        items.push(MediaItem {
-            source: "design".to_string(),
-            preview_url: format!("/api/periods/{origin_period}/layout/images/{id}"),
-            id,
-            filename: row.get("filename"),
-            content_type: row.get("content_type"),
-            size_bytes: row.get("size_bytes"),
-            created_at: row.get("created_at"),
-            period_id: origin_period,
-            period_label: period_label.clone(),
-            import_filename: String::new(),
-            context: if period_label.is_empty() {
-                "Gambar desain".to_string()
-            } else {
-                format!("Desain · {period_label}")
-            },
-        });
+        )
+        .fetch_all(db)
+        .await
+        .map_err(ApiError::internal)?;
+        for row in design_rows {
+            let id: String = row.get("id");
+            let origin_period: String = row.get("period_id");
+            let period_label: String = row.get("period_label");
+            items.push(MediaItem {
+                source: "design".to_string(),
+                preview_url: format!("/api/periods/{origin_period}/layout/images/{id}"),
+                id,
+                filename: row.get("filename"),
+                content_type: row.get("content_type"),
+                size_bytes: row.get("size_bytes"),
+                created_at: row.get("created_at"),
+                period_id: origin_period,
+                period_label: period_label.clone(),
+                import_filename: String::new(),
+                context: if period_label.is_empty() {
+                    "Gambar desain".to_string()
+                } else {
+                    format!("Desain · {period_label}")
+                },
+                kode: String::new(),
+            });
+        }
     }
 
-    let evidence_rows = sqlx::query(
-        "SELECT e.id, e.filename, e.content_type, e.size_bytes, e.created_at,
-                e.stored_path, i.filename AS import_filename, r.unit, r.polres, r.kegiatan
-         FROM import_evidence e
-         JOIN import_rows r ON r.id = e.row_id
-         JOIN imports i ON i.id = e.import_id
-         WHERE e.status = 'ready'
-           AND e.content_type IN ('image/png', 'image/jpeg')
-           AND r.tanggal BETWEEN ? AND ?
-         ORDER BY e.created_at DESC, e.id DESC
-         LIMIT 400",
-    )
-    .bind(&start)
-    .bind(&end)
-    .fetch_all(db)
-    .await
-    .map_err(ApiError::internal)?;
+    let evidence_rows = sqlx::query(MEDIA_EVIDENCE_SQL)
+        .bind(&start)
+        .bind(&end)
+        .bind(&kode)
+        .bind(&kode)
+        .bind(&kode)
+        .bind(&polres)
+        .bind(&polres)
+        .bind(&satker)
+        .bind(&satker)
+        .fetch_all(db)
+        .await
+        .map_err(ApiError::internal)?;
     let mut seen_paths = HashSet::new();
     for row in evidence_rows {
         let stored_path: String = row.get("stored_path");
@@ -605,12 +736,85 @@ pub async fn list_media(db: &SqlitePool, period_id: &str) -> ApiResult<Vec<Media
             period_label: String::new(),
             import_filename: row.get("import_filename"),
             context,
+            kode: row.get("kode"),
         });
     }
 
     items.sort_by(|left, right| right.created_at.cmp(&left.created_at));
     items.truncate(300);
     Ok(items)
+}
+
+/// Pilihan filter media library yang tersedia pada periode ini.
+pub async fn list_media_filters(db: &SqlitePool, period_id: &str) -> ApiResult<MediaFilters> {
+    periods::service::get(db, period_id).await?;
+    let (start, end, _) = periods::service::dates(db, period_id).await?;
+
+    let code_rows = sqlx::query(MEDIA_CODE_SQL)
+        .bind(&start)
+        .bind(&end)
+        .fetch_all(db)
+        .await
+        .map_err(ApiError::internal)?;
+    let mut codes: Vec<MediaOption> = code_rows
+        .iter()
+        .map(|row| MediaOption {
+            label: row.get("label"),
+            count: row.get("total"),
+        })
+        .filter(|item| is_known_code(&item.label))
+        .collect();
+    codes.sort_by(|left, right| code_sort_key(&left.label).cmp(&code_sort_key(&right.label)));
+
+    let polres = media_options(db, MEDIA_POLRES_SQL, &start, &end).await?;
+    let satker = media_options(db, MEDIA_SATKER_SQL, &start, &end).await?;
+
+    Ok(MediaFilters {
+        codes,
+        polres,
+        satker,
+    })
+}
+
+async fn media_options(
+    db: &SqlitePool,
+    sql: &'static str,
+    start: &str,
+    end: &str,
+) -> ApiResult<Vec<MediaOption>> {
+    let rows = sqlx::query(sql)
+        .bind(start)
+        .bind(end)
+        .fetch_all(db)
+        .await
+        .map_err(ApiError::internal)?;
+    let mut options: Vec<MediaOption> = rows
+        .iter()
+        .map(|row| MediaOption {
+            label: row.get("label"),
+            count: row.get("total"),
+        })
+        .filter(|item| !item.label.is_empty())
+        .collect();
+    options.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    Ok(options)
+}
+
+/// Kode Quick Wins yang dikenali aplikasi.
+fn is_known_code(code: &str) -> bool {
+    imports::qw::find(code).is_some()
+        || imports::qw::group_of(code).is_some_and(|group| group.code == code)
+}
+
+fn code_sort_key(code: &str) -> (u16, u16) {
+    let rest = code.trim_start_matches("QW");
+    let (group, sub) = rest.split_once('.').unwrap_or((rest, ""));
+    (group.parse().unwrap_or(0), sub.parse().unwrap_or(0))
 }
 
 pub async fn import_media_image(
@@ -1232,8 +1436,8 @@ mod tests {
         .await
         .unwrap();
         let row_id = sqlx::query(
-            "INSERT INTO import_rows(import_id,source_row,tanggal,unit,polres,kegiatan,raw_json)
-             VALUES('imp1',2,'2026-10-20','Polsek Kuta','Polresta Denpasar','Patroli','{}')",
+            "INSERT INTO import_rows(import_id,source_row,tanggal,unit,polres,kegiatan,kode,raw_json)
+             VALUES('imp1',2,'2026-10-20','Polsek Kuta','Polresta Denpasar','Patroli','QW1.1','{}')",
         )
         .execute(&db)
         .await
@@ -1251,13 +1455,74 @@ mod tests {
         .await
         .unwrap();
 
-        let media = super::list_media(&db, "p1").await.unwrap();
-        assert_eq!(media.len(), 2);
+        let polda_row = sqlx::query(
+            "INSERT INTO import_rows(import_id,source_row,tanggal,unit,polres,level,tingkat,pelaksana,kegiatan,kode,raw_json)
+             VALUES('imp1',3,'2026-10-21','Polda Bali','','Polda','Polda','Ka SPKT','Sidak','QW1.2','{}')",
+        )
+        .execute(&db)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+        let polda_path = evidence_dir.join("ev2.png");
+        tokio::fs::write(&polda_path, png).await.unwrap();
+        sqlx::query(
+            "INSERT INTO import_evidence(id,import_id,row_id,source_url,filename,content_type,
+                stored_path,size_bytes,status)
+             VALUES('ev2','imp1',?,'https://contoh/dua.png','dua.png','image/png',?,?,'ready')",
+        )
+        .bind(polda_row)
+        .bind(polda_path.to_string_lossy().to_string())
+        .bind(png.len() as i64)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let media = super::list_media(&db, "p1", None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(media.len(), 3);
         assert!(media.iter().any(|item| item.source == "design"));
-        let evidence = media.iter().find(|item| item.source == "evidence").unwrap();
-        assert_eq!(evidence.id, "ev1");
+        let evidence = media.iter().find(|item| item.id == "ev1").unwrap();
         assert_eq!(evidence.preview_url, "/api/evidence/ev1");
         assert_eq!(evidence.context, "Polsek Kuta · Patroli");
+        assert_eq!(evidence.kode, "QW1.1");
+
+        let group = super::list_media(&db, "p1", Some("QW1"), None, None)
+            .await
+            .unwrap();
+        assert_eq!(group.len(), 2);
+        assert!(
+            super::list_media(&db, "p1", Some("QW2"), None, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let polres = super::list_media(&db, "p1", None, Some("Polresta Denpasar"), None)
+            .await
+            .unwrap();
+        assert_eq!(polres.len(), 1);
+        assert_eq!(polres[0].id, "ev1");
+
+        let satker = super::list_media(&db, "p1", None, None, Some("SPKT"))
+            .await
+            .unwrap();
+        assert_eq!(satker.len(), 1);
+        assert_eq!(satker[0].id, "ev2");
+
+        let filters = super::list_media_filters(&db, "p1").await.unwrap();
+        assert_eq!(filters.codes.len(), 2);
+        assert_eq!(filters.codes[0].label, "QW1.1");
+        assert_eq!(filters.codes[0].count, 1);
+        assert_eq!(filters.codes[1].label, "QW1.2");
+        assert_eq!(filters.polres.len(), 1);
+        assert_eq!(filters.polres[0].label, "Polresta Denpasar");
+        assert_eq!(filters.satker.len(), 1);
+        assert_eq!(filters.satker[0].label, "SPKT");
+
+        let mut ordered = vec!["QW1.10", "QW1.2", "QW2.1"];
+        ordered.sort_by(|left, right| super::code_sort_key(left).cmp(&super::code_sort_key(right)));
+        assert_eq!(ordered, vec!["QW1.2", "QW1.10", "QW2.1"]);
 
         let same = super::import_media_image(&db, &config, "u1", "p1", "design", &uploaded.id)
             .await

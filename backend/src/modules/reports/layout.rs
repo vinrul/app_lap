@@ -173,6 +173,23 @@ pub struct MediaItem {
     pub period_label: String,
     pub import_filename: String,
     pub context: String,
+    /// Kode Quick Wins sumber bukti dukung. Kosong untuk gambar desain.
+    pub kode: String,
+}
+
+/// Pilihan filter media library (kode, polres, atau satker).
+#[derive(Clone, Debug, Serialize)]
+pub struct MediaOption {
+    pub label: String,
+    pub count: i64,
+}
+
+/// Pilihan filter pada media library.
+#[derive(Clone, Debug, Serialize)]
+pub struct MediaFilters {
+    pub codes: Vec<MediaOption>,
+    pub polres: Vec<MediaOption>,
+    pub satker: Vec<MediaOption>,
 }
 
 #[derive(Debug, Deserialize)]

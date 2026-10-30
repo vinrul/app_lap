@@ -9,6 +9,7 @@ import type {
   ImportPreview,
   ImportView,
   LayoutView,
+  MediaFilters,
   MediaItem,
   Meta,
   Period,
@@ -216,8 +217,19 @@ export const designApi = {
     `/api/periods/${periodId}/layout/images/${imageId}`,
   sources: (periodId: string) =>
     request<DesignSource[]>(`/periods/${periodId}/design/sources`),
-  media: (periodId: string) =>
-    request<MediaItem[]>(`/periods/${periodId}/design/media`),
+  media: (
+    periodId: string,
+    filters?: { kode?: string; polres?: string; satker?: string },
+  ) =>
+    request<MediaItem[]>(
+      `/periods/${periodId}/design/media${queryString({
+        kode: filters?.kode,
+        polres: filters?.polres,
+        satker: filters?.satker,
+      })}`,
+    ),
+  mediaFilters: (periodId: string) =>
+    request<MediaFilters>(`/periods/${periodId}/design/media/filters`),
   importMedia: (periodId: string, source: 'design' | 'evidence', id: string) =>
     request<UploadedDesignImage>(`/periods/${periodId}/layout/images/from-media`, {
       method: 'POST',

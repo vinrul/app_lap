@@ -56,6 +56,10 @@ pub fn period_routes() -> Router<AppState> {
             get(handlers::design_media),
         )
         .route(
+            "/periods/{period_id}/design/media/filters",
+            get(handlers::design_media_filters),
+        )
+        .route(
             "/periods/{period_id}/layout/images/{image_id}",
             get(handlers::layout_image),
         )
@@ -71,10 +75,7 @@ pub fn routes() -> Router<AppState> {
             "/design/templates/{template_id}",
             delete(handlers::delete_template),
         )
-        .route(
-            "/reports/{report_id}",
-            delete(handlers::delete_report),
-        )
+        .route("/reports/{report_id}", delete(handlers::delete_report))
         .route("/reports/{report_id}/pdf", get(handlers::download))
         .route(
             "/reports/{report_id}/preview",

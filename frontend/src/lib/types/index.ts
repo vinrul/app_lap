@@ -190,6 +190,18 @@ export interface MediaItem {
   period_label: string
   import_filename: string
   context: string
+  kode: string
+}
+
+export interface MediaOption {
+  label: string
+  count: number
+}
+
+export interface MediaFilters {
+  codes: MediaOption[]
+  polres: MediaOption[]
+  satker: MediaOption[]
 }
 
 export interface DesignSource {

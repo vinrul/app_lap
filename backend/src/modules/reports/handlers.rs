@@ -1,7 +1,7 @@
 use axum::{
     Json,
     body::Body,
-    extract::{Multipart, Path, State},
+    extract::{Multipart, Path, Query, State},
     http::{HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
 };
@@ -13,8 +13,8 @@ use crate::{
         auth::AuthUser,
         reports::{
             layout::{
-                DesignSource, DesignTemplateView, ImportMediaRequest, LayoutView, MediaItem,
-                SaveLayoutRequest, SaveTemplateRequest, UploadedImage,
+                DesignSource, DesignTemplateView, ImportMediaRequest, LayoutView, MediaFilters,
+                MediaItem, SaveLayoutRequest, SaveTemplateRequest, UploadedImage,
             },
             models::{
                 DraftView, GenerateReportRequest, PreviewReportRequest, PreviewResponse,
@@ -188,8 +188,35 @@ pub async fn design_media(
     State(state): State<AppState>,
     _user: AuthUser,
     Path(period_id): Path<String>,
+    Query(query): Query<MediaQuery>,
 ) -> ApiResult<Json<Vec<MediaItem>>> {
-    Ok(Json(service::list_media(&state.db, &period_id).await?))
+    Ok(Json(
+        service::list_media(
+            &state.db,
+            &period_id,
+            query.kode.as_deref(),
+            query.polres.as_deref(),
+            query.satker.as_deref(),
+        )
+        .await?,
+    ))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct MediaQuery {
+    pub kode: Option<String>,
+    pub polres: Option<String>,
+    pub satker: Option<String>,
+}
+
+pub async fn design_media_filters(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(period_id): Path<String>,
+) -> ApiResult<Json<MediaFilters>> {
+    Ok(Json(
+        service::list_media_filters(&state.db, &period_id).await?,
+    ))
 }
 
 pub async fn import_media(
