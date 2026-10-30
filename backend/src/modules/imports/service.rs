@@ -1018,6 +1018,8 @@ pub async fn quick_win_detail_for_period(
     } else {
         qw::title(&normalized).to_string()
     };
+    let (polres_missing, satker_missing) =
+        coverage::missing_units_for_code(&rows, &normalized, polres);
 
     let personel: i64 = matching.iter().map(|row| row.personel_count).sum();
 
@@ -1039,6 +1041,8 @@ pub async fn quick_win_detail_for_period(
         by_polres,
         by_satker,
         codes,
+        polres_missing,
+        satker_missing,
         activities_total,
         activities,
     })

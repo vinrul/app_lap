@@ -22,6 +22,7 @@
     UnitBreakdown,
   } from '../../types'
   import { formatDate, formatNumber } from '../../utils/format'
+  import { qwGroupTitles } from '../../utils/constants'
   import { evidencePreview } from '../../stores/evidencePreview.svelte'
   import Button from '../ui/Button.svelte'
   import EvidenceList from '../ui/EvidenceList.svelte'
@@ -35,7 +36,8 @@
   let loading = $state(true)
   let error = $state('')
   let expandedGroup = $state<string | null>(null)
-  let activeProgram = $state('')
+  let activeGroup = $state('QW1')
+  let activeCode = $state('')
   let polresFilter = $state('')
   let polresLoading = $state(false)
   let polresError = $state('')
@@ -62,13 +64,22 @@
 
   onMount(load)
 
+  const codeGroups = ['QW1', 'QW2', 'QW3', 'QW4', 'QW5', 'QW6', 'QW7', 'QW8']
+
+  function pickGroup(value: string) {
+    activeGroup = value
+    const first = activeGroupCodes.find((item) => item.code.startsWith(`${value}.`))
+    if (first) activeCode = first.code
+  }
+
   async function load() {
     loading = true
     error = ''
     try {
       data = await importsApi.coverage(periodId, polresFilter || undefined)
-      if (!data.programs.some((program) => program.key === activeProgram)) {
-        activeProgram = data.programs[0]?.key ?? ''
+      if (!data.codes.some((item) => item.code === activeCode)) {
+        activeCode = data.codes[0]?.code ?? ''
+        activeGroup = data.codes[0]?.code.split('.')[0] ?? 'QW1'
       }
     } catch (caught) {
       data = null
@@ -90,10 +101,8 @@
       0,
     ),
   )
-  const active = $derived(
-    data?.programs.find((program) => program.key === activeProgram) ??
-      data?.programs[0] ??
-      null,
+  const activeGroupCodes = $derived(
+    data?.codes ?? [],
   )
   const polresOptions = $derived(data?.polres_options ?? [])
   const activePolres = $derived(data?.filter_polres ?? '')
@@ -101,18 +110,11 @@
   const secondaryLabel = $derived(activePolres ? 'Satker Polres' : 'Satker Polda')
   const primaryLower = $derived(activePolres ? 'polsek' : 'polres')
   const secondaryLower = $derived(activePolres ? 'satker polres' : 'satker')
-  const unitScopes = $derived(
-    active
-      ? [
-          { label: secondaryLabel, units: active.by_satker },
-          { label: primaryLabel, units: active.by_polres },
-        ]
-      : [],
+  const groupCodeCards = $derived(
+    activeGroupCodes.filter((item) => item.code.startsWith(`${activeGroup}.`)),
   )
-  const unitScopeHint = $derived(
-    activePolres
-      ? `Rincian ${activePolres}: ${secondaryLower} dan ${primaryLower} pelaksana.`
-      : 'Nilai metrik dan penanda isian.',
+  const activeCodeCard = $derived(
+    activeGroupCodes.find((item) => item.code === activeCode) ?? groupCodeCards[0] ?? null,
   )
   const modalTitle = $derived(
     modalDetail ? `${modalDetail.code} · ${modalDetail.title}` : modalCode || 'Detail sub-kode',
@@ -122,20 +124,8 @@
       ? `${modalDetail.group} ${modalDetail.group_title} · ${formatNumber(modalDetail.total_rows)} kegiatan`
       : '',
   )
-  const modalMissingPolres = $derived.by(() => {
-    if (!modalDetail || !data) return []
-    const performed = new Set(
-      modalDetail.by_polres.map((item) => item.label.trim().toLowerCase()),
-    )
-    return data.known_polres.filter((label) => !performed.has(label.trim().toLowerCase()))
-  })
-  const modalMissingSatker = $derived.by(() => {
-    if (!modalDetail || !data) return []
-    const performed = new Set(
-      modalDetail.by_satker.map((item) => item.label.trim().toLowerCase()),
-    )
-    return data.known_satker.filter((label) => !performed.has(label.trim().toLowerCase()))
-  })
+  const modalMissingPolres = $derived(modalDetail?.polres_missing ?? [])
+  const modalMissingSatker = $derived(modalDetail?.satker_missing ?? [])
   const activityTitle = $derived(
     activityRecord
       ? `${activityRecord.kode} · ${activityRecord.qw_title}`
@@ -186,14 +176,6 @@
     return unit ? `${formatNumber(value)} ${unit}` : formatNumber(value)
   }
 
-  function metricLabel(program: CoverageProgram, key: string): string {
-    return program.metrics.find((metric) => metric.key === key)?.label ?? key
-  }
-
-  function unitMetric(unit: CoverageUnit, key: string) {
-    return unit.values.find((value) => value.key === key)
-  }
-
   async function changePolres(value: string) {
     polresFilter = value
     polresError = ''
@@ -206,8 +188,9 @@
       const result = await importsApi.coverage(periodId, value || undefined)
       if (current !== polresRequest) return
       data = result
-      if (!result.programs.some((program) => program.key === activeProgram)) {
-        activeProgram = result.programs[0]?.key ?? ''
+      if (!result.codes.some((item) => item.code === activeCode)) {
+        activeCode = result.codes[0]?.code ?? ''
+        activeGroup = result.codes[0]?.code.split('.')[0] ?? 'QW1'
       }
     } catch (caught) {
       if (current !== polresRequest) return
@@ -553,8 +536,8 @@
                 </div>
               </div>
               <div class="flex flex-wrap items-center gap-5">
-                {@render coverageStat(primaryLabel, group.polres, data.known_polres.length)}
-                {@render coverageStat(secondaryLabel, group.satker, data.known_satker.length)}
+                {@render coverageStat(primaryLabel, group.polres, group.polres_total)}
+                {@render coverageStat(secondaryLabel, group.satker, group.satker_total)}
                 <ChevronRight size={16} class="shrink-0 text-ink-muted transition-transform {open ? 'rotate-90' : ''}" />
               </div>
             </button>
@@ -632,152 +615,142 @@
     <section class="card overflow-hidden">
       <div class="panel-heading">
         <div>
-          <span class="eyebrow">KELENGKAPAN DATA</span>
-          <h2 class="panel-title mt-0.5">Cakupan program prioritas</h2>
+          <span class="eyebrow">CAKUPAN PER SUB-KODE</span>
+          <h2 class="panel-title mt-0.5">Kartu cakupan Quick Wins</h2>
+          <p class="mt-1 text-[10px] text-ink-muted">
+            Dihitung otomatis dari isian laporan: angka dijumlahkan, pilihan jawaban diringkas per kategori.
+          </p>
         </div>
-        <span class="badge badge-neutral">{data.programs.length} program</span>
-      </div>
-      <div class="flex flex-wrap gap-2 border-b border-line px-5 py-3">
-        {#each data.programs as program (program.key)}
-          <button
-            type="button"
-            class="btn btn-sm {active?.key === program.key ? 'btn-primary' : 'btn-secondary'}"
-            onclick={() => (activeProgram = program.key)}
-          >
-            {program.title}
-          </button>
-        {/each}
+        <span class="badge badge-neutral">{(data.codes ?? []).length} sub-kode</span>
       </div>
 
-      {#if active}
+      <div class="flex flex-wrap items-end gap-2 border-b border-line px-5 py-3">
+        <label class="flex flex-col gap-1">
+          <span class="text-[10px] font-bold tracking-[0.1em] text-ink-muted uppercase">Kelompok</span>
+          <select class="input w-56 py-1.5 text-xs" value={activeGroup} onchange={(event) => pickGroup(event.currentTarget.value)}>
+            {#each codeGroups as group (group)}
+              <option value={group}>{group} · {qwGroupTitles[group] ?? group}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-[10px] font-bold tracking-[0.1em] text-ink-muted uppercase">Sub-kode</span>
+          <select class="input w-72 py-1.5 text-xs" value={activeCode} onchange={(event) => (activeCode = event.currentTarget.value)}>
+            {#each groupCodeCards as item (item.code)}
+              <option value={item.code}>{item.code} · {item.title}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+
+      {#if activeCodeCard}
         <div class="space-y-5 p-5">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p class="text-sm font-semibold text-ink">
-                {active.title}
-                {#if active.code}<span class="ml-2 text-[11px] font-normal text-ink-muted">{active.code}</span>{/if}
+                {activeCodeCard.code}
+                <span class="ml-2 text-[11px] font-normal text-ink-muted">{activeCodeCard.title}</span>
               </p>
               <p class="mt-1 text-[11px] text-ink-muted">
-                {formatNumber(active.rows)} baris · {active.polres}/{active.polres_total} {primaryLower} · {active.satker}/{active.satker_total} {secondaryLower}
+                {formatNumber(activeCodeCard.rows)} laporan · {activeCodeCard.polres}/{activeCodeCard.polres_total} {primaryLower} · {activeCodeCard.satker}/{activeCodeCard.satker_total} {secondaryLower}
               </p>
             </div>
-            {#if active.key !== 'media'}
-              <div class="flex flex-wrap gap-4">
-                {@render coverageStat(primaryLabel, active.polres, active.polres_total)}
-                {@render coverageStat(secondaryLabel, active.satker, active.satker_total)}
-              </div>
-            {/if}
+            <div class="flex flex-wrap gap-4">
+              {@render coverageStat(primaryLabel, activeCodeCard.polres, activeCodeCard.polres_total)}
+              {@render coverageStat(secondaryLabel, activeCodeCard.satker, activeCodeCard.satker_total)}
+            </div>
           </div>
 
-          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {#each active.metrics as metric (metric.key)}
-              <article class="rounded-xl border border-line bg-stone-50/60 p-3.5">
-                <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{metric.label}</p>
-                <p class="mt-1 font-display text-xl text-forest-900">{formatValue(metric.total, metric.unit)}</p>
-                <p class="mt-1 text-[10px] text-ink-muted">
-                  {metric.filled_polres}/{active.polres} {primaryLower} · {metric.filled_satker}/{active.satker} {secondaryLower} mengisi
-                </p>
-                <p class="mt-0.5 text-[10px] {active.rows === 0 ? 'text-ink-muted' : metric.missing_rows > 0 ? 'text-red-700' : 'text-forest-600'}">
-                  {#if active.rows === 0}
-                    Belum ada baris program
-                  {:else if metric.missing_rows > 0}
-                    {formatNumber(metric.missing_rows)} baris belum diisi
-                  {:else}
-                    Semua baris terisi
-                  {/if}
-                </p>
-              </article>
-            {/each}
-          </div>
+          {#if activeCodeCard.metrics.length}
+            <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {#each activeCodeCard.metrics as metric (metric.key)}
+                <article class="rounded-xl border border-line bg-stone-50/60 p-3.5">
+                  <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{metric.label}</p>
+                  <p class="mt-1 font-display text-xl text-forest-900">{formatValue(metric.total, metric.unit)}</p>
+                  <p class="mt-1 text-[10px] text-ink-muted">
+                    {formatNumber(metric.filled_rows)} dari {formatNumber(activeCodeCard.rows)} laporan mengisi
+                  </p>
+                </article>
+              {/each}
+            </div>
+          {:else if activeCodeCard.rows === 0}
+            <p class="rounded-xl border border-dashed border-line px-3 py-6 text-center text-[11px] text-ink-muted">
+              Belum ada laporan untuk {activeCodeCard.code} pada periode ini.
+            </p>
+          {/if}
 
-          {#if active.key !== 'media'}
-            <div class="grid gap-4 xl:grid-cols-2">
-              <div class="rounded-xl border border-line p-3.5">
-                <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{primaryLabel} belum melaksanakan</p>
-                <div class="mt-2">{@render chips(active.polres_missing)}</div>
-              </div>
-              <div class="rounded-xl border border-line p-3.5">
-                <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{secondaryLabel} belum melaksanakan</p>
-                <div class="mt-2">{@render chips(active.satker_missing)}</div>
-              </div>
+          {#if activeCodeCard.breakdowns.length}
+            <div class="grid gap-3 sm:grid-cols-2">
+              {#each activeCodeCard.breakdowns as item (item.key)}
+                {@const max = Math.max(1, ...item.values.map((value) => value.count))}
+                <article class="rounded-xl border border-line p-3.5">
+                  <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{item.label}</p>
+                  <ul class="mt-2 space-y-1.5">
+                    {#each item.values as value (value.label)}
+                      <li>
+                        <div class="flex items-center justify-between gap-2 text-[11px]">
+                          <span class="truncate text-ink" title={value.label}>{value.label}</span>
+                          <span class="shrink-0 font-semibold text-forest-800">{formatNumber(value.count)}</span>
+                        </div>
+                        <div class="mt-0.5 h-1.5 overflow-hidden rounded-full bg-stone-200">
+                          <div class="h-full rounded-full bg-forest-600" style={`width:${Math.round((value.count / max) * 100)}%`}></div>
+                        </div>
+                      </li>
+                    {/each}
+                  </ul>
+                  <p class="mt-2 text-[10px] text-ink-muted">
+                    {formatNumber(item.filled_rows)} dari {formatNumber(activeCodeCard.rows)} laporan mengisi
+                  </p>
+                </article>
+              {/each}
             </div>
           {/if}
 
           <div class="grid gap-4 xl:grid-cols-2">
-            {#each unitScopes as scope (scope.label)}
-              {@const incomplete = scope.units.filter((unit) => unit.missing.length > 0)}
-              <div class="rounded-xl border border-line p-3.5">
-                <div class="flex items-center justify-between gap-2">
-                  <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{scope.label} belum lengkap</p>
-                  <span class="badge {incomplete.length ? 'badge-danger' : 'badge-success'}">{incomplete.length} unit</span>
+            <div class="rounded-xl border border-line p-3.5">
+              <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{primaryLabel} belum melaksanakan</p>
+              <div class="mt-2">{@render chips(activeCodeCard.polres_missing)}</div>
+            </div>
+            <div class="rounded-xl border border-line p-3.5">
+              <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{secondaryLabel} belum melaksanakan</p>
+              <div class="mt-2">{@render chips(activeCodeCard.satker_missing)}</div>
+            </div>
+          </div>
+
+          <div class="grid gap-4 xl:grid-cols-2">
+            {#each [{ label: primaryLabel, units: activeCodeCard.by_polres }, { label: secondaryLabel, units: activeCodeCard.by_satker }] as scope (scope.label)}
+              <div>
+                <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
+                  <p class="text-xs font-bold tracking-[0.12em] text-ink-muted uppercase">{scope.label} pelaksana</p>
+                  <span class="text-[10px] text-ink-muted">{scope.units.length} unit</span>
                 </div>
-                {#if !scope.units.length}
-                  <p class="mt-2 text-[11px] text-ink-muted">Belum ada unit yang melaksanakan program ini.</p>
-                {:else if incomplete.length}
-                  <ul class="mt-2 max-h-64 space-y-2 overflow-y-auto pr-1">
-                    {#each incomplete as unit (unit.label)}
-                      <li class="rounded-lg bg-stone-50 px-2.5 py-2">
-                        <p class="text-[11px] font-semibold text-ink">{unit.label}</p>
-                        <p class="mt-0.5 text-[10px] text-red-700">
-                          Belum: {unit.missing.map((key) => metricLabel(active, key)).join(', ')}
-                        </p>
-                      </li>
-                    {/each}
-                  </ul>
+                {#if scope.units.length}
+                  <div class="max-h-72 overflow-auto rounded-xl border border-line">
+                    <table class="min-w-full text-left text-[11px]">
+                      <thead class="sticky top-0 bg-stone-50 text-[9px] tracking-[0.08em] text-ink-muted uppercase">
+                        <tr>
+                          <th class="whitespace-nowrap px-3 py-2">Unit</th>
+                          <th class="whitespace-nowrap px-3 py-2 text-right">Laporan</th>
+                        </tr>
+                      </thead>
+                      <tbody class="divide-y divide-line">
+                        {#each scope.units as unit (unit.label)}
+                          <tr class="hover:bg-stone-50/60">
+                            <td class="whitespace-nowrap px-3 py-2 font-medium text-ink">{unit.label}</td>
+                            <td class="px-3 py-2 text-right">{formatNumber(unit.rows)}</td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  </div>
                 {:else}
-                  <p class="mt-2 text-[11px] text-forest-600">Semua unit pada program ini sudah mengisi seluruh metrik.</p>
+                  <p class="rounded-xl border border-dashed border-line px-3 py-4 text-center text-[11px] text-ink-muted">
+                    Belum ada unit yang melaporkan kode ini.
+                  </p>
                 {/if}
               </div>
             {/each}
           </div>
-
-          {#each unitScopes as scope (scope.label)}
-            <div>
-              <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
-                <div>
-                  <p class="text-xs font-bold tracking-[0.12em] text-ink-muted uppercase">{scope.label}</p>
-                  <p class="mt-0.5 text-[10px] text-ink-muted">{unitScopeHint}</p>
-                </div>
-                <span class="text-[10px] text-ink-muted">{scope.units.length} unit</span>
-              </div>
-              {#if scope.units.length}
-                <div class="overflow-x-auto rounded-xl border border-line">
-                  <table class="min-w-full text-left text-[11px]">
-                    <thead class="bg-stone-50 text-[9px] tracking-[0.08em] text-ink-muted uppercase">
-                      <tr>
-                        <th class="whitespace-nowrap px-3 py-2">Unit</th>
-                        <th class="whitespace-nowrap px-3 py-2 text-right">Baris</th>
-                        {#each active.metrics as metric (metric.key)}
-                          <th class="whitespace-nowrap px-3 py-2 text-right">{metric.label}</th>
-                        {/each}
-                      </tr>
-                    </thead>
-                    <tbody class="divide-y divide-line">
-                      {#each scope.units as unit (unit.label)}
-                        <tr class="hover:bg-stone-50/60">
-                          <td class="whitespace-nowrap px-3 py-2 font-medium text-ink">{unit.label}</td>
-                          <td class="px-3 py-2 text-right text-ink-muted">{formatNumber(unit.rows)}</td>
-                          {#each active.metrics as metric (metric.key)}
-                            <td class="px-3 py-2 text-right">
-                              {#if unitMetric(unit, metric.key)?.filled}
-                                <span class="font-medium text-ink">{formatValue(unitMetric(unit, metric.key)?.value ?? 0, metric.unit)}</span>
-                              {:else}
-                                <span class="rounded-md bg-red-50 px-1.5 py-0.5 text-[9px] font-bold text-red-700">Belum</span>
-                              {/if}
-                            </td>
-                          {/each}
-                        </tr>
-                      {/each}
-                    </tbody>
-                  </table>
-                </div>
-              {:else}
-                <p class="rounded-xl border border-dashed border-line px-3 py-4 text-center text-[11px] text-ink-muted">
-                  Belum ada unit yang melaksanakan program ini.
-                </p>
-              {/if}
-            </div>
-          {/each}
         </div>
       {/if}
     </section>

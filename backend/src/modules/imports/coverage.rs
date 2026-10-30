@@ -3,14 +3,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     modules::imports::{
         models::{
-            CoverageCode, CoverageGroup, CoverageMetric, CoverageProgram, CoverageResponse,
-            CoverageUnit, CoverageUnitCount, CoverageUnitValue, RecordView,
+            CoverageBreakdown, CoverageCode, CoverageGroup, CoverageMetric, CoverageProgram,
+            CoverageResponse, CoverageUnit, CoverageUnitCount, CoverageUnitValue, RecordView,
         },
         qw,
     },
-    shared::{extract_links, is_noise, parse_count},
+    shared::{LabeledCount, extract_links, is_noise, parse_count},
 };
 
+use super::duties::{self, DutyLevel};
 use super::service::{record_is_polda, record_satker_label};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,18 +61,720 @@ impl KnownUnits {
             Scope::Satker => &self.satker,
         }
     }
+}
 
-    fn missing(&self, scope: Scope, performed: &BTreeSet<String>) -> Vec<String> {
-        self.set(scope)
+/// Peran yang menentukan tanggung jawab pada dimensi polres/polsek.
+fn unit_role(mode: UnitMode, scope: Scope) -> Option<&'static str> {
+    match (mode, scope) {
+        (UnitMode::Polda, Scope::Polres) => Some("KAPOLRES"),
+        (UnitMode::Polres, Scope::Polres) => Some("KAPOLSEK"),
+        _ => None,
+    }
+}
+
+/// Unit yang seharusnya melaksanakan satu kode, termasuk unit yang sudah melapor.
+fn responsible_units(
+    known: &KnownUnits,
+    scope: Scope,
+    mode: UnitMode,
+    code: &str,
+    performed: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let labels = known.set(scope);
+    let mut responsible: BTreeSet<String> = match unit_role(mode, scope) {
+        Some(role) => {
+            if !duties::is_assigned(code) || duties::role_assigned(code, role) {
+                labels.keys().cloned().collect()
+            } else {
+                BTreeSet::new()
+            }
+        }
+        None => {
+            let level = match mode {
+                UnitMode::Polda => DutyLevel::Polda,
+                UnitMode::Polres => DutyLevel::Polres,
+            };
+            match duties::satker_keywords(code, level) {
+                None => labels.keys().cloned().collect(),
+                Some(keywords) => {
+                    // Cukup salah satu: bila pejabat pelaksana tingkat ini sudah
+                    // melapor, kode dianggap terlaksana dan tidak ada satker yang
+                    // dicatat belum melaksanakan.
+                    let pejabat = duties::pelaksana_keywords(code, level).unwrap_or_default();
+                    let covered = labels.iter().any(|(key, label)| {
+                        performed.contains(key) && duties::label_matches(label, &pejabat)
+                    });
+                    if covered {
+                        BTreeSet::new()
+                    } else {
+                        labels
+                            .iter()
+                            .filter(|(_, label)| duties::label_matches(label, &keywords))
+                            .map(|(key, _)| key.clone())
+                            .collect()
+                    }
+                }
+            }
+        }
+    };
+    responsible.extend(performed.iter().cloned());
+    responsible
+}
+
+/// Unit bertanggung jawab yang belum melapor, diurutkan seperti daftar unit.
+fn missing_units(
+    known: &KnownUnits,
+    scope: Scope,
+    mode: UnitMode,
+    code: &str,
+    performed: &BTreeSet<String>,
+) -> Vec<String> {
+    let responsible = responsible_units(known, scope, mode, code, performed);
+    known
+        .set(scope)
+        .iter()
+        .filter(|(key, _)| responsible.contains(*key) && !performed.contains(*key))
+        .map(|(_, label)| label.clone())
+        .collect()
+}
+
+/// Unit bertanggung jawab yang belum melapor untuk satu kode, sesuai daftar tugas.
+pub(crate) fn missing_units_for_code(
+    rows: &[RecordView],
+    code: &str,
+    polres: Option<&str>,
+) -> (Vec<String>, Vec<String>) {
+    let filter = polres.map(str::trim).filter(|value| !value.is_empty());
+    let mode = if filter.is_some() {
+        UnitMode::Polres
+    } else {
+        UnitMode::Polda
+    };
+    let scoped: Vec<RecordView> = match filter {
+        Some(label) => rows
             .iter()
-            .filter(|(key, _)| !performed.contains(*key))
-            .map(|(_, label)| label.clone())
-            .collect()
+            .filter(|row| row.polres.trim().eq_ignore_ascii_case(label))
+            .cloned()
+            .collect(),
+        None => Vec::new(),
+    };
+    let rows: &[RecordView] = if filter.is_some() { &scoped } else { rows };
+    let known = KnownUnits::from_rows(rows, mode);
+    let performed_polres = performed_units(rows, code, mode, Scope::Polres);
+    let performed_satker = performed_units(rows, code, mode, Scope::Satker);
+    (
+        missing_units(&known, Scope::Polres, mode, code, &performed_polres),
+        missing_units(&known, Scope::Satker, mode, code, &performed_satker),
+    )
+}
+
+fn performed_units(
+    rows: &[RecordView],
+    code: &str,
+    mode: UnitMode,
+    scope: Scope,
+) -> BTreeSet<String> {
+    let normalized = qw::normalize(code);
+    let is_group = !normalized.contains('.');
+    let prefix = format!("{normalized}.");
+    let matching: Vec<&RecordView> = rows
+        .iter()
+        .filter(|row| {
+            let row_code = qw::normalize(&row.kode);
+            if is_group {
+                row_code == normalized || row_code.starts_with(&prefix)
+            } else {
+                row_code == normalized
+            }
+        })
+        .collect();
+    units_of(&matching, mode, scope)
+}
+
+fn units_of(matching: &[&RecordView], mode: UnitMode, scope: Scope) -> BTreeSet<String> {
+    matching
+        .iter()
+        .filter_map(|row| row_unit(row, mode))
+        .filter(|(item_scope, _)| *item_scope == scope)
+        .map(|(_, label)| label.to_lowercase())
+        .collect()
+}
+
+/// Jumlah baris per unit, tanpa nilai metrik.
+fn unit_row_counts(matching: &[&RecordView], mode: UnitMode, scope: Scope) -> Vec<CoverageUnit> {
+    let mut counts: BTreeMap<String, (String, i64)> = BTreeMap::new();
+    for row in matching {
+        let Some((item_scope, label)) = row_unit(row, mode) else {
+            continue;
+        };
+        if item_scope != scope {
+            continue;
+        }
+        let entry = counts.entry(label.to_lowercase()).or_insert((label, 0));
+        entry.1 += 1;
+    }
+    let mut units: Vec<CoverageUnit> = counts
+        .into_values()
+        .map(|(label, rows)| CoverageUnit {
+            label,
+            rows,
+            values: Vec::new(),
+            missing: Vec::new(),
+        })
+        .collect();
+    units.sort_by(|left, right| {
+        right
+            .rows
+            .cmp(&left.rows)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    units
+}
+
+// ===== Kartu cakupan per sub-kode =====
+
+/// Field administratif yang tidak dijadikan kartu.
+const CARD_SKIP: &[&str] = &[
+    "pelaksana",
+    "nama dan pangkat",
+    "dokumentasi",
+    "link posting",
+    "inovasi",
+    "saran masukan",
+    "problem, masalah",
+    "kegiatan lain",
+    "bukti dukung",
+    "status kegiatan",
+    "kendala",
+    "pelapor",
+    "tentang",
+    "uraian",
+    "sebutkan",
+    "rincian",
+    "daftar",
+    "tautan",
+    "unggah",
+    "sprint",
+    "foto",
+    "peta kerawanan",
+    "titik koordinat",
+    "alamat",
+];
+
+fn is_card_skip(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    CARD_SKIP.iter().any(|skip| lower.contains(skip)) || lower.contains("nama ")
+}
+
+/// Kartu jumlah tempat/mitra unik untuk field nama, rute, atau kerja sama.
+fn place_card(key: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    let lower = key.to_ascii_lowercase();
+    if [
+        "pertimbangan",
+        "alasan",
+        "uraian",
+        "rincian",
+        "daftar",
+        "link",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+    {
+        return None;
+    }
+    if ["mitra", "kerja sama", "kerjasama"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        return Some(("mitra", "Jumlah mitra", "mitra"));
+    }
+    if !lower.contains("nama ") && !lower.contains("rute") {
+        return None;
+    }
+    if lower.contains("sekolah") {
+        return Some(("sekolah", "Jumlah sekolah", "sekolah"));
+    }
+    if lower.contains("masjid") {
+        return Some(("masjid", "Jumlah masjid", "masjid"));
+    }
+    if lower.contains("ibadah") {
+        return Some(("ibadah", "Jumlah tempat ibadah", "lokasi"));
+    }
+    if lower.contains("rute") {
+        return Some(("rute", "Jumlah rute patroli", "rute"));
+    }
+    if lower.contains("lokasi") || lower.contains("tempat") {
+        return Some(("lokasi", "Jumlah lokasi", "lokasi"));
+    }
+    None
+}
+
+fn card_unit(key: &str) -> &'static str {
+    let lower = key.to_ascii_lowercase();
+    if [
+        "personel", "peserta", "orang", "warga", "jamaah", "siswa", "anggota",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+    {
+        return "orang";
+    }
+    if ["lokasi", "titik", "sekolah", "masjid", "ibadah", "kawasan"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        return "lokasi";
+    }
+    ""
+}
+
+fn card_slug(key: &str) -> String {
+    let mut slug = String::new();
+    for character in key.chars() {
+        if character.is_alphanumeric() {
+            slug.extend(character.to_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
+fn card_value_label(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.to_ascii_lowercase().starts_with("lainnya") {
+        return "Lainnya".to_string();
+    }
+    trimmed.to_string()
+}
+
+fn jenjang_of(value: &str) -> Option<&'static str> {
+    let upper = value.to_ascii_uppercase();
+    let tokens: Vec<&str> = upper
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect();
+    if tokens.iter().any(|token| token.starts_with("SMK")) {
+        return Some("SMK");
+    }
+    if tokens
+        .iter()
+        .any(|token| token.starts_with("SMA") || *token == "MA")
+    {
+        return Some("SMA/MA");
+    }
+    if tokens
+        .iter()
+        .any(|token| token.starts_with("SMP") || token.starts_with("MTS"))
+    {
+        return Some("SMP/MTs");
+    }
+    if tokens
+        .iter()
+        .any(|token| token.starts_with("SD") || *token == "MI")
+    {
+        return Some("SD/MI");
+    }
+    None
+}
+
+fn card_metric(
+    key: &str,
+    label: &str,
+    unit: &str,
+    total: f64,
+    filled: usize,
+    rows: usize,
+) -> CoverageMetric {
+    CoverageMetric {
+        key: key.to_string(),
+        label: label.to_string(),
+        unit: unit.to_string(),
+        total,
+        filled_rows: filled as i64,
+        missing_rows: rows as i64 - filled as i64,
+        filled_polres: 0,
+        filled_satker: 0,
+    }
+}
+
+/// Nilai yang dianggap kosong saat menyusun kartu. Angka `0` tetap dihitung.
+fn is_card_noise(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    lower.is_empty()
+        || matches!(
+            lower.as_str(),
+            "-" | "—" | "null" | "none" | "nihil" | "tidak" | "tidak ada" | "belum ada"
+        )
+        || lower.starts_with("nihil")
+        || lower.starts_with("tidak ada")
+}
+
+/// Label personel/peserta yang biasa ditulis sebagai baris tersendiri,
+/// mis. `Polri : 5 pers` atau `Warga: 40 orang`.
+fn personnel_label(key: &str) -> Option<&'static str> {
+    let lower = key.trim().to_ascii_lowercase();
+    if lower.is_empty() || lower.len() > 40 {
+        return None;
+    }
+    // Field berlabel "Jumlah …" sudah ditangani sebagai kartu angka biasa.
+    if lower.starts_with("jumlah") || lower.contains("jumlah ") {
+        return None;
+    }
+    if lower.contains("polri") || lower.contains("polisi") {
+        return Some("Polri");
+    }
+    if lower.contains("bnn") {
+        return Some("BNN");
+    }
+    if lower.contains("tni") {
+        return Some("TNI");
+    }
+    if lower.contains("warga") || lower.contains("masyarakat") {
+        return Some("Warga/masyarakat");
+    }
+    if lower.contains("peserta") {
+        return Some("Peserta");
+    }
+    if lower.contains("pemuda") || lower.contains("karang taruna") {
+        return Some("Pemuda");
+    }
+    if lower.contains("pecalang") {
+        return Some("Pecalang");
+    }
+    if lower.contains("prajuru") || lower.contains("adat") {
+        return Some("Prajuru adat");
+    }
+    if lower.contains("keluarga") {
+        return Some("Keluarga");
+    }
+    if lower.contains("pemda") || lower.contains("instansi") {
+        return Some("Pemda/instansi");
+    }
+    None
+}
+
+/// Jenis barang bukti dari teks rincian.
+fn barang_jenis(value: &str) -> &'static str {
+    let lower = value.to_ascii_lowercase();
+    if lower.contains("sabu") || lower.contains("shabu") || lower.contains("metamfetamin") {
+        return "Sabu";
+    }
+    if lower.contains("ganja") || lower.contains("biji kering") {
+        return "Ganja";
+    }
+    if lower.contains("ekstasi") || lower.contains("tablet") {
+        return "Ekstasi";
+    }
+    if lower.contains("tembakau") || lower.contains("gorila") {
+        return "Tembakau";
+    }
+    if lower.contains("bong") {
+        return "Alat/bong";
+    }
+    "Lainnya"
+}
+
+/// Mengambil angka setelah label pertama, mis. "1) Golongan 1: 2, ..." -> 2.
+fn labeled_number(value: &str) -> Option<i64> {
+    let (_, rest) = value.split_once(':')?;
+    let token = rest.split(',').next()?.trim();
+    parse_count(token)
+}
+
+/// Membangun kartu angka dan distribusi dari isian laporan satu sub-kode.
+fn build_code_cards(matching: &[&RecordView]) -> (Vec<CoverageMetric>, Vec<CoverageBreakdown>) {
+    let total = matching.len();
+    if total == 0 {
+        return (Vec::new(), Vec::new());
     }
 
-    fn total(&self, scope: Scope) -> i64 {
-        self.set(scope).len() as i64
+    let mut fields: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in matching {
+        for (key, value) in &row.fields {
+            if is_card_noise(value) {
+                continue;
+            }
+            fields
+                .entry(key.clone())
+                .or_default()
+                .push(value.trim().to_string());
+        }
     }
+
+    let min_rows = std::cmp::max(3, total / 6);
+    let mut entries: Vec<(String, Vec<String>)> = fields.into_iter().collect();
+    entries.sort_by(|left, right| {
+        right
+            .1
+            .len()
+            .cmp(&left.1.len())
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    let mut metrics: Vec<CoverageMetric> = Vec::new();
+    let mut breakdowns: Vec<CoverageBreakdown> = Vec::new();
+    let mut jenjang_done = false;
+
+    // Personel/peserta yang ditulis per baris: "Polri: 5 pers", "BNN: 3 pers".
+    let mut personnel: BTreeMap<&'static str, i64> = BTreeMap::new();
+    let mut personnel_rows = 0_i64;
+    for (key, values) in &entries {
+        let Some(label) = personnel_label(key) else {
+            continue;
+        };
+        let numbers: Vec<i64> = values
+            .iter()
+            .filter_map(|value| parse_count(value))
+            .collect();
+        if numbers.is_empty() || numbers.len() * 10 < values.len() * 7 {
+            continue;
+        }
+        *personnel.entry(label).or_default() += numbers.iter().sum::<i64>();
+        personnel_rows += numbers.len() as i64;
+    }
+    if !personnel.is_empty() {
+        let mut items: Vec<LabeledCount> = personnel
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(label, count)| LabeledCount::new(label, count))
+            .collect();
+        if !items.is_empty() {
+            items.sort_by(|left, right| right.count.cmp(&left.count));
+            breakdowns.push(CoverageBreakdown {
+                key: "personel-terlibat".to_string(),
+                label: "Personel/peserta terlibat".to_string(),
+                filled_rows: personnel_rows,
+                values: items,
+            });
+        }
+    }
+
+    for (key, values) in entries {
+        let lower = key.to_ascii_lowercase();
+
+        // Field personel sudah diringkas pada kartu "Personel/peserta terlibat".
+        if personnel_label(&key).is_some() {
+            continue;
+        }
+
+        // Barang bukti berformat "Golongan 1: <jumlah>, <rincian>".
+        if lower.contains("barang bukti")
+            && !lower.contains("rincian")
+            && !lower.contains("uraian")
+            && !lower.contains("jumlah")
+        {
+            if values.len() >= 3 && metrics.len() < 8 {
+                let mut total_qty = 0_i64;
+                let mut per_jenis: BTreeMap<&'static str, i64> = BTreeMap::new();
+                for value in &values {
+                    let qty = labeled_number(value).unwrap_or(0);
+                    total_qty += qty;
+                    *per_jenis.entry(barang_jenis(value)).or_default() += qty;
+                }
+                metrics.push(card_metric(
+                    "barang-bukti",
+                    "Barang bukti diamankan",
+                    "",
+                    total_qty as f64,
+                    values.len(),
+                    total,
+                ));
+                let mut items: Vec<LabeledCount> = per_jenis
+                    .into_iter()
+                    .filter(|(_, count)| *count > 0)
+                    .map(|(jenis, count)| LabeledCount::new(jenis, count))
+                    .collect();
+                if !items.is_empty() && breakdowns.len() < 6 {
+                    items.sort_by(|left, right| right.count.cmp(&left.count));
+                    breakdowns.push(CoverageBreakdown {
+                        key: "barang-bukti-jenis".to_string(),
+                        label: "Barang bukti per jenis".to_string(),
+                        filled_rows: values.len() as i64,
+                        values: items,
+                    });
+                }
+            }
+            continue;
+        }
+
+        if values.len() < min_rows {
+            continue;
+        }
+
+        // Nama sekolah/masjid/tempat/lokasi: hitung jumlah tempat unik.
+        if let Some((card_key, label, unit)) = place_card(&key) {
+            if metrics.iter().any(|metric| metric.key == card_key) {
+                continue;
+            }
+            let distinct: BTreeSet<String> = values
+                .iter()
+                .map(|value| value.to_ascii_lowercase())
+                .collect();
+            if metrics.len() < 8 {
+                metrics.push(card_metric(
+                    card_key,
+                    label,
+                    unit,
+                    distinct.len() as f64,
+                    values.len(),
+                    total,
+                ));
+            }
+            if card_key == "sekolah" && !jenjang_done {
+                let mut per_jenjang: BTreeMap<&'static str, BTreeSet<String>> = BTreeMap::new();
+                for value in &values {
+                    if let Some(jenjang) = jenjang_of(value) {
+                        per_jenjang
+                            .entry(jenjang)
+                            .or_default()
+                            .insert(value.to_ascii_lowercase());
+                    }
+                }
+                if per_jenjang.len() > 1 {
+                    let mut items: Vec<LabeledCount> = per_jenjang
+                        .into_iter()
+                        .map(|(jenjang, set)| LabeledCount::new(jenjang, set.len() as i64))
+                        .collect();
+                    items.sort_by(|left, right| right.count.cmp(&left.count));
+                    breakdowns.push(CoverageBreakdown {
+                        key: "jenjang".to_string(),
+                        label: "Jenjang pendidikan".to_string(),
+                        filled_rows: values.len() as i64,
+                        values: items,
+                    });
+                    jenjang_done = true;
+                }
+            }
+            continue;
+        }
+
+        if is_card_skip(&key) {
+            continue;
+        }
+
+        let numbers: Vec<i64> = values
+            .iter()
+            .filter_map(|value| parse_count(value))
+            .collect();
+        let numbers: Vec<i64> = values
+            .iter()
+            .filter_map(|value| parse_count(value))
+            .collect();
+        if numbers.len() * 10 >= values.len() * 7 && metrics.len() < 8 {
+            let sum: f64 = numbers.iter().map(|value| *value as f64).sum();
+            let label = if lower.contains("personel") || lower.contains("personil") {
+                "Jumlah personel".to_string()
+            } else {
+                key.clone()
+            };
+            metrics.push(card_metric(
+                &format!("field-{}", card_slug(&key)),
+                &label,
+                card_unit(&key),
+                sum,
+                numbers.len(),
+                total,
+            ));
+            continue;
+        }
+
+        if breakdowns.len() >= 5 {
+            continue;
+        }
+        let mut counts: BTreeMap<String, (String, i64)> = BTreeMap::new();
+        for value in &values {
+            let label = card_value_label(value);
+            let entry = counts
+                .entry(label.to_ascii_lowercase())
+                .or_insert((label, 0));
+            entry.1 += 1;
+        }
+        if counts.len() < 2 || counts.len() > 10 {
+            continue;
+        }
+        let mut items: Vec<LabeledCount> = counts
+            .into_values()
+            .map(|(label, count)| LabeledCount::new(label, count))
+            .collect();
+        items.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.label.cmp(&right.label))
+        });
+        items.truncate(8);
+        breakdowns.push(CoverageBreakdown {
+            key: format!("field-{}", card_slug(&key)),
+            label: key.clone(),
+            filled_rows: values.len() as i64,
+            values: items,
+        });
+    }
+
+    (metrics, breakdowns)
+}
+
+/// Kartu dan tabel unit untuk seluruh sub-kode Quick Wins.
+fn build_code_programs(
+    rows: &[RecordView],
+    known: &KnownUnits,
+    mode: UnitMode,
+) -> Vec<CoverageProgram> {
+    qw::CODES
+        .iter()
+        .map(|code| {
+            let matching: Vec<&RecordView> = rows
+                .iter()
+                .filter(|row| qw::normalize(&row.kode) == code.code)
+                .collect();
+            let (metrics, breakdowns) = build_code_cards(&matching);
+            let performed_polres = units_of(&matching, mode, Scope::Polres);
+            let performed_satker = units_of(&matching, mode, Scope::Satker);
+            CoverageProgram {
+                key: code.code.to_string(),
+                title: code.title.to_string(),
+                code: code.code.to_string(),
+                rows: matching.len() as i64,
+                polres: performed_polres.len() as i64,
+                satker: performed_satker.len() as i64,
+                polres_total: responsible_units(
+                    known,
+                    Scope::Polres,
+                    mode,
+                    code.code,
+                    &performed_polres,
+                )
+                .len() as i64,
+                satker_total: responsible_units(
+                    known,
+                    Scope::Satker,
+                    mode,
+                    code.code,
+                    &performed_satker,
+                )
+                .len() as i64,
+                polres_missing: missing_units(
+                    known,
+                    Scope::Polres,
+                    mode,
+                    code.code,
+                    &performed_polres,
+                ),
+                satker_missing: missing_units(
+                    known,
+                    Scope::Satker,
+                    mode,
+                    code.code,
+                    &performed_satker,
+                ),
+                metrics,
+                by_polres: unit_row_counts(&matching, mode, Scope::Polres),
+                by_satker: unit_row_counts(&matching, mode, Scope::Satker),
+                breakdowns,
+            }
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -471,8 +1174,22 @@ pub fn build_coverage_scoped(
                         rows: *code_rows.get(code.code).unwrap_or(&0),
                         polres: performed_polres.len() as i64,
                         satker: performed_satker.len() as i64,
-                        polres_missing: known.total(Scope::Polres) - performed_polres.len() as i64,
-                        satker_missing: known.total(Scope::Satker) - performed_satker.len() as i64,
+                        polres_missing: missing_units(
+                            &known,
+                            Scope::Polres,
+                            mode,
+                            code.code,
+                            &performed_polres,
+                        )
+                        .len() as i64,
+                        satker_missing: missing_units(
+                            &known,
+                            Scope::Satker,
+                            mode,
+                            code.code,
+                            &performed_satker,
+                        )
+                        .len() as i64,
                         by_polres: unit_counts(code_polres_counts.get(code.code)),
                         by_satker: unit_counts(code_satker_counts.get(code.code)),
                     }
@@ -484,8 +1201,36 @@ pub fn build_coverage_scoped(
                 rows: *group_rows.get(group.code).unwrap_or(&0),
                 polres: performed_polres.len() as i64,
                 satker: performed_satker.len() as i64,
-                polres_missing: known.missing(Scope::Polres, &performed_polres),
-                satker_missing: known.missing(Scope::Satker, &performed_satker),
+                polres_total: responsible_units(
+                    &known,
+                    Scope::Polres,
+                    mode,
+                    group.code,
+                    &performed_polres,
+                )
+                .len() as i64,
+                satker_total: responsible_units(
+                    &known,
+                    Scope::Satker,
+                    mode,
+                    group.code,
+                    &performed_satker,
+                )
+                .len() as i64,
+                polres_missing: missing_units(
+                    &known,
+                    Scope::Polres,
+                    mode,
+                    group.code,
+                    &performed_polres,
+                ),
+                satker_missing: missing_units(
+                    &known,
+                    Scope::Satker,
+                    mode,
+                    group.code,
+                    &performed_satker,
+                ),
                 by_polres: unit_counts(group_polres_counts.get(group.code)),
                 by_satker: unit_counts(group_satker_counts.get(group.code)),
                 codes,
@@ -497,6 +1242,7 @@ pub fn build_coverage_scoped(
         .iter()
         .map(|spec| build_program(spec, rows, &known, mode))
         .collect();
+    let codes = build_code_programs(rows, &known, mode);
 
     CoverageResponse {
         date_start: start.to_string(),
@@ -518,6 +1264,7 @@ pub fn build_coverage_scoped(
         filter_polres: filter.unwrap_or_default().to_string(),
         groups,
         programs,
+        codes,
     }
 }
 
@@ -594,13 +1341,16 @@ fn build_program(
         rows: program_rows.len() as i64,
         polres: performed_polres.len() as i64,
         satker: performed_satker.len() as i64,
-        polres_total: known.total(Scope::Polres),
-        satker_total: known.total(Scope::Satker),
-        polres_missing: known.missing(Scope::Polres, &performed_polres),
-        satker_missing: known.missing(Scope::Satker, &performed_satker),
+        polres_total: responsible_units(known, Scope::Polres, mode, spec.code, &performed_polres)
+            .len() as i64,
+        satker_total: responsible_units(known, Scope::Satker, mode, spec.code, &performed_satker)
+            .len() as i64,
+        polres_missing: missing_units(known, Scope::Polres, mode, spec.code, &performed_polres),
+        satker_missing: missing_units(known, Scope::Satker, mode, spec.code, &performed_satker),
         metrics,
         by_polres: build_units(polres_acc, spec),
         by_satker: build_units(satker_acc, spec),
+        breakdowns: Vec::new(),
     }
 }
 
@@ -1194,7 +1944,78 @@ mod tests {
         let qw11 = qw1.codes.iter().find(|code| code.code == "QW1.1").unwrap();
         assert_eq!(qw11.rows, 0);
         assert_eq!(qw11.polres_missing, 2);
+        // Propam bukan pelaksana pengungkit QW1.1, jadi tidak dihitung belum melaksanakan.
+        assert_eq!(qw11.satker_missing, 0);
+    }
+
+    #[test]
+    fn missing_lists_follow_assigned_duties() {
+        let mut lantas = row("QW1.5", "Polda", "", &[], 1, 0, 0.0, 0);
+        lantas.pejabat_pelaksana = "Kabid Lantas".into();
+        let mut propam = row("QW1.5", "Polda", "", &[], 1, 0, 0.0, 0);
+        propam.pejabat_pelaksana = "Kabid Propam".into();
+        let rows = vec![lantas, propam];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        assert_eq!(coverage.known_satker.len(), 2);
+
+        let qw1 = coverage
+            .groups
+            .iter()
+            .find(|group| group.code == "QW1")
+            .unwrap();
+        let qw11 = qw1.codes.iter().find(|code| code.code == "QW1.1").unwrap();
+        assert_eq!(qw11.rows, 0);
         assert_eq!(qw11.satker_missing, 1);
+
+        let lantas_code = qw1.codes.iter().find(|code| code.code == "QW1.5").unwrap();
+        assert_eq!(lantas_code.satker, 2, "Lantas dan Propam sama-sama melapor");
+
+        let qw7 = coverage
+            .groups
+            .iter()
+            .find(|group| group.code == "QW7")
+            .unwrap();
+        let qw71 = qw7.codes.iter().find(|code| code.code == "QW7.1").unwrap();
+        // QW7.1 hanya dibebankan ke polres/polsek, bukan satker Polda.
+        assert_eq!(qw71.satker_missing, 0);
+    }
+
+    #[test]
+    fn pejabat_report_covers_its_satker_tier() {
+        // QW1.2: pejabat pelaksana KAPOLDA, pengungkit BIRO SDM.
+        let mut kapolda = row("QW1.2", "Polda", "", &[], 1, 0, 0.0, 0);
+        kapolda.pejabat_pelaksana = String::new();
+        kapolda.pelaksana = "Kapolda".into();
+        let mut sdm = row("QW1.5", "Polda", "", &[], 1, 0, 0.0, 0);
+        sdm.pejabat_pelaksana = String::new();
+        sdm.pelaksana = "Biro SDM Polda".into();
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &[kapolda, sdm]);
+        let qw1 = coverage
+            .groups
+            .iter()
+            .find(|group| group.code == "QW1")
+            .unwrap();
+        let qw12 = qw1.codes.iter().find(|code| code.code == "QW1.2").unwrap();
+        assert_eq!(qw12.rows, 1);
+        assert_eq!(qw12.satker, 1);
+        // Kapolda sudah melapor, jadi Biro SDM tidak dicatat belum melaksanakan.
+        assert_eq!(qw12.satker_missing, 0);
+
+        let mut sdm_only = row("QW1.5", "Polda", "", &[], 1, 0, 0.0, 0);
+        sdm_only.pejabat_pelaksana = String::new();
+        sdm_only.pelaksana = "Biro SDM Polda".into();
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &[sdm_only]);
+        let qw1 = coverage
+            .groups
+            .iter()
+            .find(|group| group.code == "QW1")
+            .unwrap();
+        let qw12 = qw1.codes.iter().find(|code| code.code == "QW1.2").unwrap();
+        assert_eq!(qw12.rows, 0);
+        // Tanpa laporan Kapolda, Biro SDM muncul sebagai belum melaksanakan.
+        assert_eq!(qw12.satker_missing, 1);
     }
 
     #[test]
@@ -1370,6 +2191,229 @@ mod tests {
             assert_eq!(metric.total, 1.0);
             assert_eq!(metric.filled_rows, 1);
         }
+    }
+
+    #[test]
+    fn labels_personel_field() {
+        let mut rows = Vec::new();
+        for value in ["2", "3", "4"] {
+            rows.push(row(
+                "QW1.1",
+                "Polres",
+                "Polres Tabanan",
+                &[("Cara bertindak (Jumlah personel)", value)],
+                0,
+                0,
+                0.0,
+                0,
+            ));
+        }
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.1")
+            .unwrap();
+        let personel = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Jumlah personel")
+            .unwrap();
+        assert_eq!(personel.total, 9.0);
+        assert_eq!(personel.unit, "orang");
+    }
+
+    #[test]
+    fn reads_personnel_lines() {
+        let mut rows = Vec::new();
+        for (polri, bnn, warga) in [
+            ("5 pers", "3 pers", "40 orang"),
+            ("2 pers", "1 pers", "20 orang"),
+            ("1 pers", "1 pers", "10 orang"),
+        ] {
+            rows.push(row(
+                "QW2.2",
+                "Polres",
+                "Polres Tabanan",
+                &[("Polri", polri), ("BNN", bnn), ("Warga", warga)],
+                0,
+                0,
+                0.0,
+                0,
+            ));
+        }
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW2.2")
+            .unwrap();
+        let card = code
+            .breakdowns
+            .iter()
+            .find(|item| item.key == "personel-terlibat")
+            .unwrap();
+        assert_eq!(card.values[0].label, "Warga/masyarakat");
+        assert_eq!(card.values[0].count, 70);
+        assert!(
+            card.values
+                .iter()
+                .any(|value| value.label == "Polri" && value.count == 8)
+        );
+        assert!(
+            card.values
+                .iter()
+                .any(|value| value.label == "BNN" && value.count == 5)
+        );
+    }
+
+    #[test]
+    fn counts_evidence_from_labeled_values() {
+        let mut rows = Vec::new();
+        for (value, aset) in [
+            ("1) Golongan 1: 2, dua paket sabu", "1"),
+            ("1) Golongan 1: 3, ganja kering", "0"),
+            ("1) Nihil: 0, nihil", "4"),
+        ] {
+            rows.push(row(
+                "QW2.1",
+                "Polda",
+                "",
+                &[
+                    ("Barang bukti yang diamankan", value),
+                    ("Aset yang disita (Jumlah)", aset),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ));
+        }
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW2.1")
+            .unwrap();
+        let bukti = code
+            .metrics
+            .iter()
+            .find(|metric| metric.key == "barang-bukti")
+            .unwrap();
+        assert_eq!(bukti.total, 5.0);
+        assert_eq!(bukti.filled_rows, 3);
+
+        let jenis = code
+            .breakdowns
+            .iter()
+            .find(|item| item.key == "barang-bukti-jenis")
+            .unwrap();
+        assert_eq!(jenis.values.len(), 2);
+        assert_eq!(jenis.values[0].label, "Ganja");
+        assert_eq!(jenis.values[0].count, 3);
+        assert_eq!(jenis.values[1].label, "Sabu");
+        assert_eq!(jenis.values[1].count, 2);
+
+        let aset = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Aset yang disita (Jumlah)")
+            .unwrap();
+        assert_eq!(aset.total, 5.0);
+    }
+
+    #[test]
+    fn builds_cards_per_sub_code() {
+        let rows = vec![
+            row(
+                "QW1.2",
+                "Polres",
+                "Polres Tabanan",
+                &[
+                    ("Jumlah peserta", "100"),
+                    ("Cara bertindak", "Ceramah"),
+                    ("Nama sekolah dan titik koordinat", "SMAN 1 Tabanan"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.2",
+                "Polres",
+                "Polres Tabanan",
+                &[
+                    ("Jumlah peserta", "50"),
+                    ("Cara bertindak", "Ceramah"),
+                    ("Nama sekolah dan titik koordinat", "SMKN 1 Tabanan"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.2",
+                "Polda",
+                "",
+                &[
+                    ("Jumlah peserta", "25"),
+                    ("Cara bertindak", "Penyuluhan"),
+                    ("Nama sekolah dan titik koordinat", "SDN 1 Denpasar"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.2")
+            .unwrap();
+        assert_eq!(code.rows, 3);
+        let peserta = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Jumlah peserta")
+            .unwrap();
+        assert_eq!(peserta.total, 175.0);
+        let sekolah = code
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Jumlah sekolah")
+            .unwrap();
+        assert_eq!(sekolah.total, 3.0);
+
+        let tindakan = code
+            .breakdowns
+            .iter()
+            .find(|item| item.label == "Cara bertindak")
+            .unwrap();
+        assert_eq!(tindakan.values[0].label, "Ceramah");
+        assert_eq!(tindakan.values[0].count, 2);
+
+        let jenjang = code
+            .breakdowns
+            .iter()
+            .find(|item| item.key == "jenjang")
+            .unwrap();
+        assert_eq!(jenjang.values.len(), 3);
+
+        let empty = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW8.4")
+            .unwrap();
+        assert_eq!(empty.rows, 0);
+        assert!(empty.metrics.is_empty());
     }
 
     #[test]

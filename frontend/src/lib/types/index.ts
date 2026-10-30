@@ -594,6 +594,8 @@ export interface QuickWinDetail {
   by_polres: UnitBreakdown[]
   by_satker: UnitBreakdown[]
   codes: QuickWinCodeCoverage[]
+  polres_missing: string[]
+  satker_missing: string[]
   activities_total: number
   activities: QuickWinActivity[]
 }
@@ -610,6 +612,7 @@ export interface CoverageResponse {
   filter_polres: string
   groups: CoverageGroup[]
   programs: CoverageProgram[]
+  codes: CoverageProgram[]
 }
 
 export interface CoverageGroup {
@@ -618,6 +621,8 @@ export interface CoverageGroup {
   rows: number
   polres: number
   satker: number
+  polres_total: number
+  satker_total: number
   polres_missing: string[]
   satker_missing: string[]
   by_polres: CoverageUnitCount[]
@@ -656,6 +661,14 @@ export interface CoverageProgram {
   metrics: CoverageMetric[]
   by_polres: CoverageUnit[]
   by_satker: CoverageUnit[]
+  breakdowns: CoverageBreakdown[]
+}
+
+export interface CoverageBreakdown {
+  key: string
+  label: string
+  filled_rows: number
+  values: { label: string; count: number }[]
 }
 
 export interface CoverageMetric {

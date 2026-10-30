@@ -306,6 +306,9 @@ pub struct QuickWinDetailResponse {
     pub by_polres: Vec<UnitBreakdown>,
     pub by_satker: Vec<UnitBreakdown>,
     pub codes: Vec<QuickWinCodeCoverage>,
+    /// Unit bertanggung jawab yang belum melaksanakan, sesuai daftar tugas.
+    pub polres_missing: Vec<String>,
+    pub satker_missing: Vec<String>,
     /// Jumlah seluruh kegiatan yang cocok dengan filter (bisa lebih dari 100).
     pub activities_total: i64,
     pub activities: Vec<QuickWinActivity>,
@@ -326,6 +329,8 @@ pub struct CoverageResponse {
     pub filter_polres: String,
     pub groups: Vec<CoverageGroup>,
     pub programs: Vec<CoverageProgram>,
+    /// Kartu per sub-kode Quick Wins, dihitung otomatis dari isian laporan.
+    pub codes: Vec<CoverageProgram>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -335,6 +340,8 @@ pub struct CoverageGroup {
     pub rows: i64,
     pub polres: i64,
     pub satker: i64,
+    pub polres_total: i64,
+    pub satker_total: i64,
     pub polres_missing: Vec<String>,
     pub satker_missing: Vec<String>,
     pub by_polres: Vec<CoverageUnitCount>,
@@ -376,6 +383,17 @@ pub struct CoverageProgram {
     pub metrics: Vec<CoverageMetric>,
     pub by_polres: Vec<CoverageUnit>,
     pub by_satker: Vec<CoverageUnit>,
+    /// Distribusi nilai field, mis. sebaran alasan pemilihan lokasi.
+    pub breakdowns: Vec<CoverageBreakdown>,
+}
+
+/// Kartu distribusi: hitungan tiap nilai pada satu field laporan.
+#[derive(Clone, Debug, Serialize)]
+pub struct CoverageBreakdown {
+    pub key: String,
+    pub label: String,
+    pub filled_rows: i64,
+    pub values: Vec<LabeledCount>,
 }
 
 #[derive(Clone, Debug, Serialize)]

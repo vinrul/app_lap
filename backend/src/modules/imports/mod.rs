@@ -1,8 +1,9 @@
-mod handlers;
 pub mod analysis;
 pub mod coverage;
 pub mod drive;
+pub mod duties;
 pub mod evidence;
+mod handlers;
 pub mod models;
 pub mod parser;
 pub mod qw;
@@ -41,7 +42,10 @@ pub fn period_routes() -> Router<AppState> {
             "/periods/{period_id}/quick-wins/{code}",
             get(handlers::quick_win_detail),
         )
-        .route("/periods/{period_id}/records", get(handlers::period_records))
+        .route(
+            "/periods/{period_id}/records",
+            get(handlers::period_records),
+        )
         .route(
             "/periods/{period_id}/records/{record_id}",
             get(handlers::record_detail),
