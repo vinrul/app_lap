@@ -4,6 +4,7 @@
     CloudUpload,
     LayoutDashboard,
     LogOut,
+    KeyRound,
     ShieldCheck,
     Users,
     X,
@@ -12,6 +13,7 @@
   import { navigate } from '../../stores/router.svelte'
   import { auth } from '../../stores/auth.svelte'
   import { meta } from '../../stores/meta.svelte'
+  import ChangePasswordDialog from '../auth/ChangePasswordDialog.svelte'
 
   type Props = {
     user: User
@@ -26,6 +28,8 @@
     mobileOpen = false,
     onclose,
   }: Props = $props()
+
+  let passwordOpen = $state(false)
 
   const icons = {
     dashboard: LayoutDashboard,
@@ -107,8 +111,15 @@
       <strong class="block truncate text-xs font-semibold">{user.username}</strong>
       <small class="block text-[10px] text-forest-200/65">{user.role === 'admin' ? 'Administrator' : 'Operator'}</small>
     </span>
+    <button class="btn-icon text-forest-100 hover:bg-white/10" aria-label="Ganti kata sandi" title="Ganti kata sandi" onclick={() => (passwordOpen = true)}>
+      <KeyRound size={16} />
+    </button>
     <button class="btn-icon text-forest-100 hover:bg-white/10" aria-label="Keluar" title="Keluar" onclick={signOut}>
       <LogOut size={16} />
     </button>
   </div>
 </aside>
+
+{#if passwordOpen}
+  <ChangePasswordDialog onclose={() => (passwordOpen = false)} />
+{/if}

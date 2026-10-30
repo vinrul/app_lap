@@ -4,6 +4,7 @@
   import { navigate } from '../../lib/stores/router.svelte'
   import { meta } from '../../lib/stores/meta.svelte'
   import Button from '../../lib/components/ui/Button.svelte'
+  import PasswordInput from '../../lib/components/ui/PasswordInput.svelte'
 
   let username = $state('')
   let password = $state('')
@@ -102,7 +103,7 @@
         </div>
         <div>
           <label class="label" for="password">Kata sandi</label>
-          <input id="password" class="input" type="password" bind:value={password} autocomplete="current-password" required />
+          <PasswordInput id="password" bind:value={password} autocomplete="current-password" required />
         </div>
         <Button type="submit" loading={auth.loading} class="w-full">
           Masuk ke ruang kerja <ArrowRight size={16} />

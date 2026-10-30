@@ -6,6 +6,7 @@
     variant?: 'primary' | 'secondary' | 'ghost' | 'danger'
     size?: 'md' | 'sm'
     type?: 'button' | 'submit' | 'reset'
+    form?: string
     disabled?: boolean
     loading?: boolean
     onclick?: (event: MouseEvent) => void
@@ -17,6 +18,7 @@
     variant = 'primary',
     size = 'md',
     type = 'button',
+    form = undefined,
     disabled = false,
     loading = false,
     onclick,
@@ -34,6 +36,7 @@
 
 <button
   {type}
+  {form}
   class="btn {variants[variant]} {size === 'sm' ? 'btn-sm' : ''} {className}"
   disabled={disabled || loading}
   {onclick}

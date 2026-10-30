@@ -7,7 +7,7 @@ use crate::{
     error::{ApiError, ApiResult},
     modules::auth::{
         AuthUser,
-        models::{LoginRequest, UserView},
+        models::{ChangePasswordRequest, LoginRequest, UserView},
         service::{self, COOKIE_NAME},
     },
     shared::audit,
@@ -66,4 +66,37 @@ pub async fn logout(State(state): State<AppState>, cookies: Cookies) -> ApiResul
 
 pub async fn me(user: AuthUser) -> Json<UserView> {
     Json(user.into())
+}
+
+pub async fn change_password(
+    State(state): State<AppState>,
+    user: AuthUser,
+    cookies: Cookies,
+    Json(input): Json<ChangePasswordRequest>,
+) -> ApiResult<StatusCode> {
+    let token = cookies
+        .get(COOKIE_NAME)
+        .map(|cookie| cookie.value().to_string())
+        .unwrap_or_default();
+
+    service::change_password(
+        &state.db,
+        &user.id,
+        &input.current_password,
+        &input.new_password,
+        &token,
+    )
+    .await?;
+
+    audit::record(
+        &state.db,
+        Some(&user.id),
+        "auth.change_password",
+        "user",
+        &user.id,
+        json!({ "other_sessions_revoked": true }),
+    )
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
