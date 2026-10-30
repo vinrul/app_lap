@@ -127,6 +127,11 @@
   }
 
   type CakupanNode =
+    | { kind: 'cards' }
+    | { kind: 'cardGroup'; group: string }
+    | { kind: 'card'; code: string }
+    | { kind: 'cardMetric'; code: string; metric: string }
+    | { kind: 'cardBreakdown'; code: string; breakdown: string }
     | { kind: 'groups' }
     | { kind: 'group'; code: string }
     | { kind: 'code'; code: string }
@@ -460,6 +465,22 @@
   const cakupanTotalRows = $derived(
     cakupanGroups.reduce((total, group) => total + group.rows, 0),
   )
+  const cakupanCards = $derived(coverage?.codes ?? [])
+  const cakupanCardGroups = $derived(
+    cakupanGroups
+      .map((group) => ({
+        code: group.code,
+        title: group.title,
+        cards: cakupanCards.filter((card) => card.code.startsWith(`${group.code}.`)),
+      }))
+      .filter((group) => group.cards.length > 0),
+  )
+  const cakupanCardTotal = $derived(
+    cakupanCards.reduce(
+      (total, card) => total + card.metrics.length + card.breakdowns.length,
+      0,
+    ),
+  )
   const cakupanDataset = $derived(cakupanTarget ? buildCakupanDataset(cakupanTarget) : null)
   const selectionKey = $derived(
     selected ? `${selected.kind}:${selected.page}:${selected.id}` : '',
@@ -685,7 +706,7 @@
       sources = sourceList
       if (coverageData) {
         coverage = coverageData
-        if (!cakupanExpanded.includes('groups')) cakupanExpanded = ['groups', ...cakupanExpanded]
+        if (!cakupanExpanded.includes('cards')) cakupanExpanded = ['cards', ...cakupanExpanded]
       }
       applyLayoutToDom()
       toast.success('Sumber data dimuat ulang.')
@@ -1234,7 +1255,7 @@
       sources = sourceList
       templates = templateList
       coverage = coverageData
-      if (coverageData) cakupanExpanded = ['groups']
+      if (coverageData) cakupanExpanded = ['cards']
 
       const serverLayout = normalizeLayout(layoutView.layout)
       const serverSaved = layoutView.updated_at !== null
@@ -2606,6 +2627,10 @@
     return coverage?.groups.find((group) => group.codes.some((item) => item.code === code))
   }
 
+  function cakupanCard(code: string) {
+    return cakupanCards.find((item) => item.code === code)
+  }
+
   function isCakupanExpanded(key: string): boolean {
     return cakupanExpanded.includes(key)
   }
@@ -2617,6 +2642,25 @@
   }
 
   function cakupanNodeLabel(node: CakupanNode): string {
+    if (node.kind === 'cards') return 'Semua kartu cakupan Quick Wins'
+    if (node.kind === 'cardGroup') {
+      const group = cakupanGroup(node.group)
+      return group ? `${group.code} · ${group.title}` : node.group
+    }
+    if (node.kind === 'card') {
+      const card = cakupanCard(node.code)
+      return card ? `${card.code} · ${card.title}` : node.code
+    }
+    if (node.kind === 'cardMetric') {
+      const card = cakupanCard(node.code)
+      const metric = card?.metrics.find((item) => item.key === node.metric)
+      return [card?.code, metric?.label].filter(Boolean).join(' · ') || node.metric
+    }
+    if (node.kind === 'cardBreakdown') {
+      const card = cakupanCard(node.code)
+      const breakdown = card?.breakdowns.find((item) => item.key === node.breakdown)
+      return [card?.code, breakdown?.label].filter(Boolean).join(' · ') || node.breakdown
+    }
     if (node.kind === 'groups') return 'Semua kelompok Quick Wins'
     if (node.kind === 'programs') return 'Program prioritas'
     if (node.kind === 'group') {
@@ -2650,6 +2694,149 @@
   function buildCakupanDataset(node: CakupanNode): CakupanDataset | null {
     const groups = coverage?.groups ?? []
     const codeColumns = ['Kode', 'Deskripsi', 'Kegiatan', 'Polres', 'Satker']
+    const cardColumns = ['Kode', 'Sub-kode', 'Kartu', 'Nilai', 'Satuan', 'Terisi']
+    if (node.kind === 'cards' || node.kind === 'cardGroup') {
+      const cards =
+        node.kind === 'cards'
+          ? cakupanCards
+          : (cakupanCardGroups.find((group) => group.code === node.group)?.cards ?? [])
+      const entries = cards.flatMap((card) =>
+        card.metrics.map((metric) => ({ card, metric })),
+      )
+      if (!entries.length) return null
+      return {
+        title:
+          node.kind === 'cards'
+            ? 'Kartu cakupan Quick Wins'
+            : `${node.group} · Kartu cakupan Quick Wins`,
+        summaryLabel: 'Kartu cakupan Quick Wins',
+        summaryValue: entries.length,
+        summaryDetail: `${cards.length} sub-kode · ${entries.length} kartu`,
+        summaryIcon: 'clipboard-list',
+        tableColumns: cardColumns,
+        tableRows: [
+          [...cardColumns],
+          ...entries.map(({ card, metric }) => [
+            card.code,
+            card.title,
+            metric.label,
+            cakupanValue(metric.total, metric.unit),
+            metric.unit,
+            `${metric.filled_rows}/${metric.filled_rows + metric.missing_rows}`,
+          ]),
+        ],
+        chartLabels: cards.map((card) => card.code),
+        chartValues: cards.map(
+          (card) => card.metrics.length + card.breakdowns.length,
+        ),
+        chartTitle: 'Jumlah kartu per sub-kode',
+        items: entries.map(({ card, metric }) => ({
+          label: `${card.code} · ${metric.label}`,
+          value: metric.total,
+          unit: metric.unit,
+          detail: `${card.title} · ${metric.filled_rows} laporan terisi`,
+          icon: cakupanGroupIcon(card.code.split('.')[0] ?? ''),
+        })),
+      }
+    }
+    if (node.kind === 'card') {
+      const card = cakupanCard(node.code)
+      if (!card) return null
+      return {
+        title: `${card.code} · ${card.title}`,
+        summaryLabel: card.title,
+        summaryValue: card.rows,
+        summaryDetail: `${card.code} · ${card.metrics.length} kartu · ${card.breakdowns.length} rincian`,
+        summaryIcon: cakupanGroupIcon(card.code.split('.')[0] ?? ''),
+        tableColumns: cardColumns,
+        tableRows: [
+          [...cardColumns],
+          ...card.metrics.map((metric) => [
+            card.code,
+            card.title,
+            metric.label,
+            cakupanValue(metric.total, metric.unit),
+            metric.unit,
+            `${metric.filled_rows}/${metric.filled_rows + metric.missing_rows}`,
+          ]),
+        ],
+        chartLabels: card.metrics.map((metric) => metric.label),
+        chartValues: card.metrics.map((metric) => metric.total),
+        chartTitle: `${card.code} · kartu cakupan`,
+        items: card.metrics.map((metric) => ({
+          label: metric.label,
+          value: metric.total,
+          unit: metric.unit,
+          detail: `${card.code} · ${metric.filled_rows} dari ${metric.filled_rows + metric.missing_rows} laporan mengisi`,
+          icon: cakupanGroupIcon(card.code.split('.')[0] ?? ''),
+        })),
+      }
+    }
+    if (node.kind === 'cardMetric') {
+      const card = cakupanCard(node.code)
+      const metric = card?.metrics.find((item) => item.key === node.metric)
+      if (!card || !metric) return null
+      const detail = `${metric.filled_rows}/${metric.filled_rows + metric.missing_rows} laporan mengisi`
+      return {
+        title: `${card.code} · ${metric.label}`,
+        summaryLabel: metric.label,
+        summaryValue: metric.total,
+        summaryDetail: detail,
+        summaryIcon: cakupanGroupIcon(card.code.split('.')[0] ?? ''),
+        tableColumns: cardColumns,
+        tableRows: [
+          [...cardColumns],
+          [
+            card.code,
+            card.title,
+            metric.label,
+            cakupanValue(metric.total, metric.unit),
+            metric.unit,
+            `${metric.filled_rows}/${metric.filled_rows + metric.missing_rows}`,
+          ],
+        ],
+        chartLabels: [metric.label],
+        chartValues: [metric.total],
+        chartTitle: `${card.code} · ${metric.label}`,
+        items: [
+          {
+            label: metric.label,
+            value: metric.total,
+            unit: metric.unit,
+            detail: `${card.code} · ${detail}`,
+            icon: cakupanGroupIcon(card.code.split('.')[0] ?? ''),
+          },
+        ],
+      }
+    }
+    if (node.kind === 'cardBreakdown') {
+      const card = cakupanCard(node.code)
+      const breakdown = card?.breakdowns.find((item) => item.key === node.breakdown)
+      if (!card || !breakdown) return null
+      const columns = ['Kategori', 'Jumlah']
+      return {
+        title: `${card.code} · ${breakdown.label}`,
+        summaryLabel: breakdown.label,
+        summaryValue: breakdown.values.reduce((total, item) => total + item.count, 0),
+        summaryDetail: `${breakdown.values.length} kategori · ${breakdown.filled_rows} laporan`,
+        summaryIcon: 'chart-column',
+        tableColumns: columns,
+        tableRows: [
+          [...columns],
+          ...breakdown.values.map((item) => [item.label, formatNumber(item.count)]),
+        ],
+        chartLabels: breakdown.values.map((item) => item.label),
+        chartValues: breakdown.values.map((item) => item.count),
+        chartTitle: `${card.code} · ${breakdown.label}`,
+        items: breakdown.values.map((item) => ({
+          label: item.label,
+          value: item.count,
+          unit: 'laporan',
+          detail: `${card.code} · ${breakdown.label}`,
+          icon: 'chart-column',
+        })),
+      }
+    }
     if (node.kind === 'groups') {
       return {
         title: 'Cakupan kelompok Quick Wins',
@@ -5650,7 +5837,7 @@
         </div>
         <div class="space-y-2 p-3">
           <p class="text-[10px] leading-relaxed text-ink-muted">
-            Tarik kelompok, sub-kode, polres, atau satker ke kanvas lalu pilih grafik, tabel, atau kartu. Tombol + menambahkan tanpa drag.
+            Tarik kartu cakupan, kelompok, sub-kode, polres, atau satker ke kanvas lalu pilih grafik, tabel, atau kartu. Tombol + menambahkan tanpa drag.
           </p>
           {#if !hasImport}
             <p class="text-xs text-ink-muted">Impor data terlebih dahulu untuk melihat cakupan.</p>
@@ -5658,6 +5845,119 @@
             <p class="text-xs text-ink-muted">Cakupan belum tersedia. Coba muat ulang data dari panel elemen.</p>
           {:else}
             <div class="max-h-[420px] space-y-1 overflow-auto pr-1" data-cakupan-tree>
+              <div class="flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                <button type="button" class="rounded p-0.5 text-ink-muted hover:bg-stone-100"
+                  onclick={() => toggleCakupan('cards')}>
+                  {#if isCakupanExpanded('cards')}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
+                </button>
+                <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing" onclick={() => toggleCakupan('cards')}
+                  draggable="true"
+                  data-cakupan-node="cards"
+                  ondragstart={(event) => startCakupanDrag(event, { kind: 'cards' })}
+                  ondragend={endCakupanDrag}>
+                  <span class="block truncate text-[11px] font-semibold text-ink">Kartu cakupan Quick Wins</span>
+                  <span class="block text-[10px] text-ink-muted">
+                    {cakupanCardTotal} kartu · {cakupanCards.length} sub-kode
+                  </span>
+                </button>
+                <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                  onclick={() => openCakupanDialog({ kind: 'cards' })}>
+                  <Plus size={12} />
+                </button>
+              </div>
+              {#if isCakupanExpanded('cards')}
+                {#each cakupanCardGroups as group (group.code)}
+                  <div class="ml-2 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                    <button type="button" class="rounded p-0.5 text-ink-muted hover:bg-stone-100"
+                      onclick={() => toggleCakupan(`cardGroup:${group.code}`)}>
+                      {#if isCakupanExpanded(`cardGroup:${group.code}`)}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
+                    </button>
+                    <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
+                      onclick={() => toggleCakupan(`cardGroup:${group.code}`)}
+                      draggable="true"
+                      data-cakupan-node={`cardGroup:${group.code}`}
+                      ondragstart={(event) => startCakupanDrag(event, { kind: 'cardGroup', group: group.code })}
+                      ondragend={endCakupanDrag}>
+                      <span class="block truncate text-[11px] font-semibold text-ink">{group.code} · {group.title}</span>
+                      <span class="block text-[10px] text-ink-muted">
+                        {group.cards.length} sub-kode · {group.cards.reduce((total, card) => total + card.metrics.length + card.breakdowns.length, 0)} kartu
+                      </span>
+                    </button>
+                    <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                      onclick={() => openCakupanDialog({ kind: 'cardGroup', group: group.code })}>
+                      <Plus size={12} />
+                    </button>
+                  </div>
+                  {#if isCakupanExpanded(`cardGroup:${group.code}`)}
+                    {#each group.cards as card (card.code)}
+                      <div class="ml-4 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                        <button type="button" class="rounded p-0.5 text-ink-muted hover:bg-stone-100"
+                          onclick={() => toggleCakupan(`card:${card.code}`)}>
+                          {#if isCakupanExpanded(`card:${card.code}`)}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
+                        </button>
+                        <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
+                          onclick={() => toggleCakupan(`card:${card.code}`)}
+                          draggable="true"
+                          data-cakupan-node={`card:${card.code}`}
+                          ondragstart={(event) => startCakupanDrag(event, { kind: 'card', code: card.code })}
+                          ondragend={endCakupanDrag}>
+                          <span class="block truncate text-[11px] font-medium text-ink">{card.code} · {card.title}</span>
+                          <span class="block text-[10px] text-ink-muted">
+                            {card.metrics.length} kartu · {card.breakdowns.length} rincian
+                          </span>
+                        </button>
+                        <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                          onclick={() => openCakupanDialog({ kind: 'card', code: card.code })}>
+                          <Plus size={12} />
+                        </button>
+                      </div>
+                      {#if isCakupanExpanded(`card:${card.code}`)}
+                        {#each card.metrics as metric (metric.key)}
+                          <div class="ml-6 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                            <span class="flex w-4 shrink-0 justify-center"><span class="h-1.5 w-1.5 rounded-full bg-forest-400"></span></span>
+                            <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
+                              draggable="true"
+                              data-cakupan-node={`cardMetric:${card.code}:${metric.key}`}
+                              ondragstart={(event) => startCakupanDrag(event, { kind: 'cardMetric', code: card.code, metric: metric.key })}
+                              ondragend={endCakupanDrag}>
+                              <span class="block truncate text-[11px] font-medium text-ink">{metric.label}</span>
+                              <span class="block text-[10px] text-ink-muted">
+                                {cakupanValue(metric.total, metric.unit)} {metric.unit} · {metric.filled_rows}/{metric.filled_rows + metric.missing_rows} laporan
+                              </span>
+                            </button>
+                            <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                              onclick={() => openCakupanDialog({ kind: 'cardMetric', code: card.code, metric: metric.key })}>
+                              <Plus size={12} />
+                            </button>
+                          </div>
+                        {/each}
+                        {#each card.breakdowns as breakdown (breakdown.key)}
+                          <div class="ml-6 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                            <span class="flex w-4 shrink-0 justify-center"><span class="h-1.5 w-1.5 rounded-full bg-gold-400"></span></span>
+                            <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
+                              draggable="true"
+                              data-cakupan-node={`cardBreakdown:${card.code}:${breakdown.key}`}
+                              ondragstart={(event) => startCakupanDrag(event, { kind: 'cardBreakdown', code: card.code, breakdown: breakdown.key })}
+                              ondragend={endCakupanDrag}>
+                              <span class="block truncate text-[11px] font-medium text-ink">{breakdown.label}</span>
+                              <span class="block text-[10px] text-ink-muted">
+                                {breakdown.values.length} kategori · {breakdown.filled_rows} laporan
+                              </span>
+                            </button>
+                            <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                              onclick={() => openCakupanDialog({ kind: 'cardBreakdown', code: card.code, breakdown: breakdown.key })}>
+                              <Plus size={12} />
+                            </button>
+                          </div>
+                        {/each}
+                      {/if}
+                    {/each}
+                  {/if}
+                {/each}
+              {/if}
+
+              <div class="mt-2 border-t border-line pt-2"></div>
+              <p class="px-1 pb-1 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Pelaksanaan per kelompok</p>
               <div class="flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
                 <button type="button" class="rounded p-0.5 text-ink-muted hover:bg-stone-100"
                   onclick={() => toggleCakupan('groups')}>
@@ -5748,87 +6048,6 @@
                       scope: 'satker',
                       units: group.by_satker,
                       node: { kind: 'units', scope: 'satker', group: group.code },
-                    })}
-                  {/if}
-                {/each}
-              {/if}
-
-              <div class="mt-2 border-t border-line pt-2"></div>
-              <div class="flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
-                <button type="button" class="rounded p-0.5 text-ink-muted hover:bg-stone-100"
-                  onclick={() => toggleCakupan('programs')}>
-                  {#if isCakupanExpanded('programs')}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
-                </button>
-                <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
-                  onclick={() => toggleCakupan('programs')}
-                  draggable="true"
-                  data-cakupan-node="programs"
-                  ondragstart={(event) => startCakupanDrag(event, { kind: 'programs' })}
-                  ondragend={endCakupanDrag}>
-                  <span class="block truncate text-[11px] font-semibold text-ink">Program prioritas</span>
-                  <span class="block text-[10px] text-ink-muted">
-                    {coverage?.programs.length ?? 0} program · {formatNumber(coverage?.total_rows ?? 0)} kegiatan
-                  </span>
-                </button>
-                <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
-                  onclick={() => openCakupanDialog({ kind: 'programs' })}>
-                  <Plus size={12} />
-                </button>
-              </div>
-              {#if isCakupanExpanded('programs')}
-                {#each coverage?.programs ?? [] as program (program.key)}
-                  <div class="ml-2 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
-                    <button type="button" class="rounded p-0.5 text-ink-muted hover:bg-stone-100"
-                      onclick={() => toggleCakupan(`program:${program.key}`)}>
-                      {#if isCakupanExpanded(`program:${program.key}`)}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
-                    </button>
-                    <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
-                      onclick={() => toggleCakupan(`program:${program.key}`)}
-                      draggable="true"
-                      data-cakupan-node={`program:${program.key}`}
-                      ondragstart={(event) => startCakupanDrag(event, { kind: 'program', key: program.key })}
-                      ondragend={endCakupanDrag}>
-                      <span class="block truncate text-[11px] font-semibold text-ink">{program.title}</span>
-                      <span class="block text-[10px] text-ink-muted">
-                        {formatNumber(program.rows)} kegiatan · {program.polres}/{program.polres_total} polres · {program.satker}/{program.satker_total} satker
-                      </span>
-                    </button>
-                    <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
-                      onclick={() => openCakupanDialog({ kind: 'program', key: program.key })}>
-                      <Plus size={12} />
-                    </button>
-                  </div>
-                  {#if isCakupanExpanded(`program:${program.key}`)}
-                    {#each program.metrics as metric (metric.key)}
-                      <div class="ml-4 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
-                        <span class="flex w-4 shrink-0 justify-center"><span class="h-1.5 w-1.5 rounded-full bg-gold-400"></span></span>
-                        <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
-                          draggable="true"
-                          data-cakupan-node={`metric:${program.key}:${metric.key}`}
-                          ondragstart={(event) => startCakupanDrag(event, { kind: 'metric', program: program.key, metric: metric.key })}
-                          ondragend={endCakupanDrag}>
-                          <span class="block truncate text-[11px] font-medium text-ink">{metric.label}</span>
-                          <span class="block text-[10px] text-ink-muted">
-                            {cakupanValue(metric.total, metric.unit)} {metric.unit} · {metric.filled_rows}/{metric.filled_rows + metric.missing_rows} baris terisi
-                          </span>
-                        </button>
-                        <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
-                          onclick={() => openCakupanDialog({ kind: 'metric', program: program.key, metric: metric.key })}>
-                          <Plus size={12} />
-                        </button>
-                      </div>
-                    {/each}
-                    {@render cakupanProgramUnits({
-                      key: `program-polres:${program.key}`,
-                      scope: 'polres',
-                      units: program.by_polres,
-                      program: program.key,
-                    })}
-                    {@render cakupanProgramUnits({
-                      key: `program-satker:${program.key}`,
-                      scope: 'satker',
-                      units: program.by_satker,
-                      program: program.key,
                     })}
                   {/if}
                 {/each}

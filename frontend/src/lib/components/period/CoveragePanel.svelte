@@ -522,110 +522,6 @@
     <section class="card overflow-hidden">
       <div class="panel-heading">
         <div>
-          <span class="eyebrow">CAKUPAN QUICK WINS</span>
-          <h2 class="panel-title mt-0.5">Pelaksanaan per kelompok & sub-kode</h2>
-          <p class="mt-1 text-[10px] text-ink-muted">
-            Dihitung dari {secondaryLower}/{primaryLower} yang memiliki baris pada periode ini.
-          </p>
-        </div>
-        <span class="badge badge-neutral">{data.groups.length} kelompok</span>
-      </div>
-      <div class="divide-y divide-line">
-        {#each data.groups as group (group.code)}
-          {@const open = expandedGroup === group.code}
-          <article>
-            <button
-              type="button"
-              class="flex w-full flex-wrap items-center justify-between gap-4 px-5 py-4 text-left transition-colors hover:bg-stone-50/70"
-              onclick={() => toggleGroup(group.code)}
-            >
-              <div class="flex min-w-0 items-start gap-3">
-                <span class="rounded-lg bg-forest-50 px-2 py-1 text-[10px] font-bold text-forest-700">{group.code}</span>
-                <div class="min-w-0">
-                  <p class="truncate text-sm font-semibold text-ink">{group.title}</p>
-                  <p class="mt-0.5 text-[11px] text-ink-muted">{formatNumber(group.rows)} kegiatan · {group.codes.length} sub-kode</p>
-                </div>
-              </div>
-              <div class="flex flex-wrap items-center gap-5">
-                {@render coverageStat(primaryLabel, group.polres, group.polres_total)}
-                {@render coverageStat(secondaryLabel, group.satker, group.satker_total)}
-                <ChevronRight size={16} class="shrink-0 text-ink-muted transition-transform {open ? 'rotate-90' : ''}" />
-              </div>
-            </button>
-            {#if open}
-              <div class="space-y-4 border-t border-line bg-stone-50/40 px-5 py-4">
-                {#if groupDetailLoading && groupDetailCode === group.code}
-                  <div class="grid gap-3 xl:grid-cols-2">
-                    <div class="skeleton h-44"></div>
-                    <div class="skeleton h-44"></div>
-                  </div>
-                {:else if groupDetailError && groupDetailCode === group.code}
-                  <div class="flex flex-wrap items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-800">
-                    <AlertCircle size={14} /> {groupDetailError}
-                    <Button variant="secondary" size="sm" onclick={() => loadGroupDetail(group.code)}>Coba lagi</Button>
-                  </div>
-                {:else if groupDetail && groupDetail.code === group.code}
-                  <div class="grid gap-4 xl:grid-cols-2">
-                    <div>
-                      <p class="mb-2 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per {primaryLower}</p>
-                      {@render unitTable(groupDetail.by_polres, 'polres', null)}
-                    </div>
-                    <div>
-                      <p class="mb-2 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per {secondaryLower}</p>
-                      {@render unitTable(groupDetail.by_satker, 'satker', null)}
-                    </div>
-                  </div>
-                {/if}
-
-                <div>
-                  <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
-                    <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Sub-kode {group.code}</p>
-                    <span class="text-[10px] text-ink-muted">Klik sub-kode untuk rincian per {primaryLower}.</span>
-                  </div>
-                  <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                    {#each group.codes as code (code.code)}
-                      <button
-                        type="button"
-                        class="w-full rounded-xl border border-line bg-white p-3 text-left transition-colors hover:border-gold-300 hover:bg-gold-50/40"
-                        onclick={() => openCodeDetail(code.code)}
-                      >
-                        <div class="flex items-start justify-between gap-2">
-                          <span class="rounded-md bg-forest-50 px-1.5 py-0.5 text-[10px] font-bold text-forest-700">{code.code}</span>
-                          <span class="text-[10px] text-ink-muted">{formatNumber(code.rows)} kegiatan</span>
-                        </div>
-                        <p class="mt-1.5 line-clamp-2 text-[11px] font-medium leading-snug text-ink">{code.title}</p>
-                        <p class="mt-1.5 text-[10px] text-ink-muted">
-                          {code.polres} {primaryLower} · {code.satker} {secondaryLower}
-                          {#if code.polres_missing || code.satker_missing}
-                            <span class="text-red-700"> · belum {code.polres_missing} {primaryLower} / {code.satker_missing} {secondaryLower}</span>
-                          {/if}
-                        </p>
-                        <p class="mt-1.5 text-[10px] font-semibold text-forest-700">Lihat rincian →</p>
-                      </button>
-                    {/each}
-                  </div>
-                </div>
-
-                <div class="grid gap-4 xl:grid-cols-2">
-                  <div>
-                    <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Polres belum melaksanakan</p>
-                    <div class="mt-2">{@render chips(group.polres_missing)}</div>
-                  </div>
-                  <div>
-                    <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Satker Polda belum melaksanakan</p>
-                    <div class="mt-2">{@render chips(group.satker_missing)}</div>
-                  </div>
-                </div>
-              </div>
-            {/if}
-          </article>
-        {/each}
-      </div>
-    </section>
-
-    <section class="card overflow-hidden">
-      <div class="panel-heading">
-        <div>
           <span class="eyebrow">CAKUPAN PER SUB-KODE</span>
           <h2 class="panel-title mt-0.5">Kartu cakupan Quick Wins</h2>
           <p class="mt-1 text-[10px] text-ink-muted">
@@ -764,6 +660,110 @@
           </div>
         </div>
       {/if}
+    </section>
+
+    <section class="card overflow-hidden">
+      <div class="panel-heading">
+        <div>
+          <span class="eyebrow">CAKUPAN QUICK WINS</span>
+          <h2 class="panel-title mt-0.5">Pelaksanaan per kelompok & sub-kode</h2>
+          <p class="mt-1 text-[10px] text-ink-muted">
+            Dihitung dari {secondaryLower}/{primaryLower} yang memiliki baris pada periode ini.
+          </p>
+        </div>
+        <span class="badge badge-neutral">{data.groups.length} kelompok</span>
+      </div>
+      <div class="divide-y divide-line">
+        {#each data.groups as group (group.code)}
+          {@const open = expandedGroup === group.code}
+          <article>
+            <button
+              type="button"
+              class="flex w-full flex-wrap items-center justify-between gap-4 px-5 py-4 text-left transition-colors hover:bg-stone-50/70"
+              onclick={() => toggleGroup(group.code)}
+            >
+              <div class="flex min-w-0 items-start gap-3">
+                <span class="rounded-lg bg-forest-50 px-2 py-1 text-[10px] font-bold text-forest-700">{group.code}</span>
+                <div class="min-w-0">
+                  <p class="truncate text-sm font-semibold text-ink">{group.title}</p>
+                  <p class="mt-0.5 text-[11px] text-ink-muted">{formatNumber(group.rows)} kegiatan · {group.codes.length} sub-kode</p>
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-5">
+                {@render coverageStat(primaryLabel, group.polres, group.polres_total)}
+                {@render coverageStat(secondaryLabel, group.satker, group.satker_total)}
+                <ChevronRight size={16} class="shrink-0 text-ink-muted transition-transform {open ? 'rotate-90' : ''}" />
+              </div>
+            </button>
+            {#if open}
+              <div class="space-y-4 border-t border-line bg-stone-50/40 px-5 py-4">
+                {#if groupDetailLoading && groupDetailCode === group.code}
+                  <div class="grid gap-3 xl:grid-cols-2">
+                    <div class="skeleton h-44"></div>
+                    <div class="skeleton h-44"></div>
+                  </div>
+                {:else if groupDetailError && groupDetailCode === group.code}
+                  <div class="flex flex-wrap items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-800">
+                    <AlertCircle size={14} /> {groupDetailError}
+                    <Button variant="secondary" size="sm" onclick={() => loadGroupDetail(group.code)}>Coba lagi</Button>
+                  </div>
+                {:else if groupDetail && groupDetail.code === group.code}
+                  <div class="grid gap-4 xl:grid-cols-2">
+                    <div>
+                      <p class="mb-2 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per {primaryLower}</p>
+                      {@render unitTable(groupDetail.by_polres, 'polres', null)}
+                    </div>
+                    <div>
+                      <p class="mb-2 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Kegiatan per {secondaryLower}</p>
+                      {@render unitTable(groupDetail.by_satker, 'satker', null)}
+                    </div>
+                  </div>
+                {/if}
+
+                <div>
+                  <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
+                    <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Sub-kode {group.code}</p>
+                    <span class="text-[10px] text-ink-muted">Klik sub-kode untuk rincian per {primaryLower}.</span>
+                  </div>
+                  <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                    {#each group.codes as code (code.code)}
+                      <button
+                        type="button"
+                        class="w-full rounded-xl border border-line bg-white p-3 text-left transition-colors hover:border-gold-300 hover:bg-gold-50/40"
+                        onclick={() => openCodeDetail(code.code)}
+                      >
+                        <div class="flex items-start justify-between gap-2">
+                          <span class="rounded-md bg-forest-50 px-1.5 py-0.5 text-[10px] font-bold text-forest-700">{code.code}</span>
+                          <span class="text-[10px] text-ink-muted">{formatNumber(code.rows)} kegiatan</span>
+                        </div>
+                        <p class="mt-1.5 line-clamp-2 text-[11px] font-medium leading-snug text-ink">{code.title}</p>
+                        <p class="mt-1.5 text-[10px] text-ink-muted">
+                          {code.polres} {primaryLower} · {code.satker} {secondaryLower}
+                          {#if code.polres_missing || code.satker_missing}
+                            <span class="text-red-700"> · belum {code.polres_missing} {primaryLower} / {code.satker_missing} {secondaryLower}</span>
+                          {/if}
+                        </p>
+                        <p class="mt-1.5 text-[10px] font-semibold text-forest-700">Lihat rincian →</p>
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+
+                <div class="grid gap-4 xl:grid-cols-2">
+                  <div>
+                    <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Polres belum melaksanakan</p>
+                    <div class="mt-2">{@render chips(group.polres_missing)}</div>
+                  </div>
+                  <div>
+                    <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Satker Polda belum melaksanakan</p>
+                    <div class="mt-2">{@render chips(group.satker_missing)}</div>
+                  </div>
+                </div>
+              </div>
+            {/if}
+          </article>
+        {/each}
+      </div>
     </section>
   </div>
 {/if}

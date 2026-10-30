@@ -41,10 +41,14 @@
   let editOpen = $state(false)
   let busy = $state(false)
 
+  // Tab yang disembunyikan sementara. Hapus id dari daftar ini untuk menampilkan lagi.
+  const hiddenTabs = new Set(['overview', 'analysis'])
+
   const activeTab = $derived(
-    ['overview', 'analysis', 'coverage', 'records', 'design', 'documents'].includes(tab)
+    ['overview', 'analysis', 'coverage', 'records', 'design', 'documents'].includes(tab) &&
+      !hiddenTabs.has(tab)
       ? tab
-      : 'overview',
+      : 'coverage',
   )
   const status = $derived(detail ? statusOfPeriod(detail.period) : null)
   const typeLabel = $derived(
@@ -133,7 +137,7 @@
     { id: 'records', label: 'Data sumber' },
     { id: 'design', label: 'Desain' },
     { id: 'documents', label: 'Dokumen', count: detail?.reports.length ?? 0 },
-  ])
+  ].filter((item) => !hiddenTabs.has(item.id)))
 </script>
 
 <svelte:head><title>{detail?.period.label ?? 'Periode'} · Laporan Mingguan PBM</title></svelte:head>
