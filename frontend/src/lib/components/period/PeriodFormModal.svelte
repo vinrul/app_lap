@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { AlertCircle, CalendarDays, Sparkles } from 'lucide-svelte'
   import { periodsApi } from '../../api'
   import { errorMessage } from '../../api/client'
@@ -9,31 +10,36 @@
   import Modal from '../ui/Modal.svelte'
   import Button from '../ui/Button.svelte'
 
-  type Props = { open?: boolean; onclose: () => void }
+  type Props = {
+    open?: boolean
+    onclose: () => void
+    period?: Period | null
+    onsaved?: (period: Period) => void
+  }
   type PeriodType = 'daily' | 'range' | 'monthly'
 
   let {
     open = false,
     onclose,
+    period = null,
+    onsaved,
   }: Props = $props()
 
+  const initialPeriod = untrack(() => period)
+  const editing = initialPeriod !== null
   const today = new Date()
-  let periodType = $state<PeriodType>('range')
-  let dailyDate = $state(toIsoDate(today))
-  let startDate = $state(toIsoDate(startOfWeek(today)))
-  let endDate = $state(toIsoDate(addDays(startOfWeek(today), 6)))
-  let monthValue = $state(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`)
-  let label = $state('')
+  let periodType = $state<PeriodType>(initialPeriod?.period_type ?? 'range')
+  let dailyDate = $state(initialPeriod?.start_date ?? toIsoDate(today))
+  let startDate = $state(initialPeriod?.start_date ?? toIsoDate(startOfWeek(today)))
+  let endDate = $state(initialPeriod?.end_date ?? toIsoDate(addDays(startOfWeek(today), 6)))
+  let monthValue = $state(
+    initialPeriod
+      ? initialPeriod.start_date.slice(0, 7)
+      : `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`,
+  )
+  let label = $state(initialPeriod?.label ?? '')
   let loading = $state(false)
   let error = $state('')
-  let initialized = $state(false)
-
-  $effect(() => {
-    if (open && !initialized) {
-      initialized = true
-    }
-    if (!open) initialized = false
-  })
 
   const computed = $derived.by(() => {
     if (periodType === 'daily') {
@@ -68,13 +74,13 @@
     const end = kind === 'weekend' ? addDays(start, 2) : addDays(start, 6)
     startDate = toIsoDate(start)
     endDate = toIsoDate(end)
-    label = ''
+    if (!editing) label = ''
     error = ''
   }
 
   function setType(next: PeriodType) {
     periodType = next
-    label = ''
+    if (!editing) label = ''
     error = ''
   }
 
@@ -91,6 +97,18 @@
     }
     loading = true
     try {
+      if (period) {
+        const updated: Period = await periodsApi.update(period.id, {
+          start_date: computed.start,
+          end_date: computed.end,
+          label: label.trim(),
+          period_type: periodType,
+        })
+        toast.success('Periode laporan berhasil diperbarui.')
+        onsaved?.(updated)
+        onclose()
+        return
+      }
       const created: Period = await periodsApi.create({
         start_date: computed.start,
         end_date: computed.end,
@@ -111,8 +129,10 @@
 <Modal
   {open}
   onclose={onclose}
-  title="Buat periode laporan"
-  description="Pilih jenis laporan. Data diambil otomatis dari semua import yang mencakup rentang tanggal periode."
+  title={editing ? 'Edit periode laporan' : 'Buat periode laporan'}
+  description={editing
+    ? 'Perbarui nama, jenis, atau rentang tanggal periode. Metrik dihitung ulang dari import yang mencakup rentang baru; dokumen PDF yang sudah dibuat tetap memakai data saat dibuat.'
+    : 'Pilih jenis laporan. Data diambil otomatis dari semua import yang mencakup rentang tanggal periode.'}
   width="max-w-xl"
 >
   <form class="space-y-5" onsubmit={submit}>
@@ -182,7 +202,7 @@
 
     <div class="flex flex-wrap justify-end gap-2 border-t border-line pt-4">
       <Button variant="ghost" onclick={onclose}>Batal</Button>
-      <Button type="submit" loading={loading}><Sparkles size={15} /> Simpan periode</Button>
+      <Button type="submit" loading={loading}><Sparkles size={15} /> {editing ? 'Simpan perubahan' : 'Simpan periode'}</Button>
     </div>
   </form>
 </Modal>

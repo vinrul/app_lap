@@ -74,10 +74,15 @@ export const addDays = (date: Date, days: number): Date => {
   return copy
 }
 
-export const statusOfPeriod = (period: { imports: number; reports: number }): {
+export const statusOfPeriod = (period: {
+  imports: number
+  reports: number
+  archived_at?: string | null
+}): {
   label: string
   tone: 'neutral' | 'progress' | 'success'
 } => {
+  if (period.archived_at) return { label: 'Diarsipkan', tone: 'neutral' }
   if (period.reports > 0) return { label: 'PDF tersedia', tone: 'success' }
   if (period.imports > 0) return { label: 'Siap disusun', tone: 'progress' }
   return { label: 'Menunggu impor', tone: 'neutral' }

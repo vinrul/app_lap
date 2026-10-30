@@ -1097,28 +1097,51 @@ fn render_card_element(element: &LayoutElement, ctx: &DesignContext, style: &str
         _ => "classic",
     };
     let value_size = (element.font_size * 2.35).clamp(14.0, 40.0);
-    let label_span = format!(
-        "<span class=\"layout-card-label\" style=\"font-size:{:.1}pt;\">{}</span>",
+    let label_style = card_part_style(
+        element.card_label_font_size,
         element.font_size,
+        &element.card_label_font_family,
+        &element.card_label_color,
+        &element.color,
+    );
+    let value_style = card_part_style(
+        element.card_value_font_size,
+        value_size,
+        &element.card_value_font_family,
+        &element.card_value_color,
+        &element.color,
+    );
+    let unit_style = card_part_style(
+        element.card_unit_font_size,
+        element.font_size * 0.82,
+        &element.card_unit_font_family,
+        &element.card_unit_color,
+        &element.color,
+    );
+    let detail_style = card_part_style(
+        element.card_detail_font_size,
+        element.font_size * 0.78,
+        &element.card_detail_font_family,
+        &element.card_detail_color,
+        &element.color,
+    );
+    let label_span = format!(
+        "<span class=\"layout-card-label\" style=\"{label_style}\">{}</span>",
         escape_html(&label)
     );
     let value_strong = format!(
-        "<strong class=\"layout-card-value\" style=\"font-size:{:.1}pt;color:{};\">{}</strong>",
-        value_size,
-        element.color,
+        "<strong class=\"layout-card-value\" style=\"{value_style}\">{}</strong>",
         escape_html(&value)
     );
     let unit_span = format!(
-        "<span class=\"layout-card-unit\" style=\"font-size:{:.1}pt;\">{}</span>",
-        element.font_size * 0.82,
+        "<span class=\"layout-card-unit\" style=\"{unit_style}\">{}</span>",
         escape_html(&unit)
     );
     let detail_html = if detail_text.trim().is_empty() {
         String::new()
     } else {
         format!(
-            "<span class=\"layout-card-detail\" style=\"font-size:{:.1}pt;\">{}</span>",
-            element.font_size * 0.78,
+            "<span class=\"layout-card-detail\" style=\"{detail_style}\">{}</span>",
             escape_html(&detail_text)
         )
     };
@@ -1191,6 +1214,23 @@ fn render_card_element(element: &LayoutElement, ctx: &DesignContext, style: &str
     )
 }
 
+fn card_part_style(
+    size: f64,
+    fallback: f64,
+    family: &str,
+    color: &str,
+    base_color: &str,
+) -> String {
+    let size = if size > 0.0 {
+        size.clamp(4.0, 96.0)
+    } else {
+        fallback
+    };
+    let family = escape_html(fonts::stack(family));
+    let color = if color.is_empty() { base_color } else { color };
+    format!("font-family:{family};font-size:{size:.1}pt;color:{color};")
+}
+
 fn card_icon_html(element: &LayoutElement, size_mm: f64) -> String {
     if element.card_icon.trim().is_empty() {
         return String::new();
@@ -1241,8 +1281,15 @@ fn render_table_element(element: &LayoutElement, ctx: &DesignContext, style: &st
         None
     };
     let border = format!("{}pt solid {}", element.border_width, element.border_color);
+    let base_family = escape_html(fonts::stack(&element.font_family));
+    let header_family = escape_html(fonts::stack(&element.table_header_font_family));
+    let header_size = if element.table_header_font_size > 0.0 {
+        element.table_header_font_size
+    } else {
+        element.font_size
+    };
     let mut html = format!(
-        "<div class=\"layout-element layout-table\" data-element-id=\"{}\" style=\"{}background:{};overflow:hidden;\"><table class=\"design-table\" style=\"font-size:{}pt;color:{};--table-border:{};\">",
+        "<div class=\"layout-element layout-table\" data-element-id=\"{}\" style=\"{}background:{};overflow:hidden;\"><table class=\"design-table\" style=\"font-family:{base_family};font-size:{}pt;color:{};--table-border:{};\">",
         escape_html(&element.id),
         style,
         element.fill,
@@ -1254,8 +1301,13 @@ fn render_table_element(element: &LayoutElement, ctx: &DesignContext, style: &st
     if let Some(header_row) = header {
         html.push_str("<thead><tr>");
         for cell in header_row {
+            let align = if is_numeric_cell(&cell) {
+                "text-align:right;"
+            } else {
+                ""
+            };
             html.push_str(&format!(
-                "<th style=\"background:{};color:{};\">{}</th>",
+                "<th style=\"background:{};color:{};font-family:{header_family};font-size:{header_size:.1}pt;{align}\">{}</th>",
                 element.table_header_bg,
                 element.table_header_color,
                 escape_html(&cell)
@@ -1267,21 +1319,66 @@ fn render_table_element(element: &LayoutElement, ctx: &DesignContext, style: &st
     html.push_str("<tbody>");
     for (row_index, row) in rows.iter().enumerate() {
         html.push_str("<tr>");
-        for cell in row {
-            let align = if is_numeric_cell(cell) {
-                "text-align:right;"
-            } else {
-                ""
+        for (column_index, cell) in row.iter().enumerate() {
+            let align = match element
+                .table_column_aligns
+                .get(column_index)
+                .map(String::as_str)
+            {
+                Some("left") => "text-align:left;",
+                Some("center") => "text-align:center;",
+                Some("right") => "text-align:right;",
+                _ => {
+                    if is_numeric_cell(cell) {
+                        "text-align:right;"
+                    } else {
+                        ""
+                    }
+                }
             };
-            let stripe = if row_index % 2 == 1 && !element.table_stripe.is_empty() {
-                format!("background:{};", element.table_stripe)
-            } else {
-                String::new()
-            };
+            let background = element
+                .table_column_backgrounds
+                .get(column_index)
+                .filter(|color| !color.is_empty())
+                .map(|color| format!("background:{color};"))
+                .unwrap_or_else(|| {
+                    if row_index % 2 == 1
+                        && !element.table_stripe.is_empty()
+                        && element.table_stripe != "transparent"
+                    {
+                        format!("background:{};", element.table_stripe)
+                    } else {
+                        String::new()
+                    }
+                });
+            let mut cell_style = background;
+            if let Some(color) = element
+                .table_column_colors
+                .get(column_index)
+                .filter(|color| !color.is_empty())
+            {
+                cell_style.push_str(&format!("color:{color};"));
+            }
+            if let Some(family) = element
+                .table_column_font_families
+                .get(column_index)
+                .filter(|family| !family.is_empty())
+            {
+                cell_style.push_str(&format!(
+                    "font-family:{};",
+                    escape_html(fonts::stack(family))
+                ));
+            }
+            if let Some(size) = element
+                .table_column_font_sizes
+                .get(column_index)
+                .filter(|size| **size > 0.0)
+            {
+                cell_style.push_str(&format!("font-size:{size:.1}pt;"));
+            }
+            cell_style.push_str(align);
             html.push_str(&format!(
-                "<td style=\"{}{}\">{}</td>",
-                stripe,
-                align,
+                "<td style=\"{cell_style}\">{}</td>",
                 escape_html(cell)
             ));
         }
@@ -1318,12 +1415,13 @@ fn render_chart_element(element: &LayoutElement, ctx: &DesignContext, style: &st
     };
     let base = (element.font_size * 1.6).clamp(10.0, 22.0);
     let is_hbar = element.chart_type == "hbar";
-    let top = if element.chart_title.trim().is_empty() {
+    let title = chart_title_layout(element, base, is_hbar);
+    let top = if title.lines.is_empty() {
         if is_hbar { 20.0 } else { 18.0 }
     } else if is_hbar {
-        58.0
+        58.0 + (title.lines.len() as f64 - 1.0) * title.line_height
     } else {
-        50.0
+        50.0 + (title.lines.len() as f64 - 1.0) * title.line_height
     };
     let mut body = String::new();
     if !element.fill.is_empty() {
@@ -1332,13 +1430,19 @@ fn render_chart_element(element: &LayoutElement, ctx: &DesignContext, style: &st
             element.fill
         ));
     }
-    if !is_hbar && !element.chart_title.trim().is_empty() {
-        body.push_str(&format!(
-            "<text x=\"300\" y=\"30\" text-anchor=\"middle\" font-size=\"{:.1}\" font-weight=\"700\" fill=\"{}\">{}</text>",
-            base + 4.0,
-            element.color,
-            escape_html(&element.chart_title)
-        ));
+    if !title.lines.is_empty() {
+        let family = escape_html(fonts::stack(&element.chart_title_font_family));
+        for (index, line) in title.lines.iter().enumerate() {
+            let x = if is_hbar { 24.0 } else { 300.0 };
+            let anchor = if is_hbar { "start" } else { "middle" };
+            let y = if is_hbar { 32.0 } else { 30.0 } + index as f64 * title.line_height;
+            body.push_str(&format!(
+                "<text x=\"{x}\" y=\"{y:.2}\" text-anchor=\"{anchor}\" font-family=\"{family}\" font-size=\"{:.1}\" font-weight=\"700\" fill=\"{}\">{}</text>",
+                title.size,
+                element.color,
+                escape_html(line)
+            ));
+        }
     }
 
     let chart_svg = match element.chart_type.as_str() {
@@ -1355,6 +1459,92 @@ fn render_chart_element(element: &LayoutElement, ctx: &DesignContext, style: &st
         style,
         body
     )
+}
+
+struct ChartTitleLayout {
+    lines: Vec<String>,
+    size: f64,
+    line_height: f64,
+}
+
+fn chart_text_size(explicit: f64, fallback: f64) -> f64 {
+    if explicit > 0.0 {
+        (explicit * 1.6).clamp(6.0, 48.0)
+    } else {
+        fallback
+    }
+}
+
+fn chart_label_transform(x: f64, y: f64, rotation: f64) -> String {
+    if rotation.abs() > 0.01 {
+        format!(" transform=\"rotate({rotation:.1} {x:.2} {y:.2})\"")
+    } else {
+        String::new()
+    }
+}
+
+fn wrap_chart_text(value: &str, max_chars: usize, max_lines: usize) -> Vec<String> {
+    let words: Vec<&str> = value.split_whitespace().collect();
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut consumed = 0usize;
+    for word in &words {
+        let candidate = if current.is_empty() {
+            (*word).to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if candidate.chars().count() <= max_chars {
+            current = candidate;
+            consumed += 1;
+            continue;
+        }
+        if !current.is_empty() {
+            lines.push(current);
+            current = String::new();
+            if lines.len() >= max_lines {
+                break;
+            }
+        }
+        current = (*word).to_string();
+        consumed += 1;
+    }
+    if !current.is_empty() && lines.len() < max_lines {
+        lines.push(current);
+    }
+    if consumed < words.len() && !lines.is_empty() {
+        let last = lines.len() - 1;
+        lines[last] = shorten(&lines[last], max_chars.saturating_sub(1));
+    }
+    lines
+        .into_iter()
+        .take(max_lines)
+        .map(|line| shorten(&line, max_chars))
+        .collect()
+}
+
+fn chart_title_layout(element: &LayoutElement, base: f64, is_hbar: bool) -> ChartTitleLayout {
+    let title = element.chart_title.trim();
+    if title.is_empty() {
+        return ChartTitleLayout {
+            lines: Vec::new(),
+            size: 0.0,
+            line_height: 0.0,
+        };
+    }
+    let size = chart_text_size(element.chart_title_font_size, base + 4.0);
+    let max_width = if is_hbar { 552.0 } else { 540.0 };
+    let max_chars = ((max_width / (size * 0.54)).floor() as usize).max(8);
+    let lines = if element.chart_title_wrap {
+        wrap_chart_text(title, max_chars, 3)
+    } else {
+        vec![shorten(title, max_chars)]
+    };
+    ChartTitleLayout {
+        lines,
+        size,
+        line_height: size * 1.18,
+    }
 }
 
 fn chart_color(element: &LayoutElement, index: usize) -> String {
@@ -1394,15 +1584,18 @@ fn render_bar_chart(element: &LayoutElement, top: f64, base: f64) -> String {
         .cloned()
         .fold(0.0_f64, f64::max)
         .max(1.0);
+    let label_size = chart_text_size(element.chart_label_font_size, base - 2.0);
+    let value_size = chart_text_size(element.chart_value_font_size, base - 2.0);
+    let value_family = escape_html(fonts::stack(&element.chart_value_font_family));
+    let rotation = element.chart_label_rotation.clamp(-90.0, 90.0);
     let mut svg = format!(
         "<line x1=\"{left}\" y1=\"{bottom}\" x2=\"{right}\" y2=\"{bottom}\" stroke=\"{}\" stroke-width=\"1.2\"/>",
         element.chart_axis_color
     );
     svg.push_str(&format!(
-        "<text x=\"{}\" y=\"{}\" text-anchor=\"end\" font-size=\"{:.1}\" fill=\"{}\">{}</text>",
+        "<text x=\"{}\" y=\"{}\" text-anchor=\"end\" font-family=\"{value_family}\" font-size=\"{value_size:.1}\" fill=\"{}\">{}</text>",
         left - 8.0,
         top + base,
-        base - 2.0,
         element.chart_axis_color,
         chart_value_text(max)
     ));
@@ -1417,20 +1610,19 @@ fn render_bar_chart(element: &LayoutElement, top: f64, base: f64) -> String {
         ));
         if element.chart_show_values {
             svg.push_str(&format!(
-                "<text x=\"{:.2}\" y=\"{:.2}\" text-anchor=\"middle\" font-size=\"{:.1}\" fill=\"{}\">{}</text>",
+                "<text x=\"{:.2}\" y=\"{:.2}\" text-anchor=\"middle\" font-family=\"{value_family}\" font-size=\"{value_size:.1}\" fill=\"{}\">{}</text>",
                 x + bar_width / 2.0,
                 (y - 4.0).max(top + base),
-                base - 2.0,
                 element.color,
                 chart_value_text(*value)
             ));
         }
         if let Some(label) = element.chart_labels.get(index) {
+            let tx = x + bar_width / 2.0;
+            let ty = bottom + base + 8.0;
+            let transform = chart_label_transform(tx, ty, rotation);
             svg.push_str(&format!(
-                "<text x=\"{:.2}\" y=\"{:.2}\" text-anchor=\"middle\" font-size=\"{:.1}\" fill=\"{}\">{}</text>",
-                x + bar_width / 2.0,
-                bottom + base + 8.0,
-                base - 2.0,
+                "<text x=\"{tx:.2}\" y=\"{ty:.2}\" text-anchor=\"middle\" font-size=\"{label_size:.1}\" fill=\"{}\"{transform}>{}</text>",
                 element.chart_axis_color,
                 escape_html(&shorten(label, 14))
             ));
@@ -1452,12 +1644,15 @@ fn render_hbar_chart(element: &LayoutElement, top: f64, base: f64) -> String {
     let row_height = ((bottom - top) / count as f64).clamp(12.0, 44.0);
     let bar_height = (row_height * 0.36).clamp(6.0, 16.0);
     let bar_radius = bar_height / 2.0;
-    let label_size = if count > 12 {
+    let fallback_label_size = if count > 12 {
         (base - 4.0).max(7.0)
     } else {
         (base - 3.0).max(8.0)
     };
-    let value_size = (base - 2.0).max(8.0);
+    let label_size = chart_text_size(element.chart_label_font_size, fallback_label_size);
+    let value_size = chart_text_size(element.chart_value_font_size, (base - 2.0).max(8.0));
+    let value_family = escape_html(fonts::stack(&element.chart_value_font_family));
+    let rotation = element.chart_label_rotation.clamp(-90.0, 90.0);
     let max = element
         .chart_values
         .iter()
@@ -1469,21 +1664,14 @@ fn render_hbar_chart(element: &LayoutElement, top: f64, base: f64) -> String {
     let mut svg = String::from(
         "<rect x=\"1\" y=\"1\" width=\"598\" height=\"358\" rx=\"5\" fill=\"none\" stroke=\"#d7ddd6\" stroke-width=\"1.4\"/>",
     );
-    if !element.chart_title.trim().is_empty() {
-        svg.push_str(&format!(
-            "<text x=\"{left}\" y=\"32\" font-size=\"{:.1}\" font-weight=\"700\" fill=\"{}\">{}</text>",
-            (base + 4.0).max(13.0),
-            element.color,
-            escape_html(&element.chart_title)
-        ));
-    }
 
     for (index, value) in element.chart_values.iter().enumerate() {
         let center = top + row_height * (index as f64 + 0.5);
         let baseline = center + label_size * 0.34;
         if let Some(label) = element.chart_labels.get(index) {
+            let transform = chart_label_transform(left, baseline, rotation);
             svg.push_str(&format!(
-                "<text x=\"{left}\" y=\"{baseline:.2}\" font-size=\"{label_size:.1}\" fill=\"#46534b\">{}</text>",
+                "<text x=\"{left}\" y=\"{baseline:.2}\" font-size=\"{label_size:.1}\" fill=\"#46534b\"{transform}>{}</text>",
                 escape_html(&shorten(label, 26))
             ));
         }
@@ -1500,7 +1688,7 @@ fn render_hbar_chart(element: &LayoutElement, top: f64, base: f64) -> String {
         }
         if element.chart_show_values {
             svg.push_str(&format!(
-                "<text x=\"{right:.2}\" y=\"{baseline:.2}\" text-anchor=\"end\" font-size=\"{value_size:.1}\" font-weight=\"700\" fill=\"{}\">{}</text>",
+                "<text x=\"{right:.2}\" y=\"{baseline:.2}\" text-anchor=\"end\" font-family=\"{value_family}\" font-size=\"{value_size:.1}\" font-weight=\"700\" fill=\"{}\">{}</text>",
                 element.color,
                 chart_value_text(*value)
             ));
@@ -1527,6 +1715,10 @@ fn render_line_chart(element: &LayoutElement, top: f64, base: f64) -> String {
         .fold(0.0_f64, f64::max)
         .max(1.0);
     let color = chart_color(element, 0);
+    let label_size = chart_text_size(element.chart_label_font_size, base - 2.0);
+    let value_size = chart_text_size(element.chart_value_font_size, base - 2.0);
+    let value_family = escape_html(fonts::stack(&element.chart_value_font_family));
+    let rotation = element.chart_label_rotation.clamp(-90.0, 90.0);
     let mut points = String::new();
     let mut svg = format!(
         "<line x1=\"{left}\" y1=\"{bottom}\" x2=\"{right}\" y2=\"{bottom}\" stroke=\"{}\" stroke-width=\"1.2\"/>",
@@ -1557,19 +1749,18 @@ fn render_line_chart(element: &LayoutElement, top: f64, base: f64) -> String {
         ));
         if element.chart_show_values {
             svg.push_str(&format!(
-                "<text x=\"{:.2}\" y=\"{:.2}\" text-anchor=\"middle\" font-size=\"{:.1}\" fill=\"{}\">{}</text>",
+                "<text x=\"{:.2}\" y=\"{:.2}\" text-anchor=\"middle\" font-family=\"{value_family}\" font-size=\"{value_size:.1}\" fill=\"{}\">{}</text>",
                 x,
                 (y - 8.0).max(top + base),
-                base - 2.0,
                 element.color,
                 chart_value_text(*value)
             ));
         }
         if let Some(label) = element.chart_labels.get(index) {
+            let ty = bottom + base + 8.0;
+            let transform = chart_label_transform(*x, ty, rotation);
             svg.push_str(&format!(
-                "<text x=\"{x:.2}\" y=\"{:.2}\" text-anchor=\"middle\" font-size=\"{:.1}\" fill=\"{}\">{}</text>",
-                bottom + base + 8.0,
-                base - 2.0,
+                "<text x=\"{x:.2}\" y=\"{ty:.2}\" text-anchor=\"middle\" font-size=\"{label_size:.1}\" fill=\"{}\"{transform}>{}</text>",
                 element.chart_axis_color,
                 escape_html(&shorten(label, 14))
             ));
@@ -1581,10 +1772,11 @@ fn render_line_chart(element: &LayoutElement, top: f64, base: f64) -> String {
 fn render_pie_chart(element: &LayoutElement, top: f64, base: f64, donut: bool) -> String {
     let values = &element.chart_values;
     let total: f64 = values.iter().sum();
+    let value_size = chart_text_size(element.chart_value_font_size, base - 2.0);
+    let value_family = escape_html(fonts::stack(&element.chart_value_font_family));
     if total <= 0.0 {
         return format!(
-            "<text x=\"300\" y=\"180\" text-anchor=\"middle\" font-size=\"{:.1}\" fill=\"{}\">Belum ada data</text>",
-            base + 2.0,
+            "<text x=\"300\" y=\"180\" text-anchor=\"middle\" font-family=\"{value_family}\" font-size=\"{value_size:.1}\" fill=\"{}\">Belum ada data</text>",
             element.chart_axis_color
         );
     }
@@ -1638,8 +1830,7 @@ fn render_pie_chart(element: &LayoutElement, top: f64, base: f64, donut: bool) -
             let tx = cx + radius * mid.cos();
             let ty = cy + radius * mid.sin() + base * 0.35;
             svg.push_str(&format!(
-                "<text x=\"{tx:.2}\" y=\"{ty:.2}\" text-anchor=\"middle\" font-size=\"{:.1}\" font-weight=\"700\" fill=\"#ffffff\">{:.0}%</text>",
-                base - 2.0,
+                "<text x=\"{tx:.2}\" y=\"{ty:.2}\" text-anchor=\"middle\" font-family=\"{value_family}\" font-size=\"{value_size:.1}\" font-weight=\"700\" fill=\"#ffffff\">{:.0}%</text>",
                 sweep / std::f64::consts::TAU * 100.0
             ));
         }
@@ -1654,6 +1845,7 @@ fn render_pie_chart(element: &LayoutElement, top: f64, base: f64, donut: bool) -
     }
 
     if show_legend {
+        let legend_size = chart_text_size(element.chart_legend_font_size, base - 3.0);
         let mut y = top + base;
         for (index, label) in element.chart_labels.iter().take(12).enumerate() {
             let color = chart_color(element, index);
@@ -1662,12 +1854,11 @@ fn render_pie_chart(element: &LayoutElement, top: f64, base: f64, donut: bool) -
                 y - 10.0
             ));
             svg.push_str(&format!(
-                "<text x=\"374\" y=\"{y:.2}\" font-size=\"{:.1}\" fill=\"{}\">{}</text>",
-                base - 3.0,
+                "<text x=\"374\" y=\"{y:.2}\" font-size=\"{legend_size:.1}\" fill=\"{}\">{}</text>",
                 element.color,
                 escape_html(&shorten(label, 20))
             ));
-            y += base + 7.0;
+            y += legend_size + 7.0;
         }
     }
     svg
@@ -2687,6 +2878,12 @@ mod tests {
                         card_accent: "#b8894b".into(),
                         fill: "#f6f8f5".into(),
                         color: "#143d30".into(),
+                        card_label_font_family: "lora".into(),
+                        card_label_font_size: 8.0,
+                        card_label_color: "#123456".into(),
+                        card_value_font_family: "roboto".into(),
+                        card_value_font_size: 24.0,
+                        card_value_color: "#654321".into(),
                         border_width: 2.0,
                         radius: 1.5,
                         font_size: 9.0,
@@ -2724,6 +2921,10 @@ mod tests {
         assert!(html.contains("layout-card"));
         assert!(html.contains("Bibit ditanam"));
         assert!(html.contains("1.250"));
+        assert!(html.contains("Lora"));
+        assert!(html.contains("Roboto"));
+        assert!(html.contains("#654321"));
+        assert!(html.contains("font-size:24.0pt"));
         assert!(html.contains("Sejak awal periode"));
         assert!(html.contains("border-left:2pt solid #b8894b"));
         assert!(html.contains("data-text-id=\"card-1-label\""));
@@ -2787,6 +2988,123 @@ mod tests {
         assert!(html.contains("#3f765d"));
         assert!(html.contains(">QW2.1<"));
         assert!(html.contains(">17<"));
+    }
+
+    #[test]
+    fn renders_table_column_styles() {
+        let metrics = ReportMetrics::default();
+        let layout = ReportLayout {
+            version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
+            pages: vec![crate::modules::reports::layout::PageLayout {
+                page: 2,
+                blocks: std::collections::BTreeMap::new(),
+                elements: vec![LayoutElement {
+                    id: "table-style".into(),
+                    kind: "table".into(),
+                    x: 10.0,
+                    y: 10.0,
+                    width: 120.0,
+                    height: 60.0,
+                    table_rows: vec![
+                        vec!["Nama".into(), "Jumlah".into(), "Keterangan".into()],
+                        vec!["Polres".into(), "12".into(), "Aktif".into()],
+                        vec!["Satker".into(), "4".into(), "Selesai".into()],
+                    ],
+                    table_header_bg: "#143d30".into(),
+                    table_header_color: "#ffffff".into(),
+                    table_header_font_family: "lora".into(),
+                    table_header_font_size: 10.0,
+                    table_stripe: "#f6f8f5".into(),
+                    table_column_backgrounds: vec!["#ffeeaa".into(), "".into(), "#ddeeff".into()],
+                    table_column_colors: vec!["#111111".into(), "".into(), "#333333".into()],
+                    table_column_font_families: vec!["roboto".into(), "".into(), "".into()],
+                    table_column_font_sizes: vec![12.0, 0.0, 8.0],
+                    table_column_aligns: vec!["center".into(), "".into(), "right".into()],
+                    fill: "#ffffff".into(),
+                    color: "#143d30".into(),
+                    border_color: "#d7ddd6".into(),
+                    border_width: 0.5,
+                    font_size: 9.0,
+                    ..Default::default()
+                }],
+                ..PageLayout::default()
+            }],
+        };
+
+        let html = render_with_layout(
+            &metrics,
+            &ReportContent::default(),
+            &Config::test_config(),
+            &layout,
+            &HashMap::new(),
+        );
+        assert!(html.contains("Lora"));
+        assert!(html.contains("Roboto"));
+        assert!(html.contains("background:#ffeeaa"));
+        assert!(html.contains("background:#ddeeff"));
+        assert!(html.contains("background:#f6f8f5"));
+        assert!(html.contains("color:#333333"));
+        assert!(html.contains("font-size:12.0pt"));
+        assert!(html.contains("font-size:8.0pt"));
+        assert!(html.contains("text-align:center"));
+        assert!(html.contains("text-align:right"));
+    }
+
+    #[test]
+    fn renders_chart_typography_and_wrapped_title() {
+        let metrics = ReportMetrics::default();
+        let layout = ReportLayout {
+            version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
+            pages: vec![crate::modules::reports::layout::PageLayout {
+                page: 2,
+                blocks: std::collections::BTreeMap::new(),
+                elements: vec![LayoutElement {
+                    id: "chart-style".into(),
+                    kind: "chart".into(),
+                    x: 10.0,
+                    y: 10.0,
+                    width: 120.0,
+                    height: 80.0,
+                    chart_type: "bar".into(),
+                    chart_title: "Judul grafik yang sangat panjang untuk diuji pembungkusan baris"
+                        .into(),
+                    chart_title_font_family: "lora".into(),
+                    chart_title_font_size: 12.0,
+                    chart_title_wrap: true,
+                    chart_labels: vec!["A".into(), "B".into()],
+                    chart_values: vec![10.0, 20.0],
+                    chart_colors: vec!["#143d30".into(), "#b8894b".into()],
+                    chart_label_font_size: 7.0,
+                    chart_label_rotation: -45.0,
+                    chart_value_font_family: "roboto".into(),
+                    chart_value_font_size: 8.0,
+                    chart_legend_font_size: 7.0,
+                    fill: "#ffffff".into(),
+                    color: "#143d30".into(),
+                    font_size: 9.0,
+                    ..Default::default()
+                }],
+                ..PageLayout::default()
+            }],
+        };
+
+        let html = render_with_layout(
+            &metrics,
+            &ReportContent::default(),
+            &Config::test_config(),
+            &layout,
+            &HashMap::new(),
+        );
+        assert!(html.contains("Lora"));
+        assert!(html.contains("Roboto"));
+        assert!(html.contains("rotate(-45.0"));
+        assert!(
+            !html.contains(">Judul grafik yang sangat panjang untuk diuji pembungkusan baris<")
+        );
     }
 
     #[test]

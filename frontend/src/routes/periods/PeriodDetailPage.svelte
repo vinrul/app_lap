@@ -1,15 +1,27 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { AlertCircle, CalendarDays, CloudUpload, FileText, LoaderCircle, PenLine } from 'lucide-svelte'
+  import {
+    AlertCircle,
+    Archive,
+    ArchiveRestore,
+    CalendarDays,
+    CloudUpload,
+    FileText,
+    LoaderCircle,
+    PenLine,
+    Pencil,
+  } from 'lucide-svelte'
   import { periodsApi, reportsApi } from '../../lib/api'
   import { errorMessage } from '../../lib/api/client'
   import type { PeriodDetail, ReportMetrics } from '../../lib/types'
   import { formatRange, statusOfPeriod } from '../../lib/utils/format'
   import { navigate } from '../../lib/stores/router.svelte'
+  import { dialog } from '../../lib/stores/dialog.svelte'
   import { toast } from '../../lib/stores/toast.svelte'
   import Badge from '../../lib/components/ui/Badge.svelte'
   import Button from '../../lib/components/ui/Button.svelte'
   import Tabs from '../../lib/components/ui/Tabs.svelte'
+  import PeriodFormModal from '../../lib/components/period/PeriodFormModal.svelte'
   import PeriodOverview from '../../lib/components/period/PeriodOverview.svelte'
   import AnalysisPanel from '../../lib/components/period/AnalysisPanel.svelte'
   import CoveragePanel from '../../lib/components/period/CoveragePanel.svelte'
@@ -26,6 +38,8 @@
   let loading = $state(true)
   let metricsLoading = $state(false)
   let error = $state('')
+  let editOpen = $state(false)
+  let busy = $state(false)
 
   const activeTab = $derived(
     ['overview', 'analysis', 'coverage', 'records', 'design', 'documents'].includes(tab)
@@ -77,6 +91,41 @@
     }
   }
 
+  async function archivePeriod() {
+    if (!detail) return
+    const confirmed = await dialog.confirm({
+      title: 'Arsipkan periode?',
+      message: `Periode "${detail.period.label}" akan dipindahkan ke arsip dan tidak tampil di daftar aktif maupun ringkasan. Data impor, desain, dan dokumen tetap tersimpan, dan periode dapat dipulihkan kapan saja.`,
+      confirmLabel: 'Arsipkan',
+      cancelLabel: 'Batal',
+    })
+    if (!confirmed) return
+
+    busy = true
+    try {
+      await periodsApi.archive(periodId)
+      toast.success('Periode laporan diarsipkan.')
+      navigate('/periods')
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    } finally {
+      busy = false
+    }
+  }
+
+  async function restorePeriod() {
+    busy = true
+    try {
+      await periodsApi.restore(periodId)
+      toast.success('Periode laporan dipulihkan.')
+      await load()
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    } finally {
+      busy = false
+    }
+  }
+
   const tabs = $derived([
     { id: 'overview', label: 'Ringkasan' },
     { id: 'analysis', label: 'Analisis' },
@@ -118,6 +167,18 @@
       </div>
       <div class="flex flex-wrap items-center gap-2">
         {#if status}<Badge tone={status.tone}>{status.label}</Badge>{/if}
+        <Button variant="secondary" size="sm" onclick={() => (editOpen = true)}>
+          <Pencil size={14} /> Edit
+        </Button>
+        {#if detail.period.archived_at}
+          <Button variant="secondary" size="sm" loading={busy} onclick={restorePeriod}>
+            <ArchiveRestore size={14} /> Pulihkan
+          </Button>
+        {:else}
+          <Button variant="ghost" size="sm" loading={busy} onclick={archivePeriod}>
+            <Archive size={14} /> Arsipkan
+          </Button>
+        {/if}
         <Button variant="secondary" size="sm" onclick={() => navigate('/imports')}>
           <CloudUpload size={14} /> Import data
         </Button>
@@ -168,4 +229,15 @@
   {:else if activeTab === 'documents'}
     <DocumentsPanel reports={detail.reports} onrefresh={() => load()} />
   {/if}
+{/if}
+
+{#if detail && editOpen}
+  <PeriodFormModal
+    open={true}
+    period={detail.period}
+    onclose={() => (editOpen = false)}
+    onsaved={() => {
+      void load()
+    }}
+  />
 {/if}

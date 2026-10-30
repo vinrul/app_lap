@@ -17,6 +17,7 @@ pub struct PeriodView {
     pub imports: i64,
     pub rows: i64,
     pub reports: i64,
+    pub archived_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -31,6 +32,15 @@ pub struct PeriodDetail {
 pub struct CreatePeriodRequest {
     pub start_date: String,
     pub end_date: String,
+    pub label: Option<String>,
+    #[serde(default)]
+    pub period_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdatePeriodRequest {
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
     pub label: Option<String>,
     #[serde(default)]
     pub period_type: Option<String>,

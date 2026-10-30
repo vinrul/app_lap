@@ -31,6 +31,7 @@
     Save,
     Share2,
     Shapes,
+    SlidersHorizontal,
     Star,
     Table2,
     Trash2,
@@ -61,6 +62,9 @@
   import { shapeCatalog, shapeDefinition, shapeLabel, type ShapeDefinition } from '../../shapes/catalog'
   import { emptyContent } from '../../utils/constants'
   import { cardTemplate, type CardTemplateId } from '../../utils/cardTemplates'
+  import { createCardNode } from '../../utils/cardNode'
+  import { CHART_PALETTE, createChartSvg } from '../../utils/chartSvg'
+  import { createTableNode } from '../../utils/tableNode'
   import {
     clearDesignDraft,
     layoutsMatch,
@@ -76,6 +80,9 @@
   import EmptyState from '../ui/EmptyState.svelte'
   import Modal from '../ui/Modal.svelte'
   import CardTemplatePicker from './CardTemplatePicker.svelte'
+  import CardEditorDialog from './CardEditorDialog.svelte'
+  import ChartEditorDialog from './ChartEditorDialog.svelte'
+  import TableEditorDialog from './TableEditorDialog.svelte'
   import MediaLibrary from './MediaLibrary.svelte'
   import ShareReportDialog from './ShareReportDialog.svelte'
 
@@ -89,6 +96,8 @@
     | { kind: 'element'; page: number; id: string }
     | { kind: 'block'; page: number; id: string }
     | null
+
+  type SidebarTab = 'properties' | 'layers' | 'coverage' | 'page'
 
   type ContextMenuState = {
     x: number
@@ -213,6 +222,10 @@
   let currentPage = $state(1)
   let selected = $state<Selection>(null)
   let contextMenu = $state<ContextMenuState | null>(null)
+  let sidebarTab = $state<SidebarTab>('properties')
+  let chartEditorTarget = $state<{ page: number; id: string } | null>(null)
+  let cardEditorTarget = $state<{ page: number; id: string } | null>(null)
+  let tableEditorTarget = $state<{ page: number; id: string } | null>(null)
   let clipboard = $state<LayoutElement | null>(null)
   let checkedIds = $state<string[]>([])
   let history = $state<ReportLayout[]>([])
@@ -318,6 +331,95 @@
     if (!contextMenu || contextMenu.kind !== 'block' || !contextMenu.id) return null
     return getPage(contextMenu.page)?.blocks[contextMenu.id] ?? { dx: 0, dy: 0, hidden: false }
   })
+
+  const chartEditorElement = $derived.by(() => {
+    const target = chartEditorTarget
+    if (!target) return null
+    const element = getElement(target.page, target.id)
+    if (!element || element.type !== 'chart') return null
+    const source = element.binding ? sourceFor(element.binding) : null
+    if (source && source.can_chart && source.chart_labels.length) {
+      return {
+        ...element,
+        chart_labels: [...source.chart_labels],
+        chart_values: [...source.chart_values],
+        chart_title: element.chart_title?.trim() ? element.chart_title : source.chart_title,
+      }
+    }
+    return { ...element }
+  })
+
+  const chartEditorLocked = $derived.by(() => {
+    const target = chartEditorTarget
+    if (!target) return false
+    return Boolean(getElement(target.page, target.id)?.binding)
+  })
+
+  const chartEditorSourceLabel = $derived.by(() => {
+    const target = chartEditorTarget
+    if (!target) return ''
+    const binding = getElement(target.page, target.id)?.binding
+    return binding ? (sourceFor(binding)?.label ?? binding) : ''
+  })
+
+  const cardEditorElement = $derived.by(() => {
+    const target = cardEditorTarget
+    if (!target) return null
+    const element = getElement(target.page, target.id)
+    if (!element || element.type !== 'card') return null
+    const source = element.binding ? sourceFor(element.binding) : null
+    if (source && source.can_card) {
+      return {
+        ...element,
+        card_label: source.card_label ?? '',
+        card_value: source.card_value ?? '',
+        card_unit: source.card_unit ?? '',
+        card_detail: source.card_detail ?? '',
+      }
+    }
+    return { ...element }
+  })
+
+  const cardEditorLocked = $derived.by(() => {
+    const target = cardEditorTarget
+    if (!target) return false
+    return Boolean(getElement(target.page, target.id)?.binding)
+  })
+
+  const cardEditorSourceLabel = $derived.by(() => {
+    const target = cardEditorTarget
+    if (!target) return ''
+    const binding = getElement(target.page, target.id)?.binding
+    return binding ? (sourceFor(binding)?.label ?? binding) : ''
+  })
+
+  const tableEditorElement = $derived.by(() => {
+    const target = tableEditorTarget
+    if (!target) return null
+    const element = getElement(target.page, target.id)
+    if (!element || element.type !== 'table') return null
+    const source = element.binding ? sourceFor(element.binding) : null
+    if (source && source.table_rows.length) {
+      return {
+        ...element,
+        table_rows: source.table_rows.map((row) => [...row]),
+      }
+    }
+    return { ...element }
+  })
+
+  const tableEditorLocked = $derived.by(() => {
+    const target = tableEditorTarget
+    if (!target) return false
+    return Boolean(getElement(target.page, target.id)?.binding)
+  })
+
+  const tableEditorSourceLabel = $derived.by(() => {
+    const target = tableEditorTarget
+    if (!target) return ''
+    const binding = getElement(target.page, target.id)?.binding
+    return binding ? (sourceFor(binding)?.label ?? binding) : ''
+  })
   const rectNoFill = $derived(
     activeElement?.type === 'rect' && isTransparentColor(activeElement.fill),
   )
@@ -415,8 +517,15 @@
     const key = selectionKey
     if (!key) return
     panelOpen = true
+    const currentTab = untrack(() => sidebarTab)
+    if (currentTab !== 'coverage') sidebarTab = 'properties'
     untrack(() => asideEl?.scrollTo({ top: 0, behavior: 'smooth' }))
   })
+
+  function switchSidebarTab(tab: SidebarTab): void {
+    sidebarTab = tab
+    void tick().then(() => asideEl?.scrollTo({ top: 0, behavior: 'smooth' }))
+  }
 
   $effect(() => {
     void PAGE_WIDTH_PX
@@ -523,6 +632,7 @@
   function applySourceSnapshot(element: LayoutElement, source: DesignSource): void {
     if (element.type === 'table') {
       element.table_rows = source.table_rows.map((row) => [...row])
+      syncTableColumnStyles(element)
       return
     }
     if (element.type === 'chart') {
@@ -697,7 +807,7 @@
     const anchorX = (frameRect?.left ?? 0) + event.clientX
     const anchorY = (frameRect?.top ?? 0) + event.clientY
     const menuWidth = 256
-    const menuHeight = kind === 'element' ? 382 : kind === 'block' ? 186 : 128
+    const menuHeight = kind === 'element' ? 424 : kind === 'block' ? 186 : 128
     const margin = 8
     contextMenu = {
       x: Math.round(clamp(anchorX, margin, Math.max(margin, window.innerWidth - menuWidth - margin))),
@@ -1022,6 +1132,13 @@
       table_header_bg: '#143d30',
       table_header_color: '#ffffff',
       table_stripe: '#f6f8f5',
+      table_header_font_family: 'sans',
+      table_header_font_size: 0,
+      table_column_backgrounds: [],
+      table_column_colors: [],
+      table_column_font_families: [],
+      table_column_font_sizes: [],
+      table_column_aligns: [],
       chart_type: 'bar',
       chart_title: '',
       chart_labels: ['A', 'B', 'C', 'D'],
@@ -1030,11 +1147,31 @@
       chart_show_values: true,
       chart_show_legend: true,
       chart_axis_color: '#6d7872',
+      chart_title_font_family: 'sans',
+      chart_title_font_size: 0,
+      chart_title_wrap: false,
+      chart_label_font_size: 0,
+      chart_label_rotation: 0,
+      chart_value_font_family: 'sans',
+      chart_value_font_size: 0,
+      chart_legend_font_size: 0,
       card_label: 'Label kartu',
       card_value: '0',
       card_unit: 'unit',
       card_detail: '',
       card_accent: '#b8894b',
+      card_label_font_family: 'sans',
+      card_label_font_size: 0,
+      card_label_color: '',
+      card_value_font_family: 'sans',
+      card_value_font_size: 0,
+      card_value_color: '',
+      card_unit_font_family: 'sans',
+      card_unit_font_size: 0,
+      card_unit_color: '',
+      card_detail_font_family: 'sans',
+      card_detail_font_size: 0,
+      card_detail_color: '',
       card_template: type === 'card' ? 'classic' : '',
       card_icon: '',
       card_icon_color: type === 'card' ? '#b8894b' : '',
@@ -1380,37 +1517,6 @@
     return svg
   }
 
-  function createCardIconNode(
-    doc: Document,
-    element: LayoutElement,
-    sizeMm: number,
-  ): HTMLElement | null {
-    const icon = iconByName.get(element.card_icon ?? '')
-    if (!icon) return null
-    const badge = doc.createElement('span')
-    badge.style.display = 'inline-flex'
-    badge.style.alignItems = 'center'
-    badge.style.justifyContent = 'center'
-    badge.style.flex = '0 0 auto'
-    badge.style.width = `${sizeMm}mm`
-    badge.style.height = `${sizeMm}mm`
-    badge.style.borderRadius = '50%'
-    badge.style.background = element.card_icon_bg ?? '#f1e6d5'
-    badge.style.color = element.card_icon_color ?? '#b8894b'
-    const svg = doc.createElementNS(SVG_NS, 'svg')
-    svg.setAttribute('viewBox', '0 0 24 24')
-    svg.setAttribute('fill', 'none')
-    svg.setAttribute('stroke', 'currentColor')
-    svg.setAttribute('stroke-width', '2')
-    svg.setAttribute('stroke-linecap', 'round')
-    svg.setAttribute('stroke-linejoin', 'round')
-    svg.style.width = '56%'
-    svg.style.height = '56%'
-    svg.innerHTML = icon.svg
-    badge.appendChild(svg)
-    return badge
-  }
-
   function createElementNode(doc: Document, element: LayoutElement): HTMLElement {
     let node: HTMLElement
     if (element.type === 'image') {
@@ -1446,53 +1552,7 @@
       } else if (!rows.length) {
         node = sourceMessage(doc, source ? 'Sumber data kosong.' : 'Belum ada baris tabel.')
       } else {
-        const wrapper = doc.createElement('div')
-        wrapper.style.background = element.fill ?? '#ffffff'
-        const table = doc.createElement('table')
-        table.style.fontSize = `${element.font_size ?? 9}pt`
-        table.style.color = element.color ?? '#143d30'
-        table.style.setProperty(
-          '--table-border',
-          `${element.border_width ?? 0.5}pt solid ${element.border_color ?? '#d7ddd6'}`,
-        )
-        const hasHeader = element.table_header !== false && rows.length > 1
-        const headerRow = hasHeader ? rows[0] : null
-        const bodyRows = hasHeader ? rows.slice(1) : rows
-        if (headerRow) {
-          const thead = doc.createElement('thead')
-          const tr = doc.createElement('tr')
-          for (const cell of headerRow) {
-            const th = doc.createElement('th')
-            th.textContent = cell
-            th.style.background = element.table_header_bg ?? '#143d30'
-            th.style.color = element.table_header_color ?? '#ffffff'
-            th.style.textAlign = isNumericCell(cell) ? 'right' : 'left'
-            tr.appendChild(th)
-          }
-          thead.appendChild(tr)
-          table.appendChild(thead)
-        }
-        const tbody = doc.createElement('tbody')
-        bodyRows.forEach((row, rowIndex) => {
-          const tr = doc.createElement('tr')
-          for (const cell of row) {
-            const td = doc.createElement('td')
-            td.textContent = cell
-            if (
-              rowIndex % 2 === 1 &&
-              element.table_stripe &&
-              element.table_stripe !== 'transparent'
-            ) {
-              td.style.background = element.table_stripe
-            }
-            td.style.textAlign = isNumericCell(cell) ? 'right' : 'left'
-            tr.appendChild(td)
-          }
-          tbody.appendChild(tr)
-        })
-        table.appendChild(tbody)
-        wrapper.appendChild(table)
-        node = wrapper
+        node = createTableNode(doc, element, rows)
       }
     } else if (element.type === 'chart') {
       const source = sourceFor(element.binding)
@@ -1518,136 +1578,18 @@
       node = wrapper
     } else if (element.type === 'card') {
       const bound = element.binding ? sourceFor(element.binding) : undefined
-      const template = cardTemplate(element.card_template)
-      const cardLabel = bound?.can_card ? (bound.card_label ?? '') : (element.card_label ?? '')
-      const cardValue = bound?.can_card ? (bound.card_value ?? '') : (element.card_value ?? '')
-      const cardUnit = bound?.can_card ? (bound.card_unit ?? '') : (element.card_unit ?? '')
-      const cardDetail = bound?.can_card ? (bound.card_detail ?? '') : (element.card_detail ?? '')
-      const accent = element.card_accent ?? template.accent
-      const fill = element.fill ?? template.fill
-      const color = element.color ?? template.color
-      const minSide = Math.min(element.width, element.height)
-      const iconSize =
-        Math.max(
-          8,
-          Math.min(
-            template.id === 'centered' ? 14 : 18,
-            minSide * (template.id === 'centered' ? 0.24 : 0.34),
-          ),
-        ) * ((element.card_icon_scale ?? 100) / 100)
-      const iconNode = createCardIconNode(doc, element, iconSize)
-      const label = doc.createElement('span')
-      label.className = 'layout-card-label'
-      label.textContent = cardLabel
-      label.style.fontSize = `${element.font_size ?? 9}pt`
-      const value = doc.createElement('strong')
-      value.className = 'layout-card-value'
-      value.textContent = cardValue
-      value.style.fontSize = `${Math.min(40, Math.max(14, (element.font_size ?? 9) * 2.35))}pt`
-      value.style.color = color
-      const unit = doc.createElement('span')
-      unit.className = 'layout-card-unit'
-      unit.textContent = cardUnit
-      unit.style.fontSize = `${(element.font_size ?? 9) * 0.82}pt`
-      const card = doc.createElement('div')
-      card.style.boxSizing = 'border-box'
-      card.style.overflow = 'hidden'
-      card.style.background = fill
-      card.style.color = color
-      card.style.display = 'flex'
-      const appendDetail = (parent: HTMLElement) => {
-        if (!cardDetail.trim()) return
-        const detail = doc.createElement('span')
-        detail.className = 'layout-card-detail'
-        detail.textContent = cardDetail
-        detail.style.fontSize = `${(element.font_size ?? 9) * 0.78}pt`
-        parent.appendChild(detail)
-      }
-
-      if (template.id === 'icon_right') {
-        card.style.flexDirection = 'column'
-        card.style.padding = '3mm 3.5mm'
-        card.style.borderRadius = `${element.radius ?? template.radius}mm`
-        const top = doc.createElement('div')
-        top.style.display = 'flex'
-        top.style.alignItems = 'flex-start'
-        top.style.justifyContent = 'space-between'
-        top.style.gap = '2mm'
-        top.style.width = '100%'
-        const content = doc.createElement('div')
-        content.style.minWidth = '0'
-        content.style.flex = '1'
-        content.append(value, unit)
-        top.appendChild(content)
-        if (iconNode) top.appendChild(iconNode)
-        card.append(top, label)
-        appendDetail(card)
-      } else if (template.id === 'icon_left') {
-        card.style.flexDirection = 'row'
-        card.style.alignItems = 'center'
-        card.style.gap = '3mm'
-        card.style.padding = '3mm 3.5mm'
-        card.style.borderRadius = `${element.radius ?? template.radius}mm`
-        if (iconNode) card.appendChild(iconNode)
-        const content = doc.createElement('div')
-        content.style.minWidth = '0'
-        content.style.flex = '1'
-        content.append(value, label, unit)
-        appendDetail(content)
-        card.appendChild(content)
-      } else if (template.id === 'centered') {
-        card.style.flexDirection = 'column'
-        card.style.alignItems = 'center'
-        card.style.justifyContent = 'center'
-        card.style.textAlign = 'center'
-        card.style.padding = '3mm'
-        card.style.border = `${element.border_width ?? template.borderWidth}pt solid ${accent}`
-        card.style.borderRadius = `${element.radius ?? template.radius}mm`
-        if (iconNode) card.appendChild(iconNode)
-        card.append(value, label, unit)
-        appendDetail(card)
-      } else if (template.id === 'split') {
-        card.style.flexDirection = 'row'
-        card.style.alignItems = 'stretch'
-        card.style.borderRadius = `${element.radius ?? template.radius}mm`
-        const panel = doc.createElement('div')
-        panel.style.width = '32%'
-        panel.style.flex = '0 0 auto'
-        panel.style.display = 'flex'
-        panel.style.alignItems = 'center'
-        panel.style.justifyContent = 'center'
-        panel.style.background = accent
-        if (iconNode) panel.appendChild(iconNode)
-        const content = doc.createElement('div')
-        content.style.minWidth = '0'
-        content.style.flex = '1'
-        content.style.display = 'flex'
-        content.style.flexDirection = 'column'
-        content.style.justifyContent = 'center'
-        content.style.padding = '3mm 3.5mm'
-        content.append(value, label, unit)
-        appendDetail(content)
-        card.append(panel, content)
-      } else if (template.id === 'minimal') {
-        card.style.flexDirection = 'column'
-        card.style.padding = '2mm 0'
-        card.style.borderBottom = `${Math.max(element.border_width ?? template.borderWidth, 1)}pt solid ${accent}`
-        const row = doc.createElement('div')
-        row.style.display = 'flex'
-        row.style.alignItems = 'baseline'
-        row.style.gap = '2mm'
-        row.append(value, unit)
-        card.append(row, label)
-        appendDetail(card)
-      } else {
-        card.style.flexDirection = 'column'
-        card.style.padding = '3mm 3.5mm'
-        card.style.borderLeft = `${element.border_width ?? template.borderWidth}pt solid ${accent}`
-        card.style.borderRadius = `${element.radius ?? template.radius}mm`
-        card.append(label, value, unit)
-        appendDetail(card)
-      }
-      node = card
+      node = createCardNode(
+        doc,
+        element,
+        bound?.can_card
+          ? {
+              label: bound.card_label ?? '',
+              value: bound.card_value ?? '',
+              unit: bound.card_unit ?? '',
+              detail: bound.card_detail ?? '',
+            }
+          : undefined,
+      )
     } else if (element.type === 'icon') {
       const wrapper = doc.createElement('div')
       wrapper.style.color = element.icon_color ?? '#143d30'
@@ -1720,22 +1662,6 @@
   }
 
   const SVG_NS = 'http://www.w3.org/2000/svg'
-  const CHART_PALETTE = ['#143d30', '#b8894b', '#3f765d', '#5b8fa8', '#a4743d', '#d9b87e', '#7a857f', '#2f5d7c']
-
-  function chartColor(element: LayoutElement, index: number): string {
-    return element.chart_colors?.[index] ?? CHART_PALETTE[index % CHART_PALETTE.length]
-  }
-
-  function chartValueText(value: number): string {
-    return Number.isInteger(value)
-      ? new Intl.NumberFormat('id-ID').format(value)
-      : value.toFixed(1)
-  }
-
-  function isNumericCell(value: string): boolean {
-    const normalized = value.trim().replace(/\./g, '').replace(',', '.')
-    return normalized !== '' && Number.isFinite(Number(normalized))
-  }
 
   function svgNode(
     doc: Document,
@@ -1747,292 +1673,6 @@
       node.setAttribute(key, String(value))
     }
     return node
-  }
-
-  function svgText(
-    doc: Document,
-    svg: SVGElement,
-    x: number,
-    y: number,
-    text: string,
-    options: { fill?: string; size?: number; anchor?: string; weight?: number } = {},
-  ): void {
-    const node = svgNode(doc, 'text', {
-      x,
-      y,
-      fill: options.fill ?? '#143d30',
-      'font-size': options.size ?? 14,
-      'text-anchor': options.anchor ?? 'start',
-      'font-weight': options.weight ?? 400,
-    })
-    node.textContent = text
-    svg.appendChild(node)
-  }
-
-  function createChartSvg(doc: Document, element: LayoutElement): SVGElement {
-    const svg = svgNode(doc, 'svg', {
-      viewBox: '0 0 600 360',
-      preserveAspectRatio: 'xMidYMid meet',
-      width: '100%',
-      height: '100%',
-      'font-family': 'Segoe UI, Arial, sans-serif',
-    })
-    const fill = element.fill ?? '#ffffff'
-    svg.appendChild(svgNode(doc, 'rect', { x: 0, y: 0, width: 600, height: 360, fill }))
-    const base = Math.min(22, Math.max(10, (element.font_size ?? 9) * 1.6))
-    const isHbar = element.chart_type === 'hbar'
-    const top = isHbar ? (element.chart_title?.trim() ? 58 : 20) : element.chart_title?.trim() ? 50 : 18
-    if (element.chart_title?.trim() && !isHbar) {
-      svgText(doc, svg, 300, 30, element.chart_title, {
-        fill: element.color ?? '#143d30',
-        size: base + 4,
-        anchor: 'middle',
-        weight: 700,
-      })
-    }
-    if (element.chart_type === 'line') {
-      appendLineChart(doc, svg, element, top, base)
-    } else if (element.chart_type === 'hbar') {
-      appendHorizontalBarChart(doc, svg, element, top, base)
-    } else if (element.chart_type === 'pie' || element.chart_type === 'donut') {
-      appendPieChart(doc, svg, element, top, base, element.chart_type === 'donut')
-    } else {
-      appendBarChart(doc, svg, element, top, base)
-    }
-    return svg
-  }
-
-  function appendBarChart(
-    doc: Document,
-    svg: SVGElement,
-    element: LayoutElement,
-    top: number,
-    base: number,
-  ): void {
-    const left = 55
-    const right = 575
-    const bottom = 316
-    const plotHeight = Math.max(40, bottom - top)
-    const values = element.chart_values ?? []
-    const count = Math.max(1, values.length)
-    const step = (right - left) / count
-    const barWidth = Math.max(3, step * 0.64)
-    const max = Math.max(1, ...values)
-    svg.appendChild(svgNode(doc, 'line', { x1: left, y1: bottom, x2: right, y2: bottom, stroke: element.chart_axis_color ?? '#6d7872', 'stroke-width': 1.2 }))
-    svgText(doc, svg, left - 8, top + base, chartValueText(max), { fill: element.chart_axis_color ?? '#6d7872', size: base - 2, anchor: 'end' })
-    values.forEach((value, index) => {
-      const height = (value / max) * plotHeight
-      const x = left + step * index + (step - barWidth) / 2
-      const y = bottom - height
-      const color = chartColor(element, index)
-      svg.appendChild(svgNode(doc, 'rect', { x, y, width: barWidth, height, rx: 2, fill: color }))
-      if (element.chart_show_values !== false) {
-        svgText(doc, svg, x + barWidth / 2, Math.max(top + base, y - 4), chartValueText(value), { fill: element.color ?? '#143d30', size: base - 2, anchor: 'middle' })
-      }
-      const label = element.chart_labels?.[index]
-      if (label) {
-        svgText(doc, svg, x + barWidth / 2, bottom + base + 8, truncateText(label, 14), { fill: element.chart_axis_color ?? '#6d7872', size: base - 2, anchor: 'middle' })
-      }
-    })
-  }
-
-  function appendHorizontalBarChart(
-    doc: Document,
-    svg: SVGElement,
-    element: LayoutElement,
-    top: number,
-    base: number,
-  ): void {
-    const left = 24
-    const right = 576
-    const bottom = 336
-    const gap = 12
-    const valueWidth = element.chart_show_values === false ? 0 : 46
-    const labelWidth = (right - left) * 0.38
-    const trackLeft = left + labelWidth + gap
-    const trackWidth = Math.max(40, right - valueWidth - gap - trackLeft)
-    const values = element.chart_values ?? []
-    const labels = element.chart_labels ?? []
-    const count = Math.max(1, values.length)
-    const rowHeight = Math.min(44, Math.max(12, (bottom - top) / count))
-    const barHeight = Math.min(16, Math.max(6, rowHeight * 0.36))
-    const barRadius = barHeight / 2
-    const labelSize = count > 12 ? Math.max(7, base - 4) : Math.max(8, base - 3)
-    const valueSize = Math.max(8, base - 2)
-    const max = Math.max(1, ...values)
-    const barColor = chartColor(element, 0)
-
-    svg.appendChild(
-      svgNode(doc, 'rect', {
-        x: 1,
-        y: 1,
-        width: 598,
-        height: 358,
-        rx: 5,
-        fill: 'none',
-        stroke: '#d7ddd6',
-        'stroke-width': 1.4,
-      }),
-    )
-    if (element.chart_title?.trim()) {
-      svgText(doc, svg, left, 32, element.chart_title, {
-        fill: element.color ?? '#143d30',
-        size: Math.max(13, base + 4),
-        weight: 700,
-      })
-    }
-    values.forEach((value, index) => {
-      const center = top + rowHeight * (index + 0.5)
-      const baseline = center + labelSize * 0.34
-      const label = labels[index]
-      if (label) {
-        svgText(doc, svg, left, baseline, truncateText(label, 26), {
-          fill: '#46534b',
-          size: labelSize,
-        })
-      }
-      const y = center - barHeight / 2
-      svg.appendChild(
-        svgNode(doc, 'rect', {
-          x: trackLeft,
-          y,
-          width: trackWidth,
-          height: barHeight,
-          rx: barRadius,
-          fill: '#eef1ec',
-        }),
-      )
-      const width = trackWidth * Math.min(1, Math.max(0, value / max))
-      if (width > 0.5) {
-        svg.appendChild(
-          svgNode(doc, 'rect', {
-            x: trackLeft,
-            y,
-            width: Math.max(width, barHeight),
-            height: barHeight,
-            rx: barRadius,
-            fill: barColor,
-          }),
-        )
-      }
-      if (element.chart_show_values !== false) {
-        svgText(doc, svg, right, baseline, chartValueText(value), {
-          fill: element.color ?? '#143d30',
-          size: valueSize,
-          anchor: 'end',
-          weight: 700,
-        })
-      }
-    })
-  }
-
-  function appendLineChart(
-    doc: Document,
-    svg: SVGElement,
-    element: LayoutElement,
-    top: number,
-    base: number,
-  ): void {
-    const left = 55
-    const right = 575
-    const bottom = 316
-    const plotHeight = Math.max(40, bottom - top)
-    const values = element.chart_values ?? []
-    const count = Math.max(1, values.length)
-    const step = count > 1 ? (right - left) / (count - 1) : 0
-    const max = Math.max(1, ...values)
-    const color = chartColor(element, 0)
-    svg.appendChild(svgNode(doc, 'line', { x1: left, y1: bottom, x2: right, y2: bottom, stroke: element.chart_axis_color ?? '#6d7872', 'stroke-width': 1.2 }))
-    const coordinates = values.map((value, index) => {
-      const x = count > 1 ? left + step * index : (left + right) / 2
-      const y = bottom - (value / max) * plotHeight
-      return { x, y, value }
-    })
-    const polyline = svgNode(doc, 'polyline', {
-      points: coordinates.map((point) => `${point.x},${point.y}`).join(' '),
-      fill: 'none',
-      stroke: color,
-      'stroke-width': 3,
-      'stroke-linejoin': 'round',
-      'stroke-linecap': 'round',
-    })
-    svg.appendChild(polyline)
-    coordinates.forEach((point, index) => {
-      svg.appendChild(svgNode(doc, 'circle', { cx: point.x, cy: point.y, r: 4.5, fill: color }))
-      if (element.chart_show_values !== false) {
-        svgText(doc, svg, point.x, Math.max(top + base, point.y - 8), chartValueText(point.value), { fill: element.color ?? '#143d30', size: base - 2, anchor: 'middle' })
-      }
-      const label = element.chart_labels?.[index]
-      if (label) {
-        svgText(doc, svg, point.x, bottom + base + 8, truncateText(label, 14), { fill: element.chart_axis_color ?? '#6d7872', size: base - 2, anchor: 'middle' })
-      }
-    })
-  }
-
-  function appendPieChart(
-    doc: Document,
-    svg: SVGElement,
-    element: LayoutElement,
-    top: number,
-    base: number,
-    donut: boolean,
-  ): void {
-    const values = element.chart_values ?? []
-    const total = values.reduce((sum, value) => sum + value, 0)
-    if (total <= 0) {
-      svgText(doc, svg, 300, 180, 'Belum ada data', { fill: element.chart_axis_color ?? '#6d7872', size: base + 2, anchor: 'middle' })
-      return
-    }
-    const showLegend = element.chart_show_legend !== false
-    const cx = showLegend ? 205 : 300
-    const cy = top + (316 - top) / 2
-    const outer = Math.min(125, Math.max(40, (316 - top) / 2 - 12))
-    const inner = donut ? outer * 0.55 : 0
-    const positives = values.filter((value) => value > 0).length
-    let angle = -Math.PI / 2
-    values.forEach((value, index) => {
-      if (value <= 0) return
-      const sweep = (value / total) * Math.PI * 2
-      const end = angle + sweep
-      const color = chartColor(element, index)
-      const x1 = cx + outer * Math.cos(angle)
-      const y1 = cy + outer * Math.sin(angle)
-      const x2 = cx + outer * Math.cos(end)
-      const y2 = cy + outer * Math.sin(end)
-      const large = sweep > Math.PI ? 1 : 0
-      if (positives === 1) {
-        svg.appendChild(svgNode(doc, 'circle', { cx, cy, r: outer, fill: color }))
-      } else if (donut) {
-        const ix1 = cx + inner * Math.cos(angle)
-        const iy1 = cy + inner * Math.sin(angle)
-        const ix2 = cx + inner * Math.cos(end)
-        const iy2 = cy + inner * Math.sin(end)
-        svg.appendChild(svgNode(doc, 'path', { d: `M ${x1} ${y1} A ${outer} ${outer} 0 ${large} 1 ${x2} ${y2} L ${ix2} ${iy2} A ${inner} ${inner} 0 ${large} 0 ${ix1} ${iy1} Z`, fill: color }))
-      } else {
-        svg.appendChild(svgNode(doc, 'path', { d: `M ${cx} ${cy} L ${x1} ${y1} A ${outer} ${outer} 0 ${large} 1 ${x2} ${y2} Z`, fill: color }))
-      }
-      if (element.chart_show_values !== false && sweep > 0.35) {
-        const mid = angle + sweep / 2
-        const radius = donut ? (outer + inner) / 2 : outer * 0.62
-        svgText(doc, svg, cx + radius * Math.cos(mid), cy + radius * Math.sin(mid) + base * 0.35, `${Math.round((sweep / (Math.PI * 2)) * 100)}%`, { fill: '#ffffff', size: base - 2, anchor: 'middle', weight: 700 })
-      }
-      angle = end
-    })
-    if (donut) {
-      svg.appendChild(svgNode(doc, 'circle', { cx, cy, r: inner, fill: element.fill ?? '#ffffff' }))
-    }
-    if (showLegend) {
-      let y = top + base
-      element.chart_labels?.slice(0, 12).forEach((label, index) => {
-        svg.appendChild(svgNode(doc, 'rect', { x: 355, y: y - 10, width: 12, height: 12, rx: 2, fill: chartColor(element, index) }))
-        svgText(doc, svg, 374, y, truncateText(label, 20), { fill: element.color ?? '#143d30', size: base - 3 })
-        y += base + 7
-      })
-    }
-  }
-
-  function truncateText(value: string, max: number): string {
-    return value.length <= max ? value : `${value.slice(0, max - 1)}…`
   }
 
   function clearHiddenBlockRule(doc: Document, id: string): void {
@@ -3589,6 +3229,18 @@
       card_icon_bg: template.iconBg,
       border_width: template.borderWidth,
       radius: template.radius,
+      card_label_font_family: 'sans',
+      card_label_font_size: 0,
+      card_label_color: '',
+      card_value_font_family: 'sans',
+      card_value_font_size: 0,
+      card_value_color: '',
+      card_unit_font_family: 'sans',
+      card_unit_font_size: 0,
+      card_unit_color: '',
+      card_detail_font_family: 'sans',
+      card_detail_font_size: 0,
+      card_detail_color: '',
     }
     if (template.icon && !activeElement.card_icon?.trim()) {
       patch.card_icon = template.icon
@@ -3620,6 +3272,30 @@
   function portal(node: HTMLElement): { destroy: () => void } {
     document.body.appendChild(node)
     return { destroy: () => node.remove() }
+  }
+
+  function syncTableColumnStyles(element: LayoutElement): void {
+    const columns = Math.max(1, ...(element.table_rows ?? []).map((row) => row.length))
+    element.table_column_backgrounds = Array.from(
+      { length: columns },
+      (_, index) => element.table_column_backgrounds?.[index] ?? '',
+    )
+    element.table_column_colors = Array.from(
+      { length: columns },
+      (_, index) => element.table_column_colors?.[index] ?? '',
+    )
+    element.table_column_font_families = Array.from(
+      { length: columns },
+      (_, index) => element.table_column_font_families?.[index] ?? '',
+    )
+    element.table_column_font_sizes = Array.from(
+      { length: columns },
+      (_, index) => element.table_column_font_sizes?.[index] ?? 0,
+    )
+    element.table_column_aligns = Array.from({ length: columns }, (_, index) => {
+      const value = element.table_column_aligns?.[index]
+      return value === 'left' || value === 'center' || value === 'right' ? value : ''
+    })
   }
 
   function updateTableCell(rowIndex: number, columnIndex: number, value: string) {
@@ -3654,6 +3330,7 @@
     pushHistory()
     const rows = (activeElement.table_rows ?? []).map((row) => [...row, ''])
     activeElement.table_rows = rows
+    syncTableColumnStyles(activeElement)
     applyLayoutToDom()
   }
 
@@ -3664,55 +3341,116 @@
     if (columns <= 1) return
     pushHistory()
     activeElement.table_rows = rows.map((row) => row.slice(0, -1))
+    syncTableColumnStyles(activeElement)
     applyLayoutToDom()
   }
 
-  function parseLabelList(value: string): string[] {
-    return value
-      .split(/[\n,]+/)
-      .map((item) => item.trim())
-      .filter(Boolean)
+  function openChartEditor(): void {
+    if (!selected || selected.kind !== 'element') return
+    const element = getElement(selected.page, selected.id)
+    if (!element || element.type !== 'chart') return
+    chartEditorTarget = { page: selected.page, id: selected.id }
   }
 
-  function parseNumberList(value: string): number[] {
-    return value
-      .split(/[\n,;]+/)
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .map((item) => {
-        const normalized = item.replace(/\./g, '').replace(',', '.')
-        const number = Number(normalized)
-        return Number.isFinite(number) ? number : 0
-      })
+  function contextEditChart(): void {
+    const menu = contextMenu
+    if (!menu || menu.kind !== 'element' || !menu.id) return
+    const element = getElement(menu.page, menu.id)
+    if (!element || element.type !== 'chart') {
+      closeContextMenu()
+      return
+    }
+    selected = { kind: 'element', page: menu.page, id: menu.id }
+    chartEditorTarget = { page: menu.page, id: menu.id }
+    closeContextMenu()
   }
 
-  function normalizeChart(labels: string[], values: number[]) {
-    if (!activeElement || activeElement.type !== 'chart' || activeElement.binding) return
-    const nextLabels = labels.length ? labels : ['A', 'B', 'C']
-    const nextValues = nextLabels.map((_, index) => values[index] ?? 0)
-    const colors = activeElement.chart_colors ?? []
-    activeElement.chart_labels = nextLabels
-    activeElement.chart_values = nextValues
-    activeElement.chart_colors = nextLabels.map(
-      (_, index) => colors[index] ?? CHART_PALETTE[index % CHART_PALETTE.length],
-    )
+  function saveChartEditor(patch: Partial<LayoutElement>): void {
+    const target = chartEditorTarget
+    if (!target) return
+    const element = getElement(target.page, target.id)
+    if (!element) {
+      chartEditorTarget = null
+      return
+    }
+    pushHistory()
+    Object.assign(element, patch)
+    clampElement(element)
     applyLayoutToDom()
+    chartEditorTarget = null
+    toast.success('Grafik diperbarui.')
   }
 
-  function updateChartLabels(value: string) {
-    if (!activeElement || activeElement.type !== 'chart' || activeElement.binding) return
-    normalizeChart(parseLabelList(value), activeElement.chart_values ?? [])
+  function openCardEditor(): void {
+    if (!selected || selected.kind !== 'element') return
+    const element = getElement(selected.page, selected.id)
+    if (!element || element.type !== 'card') return
+    cardEditorTarget = { page: selected.page, id: selected.id }
   }
 
-  function updateChartValues(value: string) {
-    if (!activeElement || activeElement.type !== 'chart' || activeElement.binding) return
-    normalizeChart(activeElement.chart_labels ?? [], parseNumberList(value))
+  function contextEditCard(): void {
+    const menu = contextMenu
+    if (!menu || menu.kind !== 'element' || !menu.id) return
+    const element = getElement(menu.page, menu.id)
+    if (!element || element.type !== 'card') {
+      closeContextMenu()
+      return
+    }
+    selected = { kind: 'element', page: menu.page, id: menu.id }
+    cardEditorTarget = { page: menu.page, id: menu.id }
+    closeContextMenu()
   }
 
-  function updateChartColors(value: string) {
-    if (!activeElement || activeElement.type !== 'chart') return
-    activeElement.chart_colors = parseLabelList(value)
+  function saveCardEditor(patch: Partial<LayoutElement>): void {
+    const target = cardEditorTarget
+    if (!target) return
+    const element = getElement(target.page, target.id)
+    if (!element) {
+      cardEditorTarget = null
+      return
+    }
+    pushHistory()
+    Object.assign(element, patch)
+    clampElement(element)
     applyLayoutToDom()
+    cardEditorTarget = null
+    toast.success('Kartu diperbarui.')
+  }
+
+  function openTableEditor(): void {
+    if (!selected || selected.kind !== 'element') return
+    const element = getElement(selected.page, selected.id)
+    if (!element || element.type !== 'table') return
+    tableEditorTarget = { page: selected.page, id: selected.id }
+  }
+
+  function contextEditTable(): void {
+    const menu = contextMenu
+    if (!menu || menu.kind !== 'element' || !menu.id) return
+    const element = getElement(menu.page, menu.id)
+    if (!element || element.type !== 'table') {
+      closeContextMenu()
+      return
+    }
+    selected = { kind: 'element', page: menu.page, id: menu.id }
+    tableEditorTarget = { page: menu.page, id: menu.id }
+    closeContextMenu()
+  }
+
+  function saveTableEditor(patch: Partial<LayoutElement>): void {
+    const target = tableEditorTarget
+    if (!target) return
+    const element = getElement(target.page, target.id)
+    if (!element) {
+      tableEditorTarget = null
+      return
+    }
+    pushHistory()
+    Object.assign(element, patch)
+    clampElement(element)
+    applyLayoutToDom()
+    tableEditorTarget = null
+    toast.success('Tabel diperbarui.')
   }
 
   function openMediaLibrary() {
@@ -4978,7 +4716,47 @@
     </section>
 
     <aside bind:this={asideEl} class="space-y-4 self-start lg:sticky lg:top-24 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:pr-1 max-lg:fixed max-lg:inset-y-20 max-lg:right-3 max-lg:z-40 max-lg:w-[min(92vw,340px)] max-lg:overflow-y-auto max-lg:rounded-2xl max-lg:bg-canvas max-lg:p-2 max-lg:shadow-2xl {panelOpen ? '' : 'max-lg:hidden'}">
-      <button class="btn btn-secondary btn-sm w-full lg:hidden" onclick={() => (panelOpen = false)}>Tutup panel properti</button>
+      <button class="btn btn-secondary btn-sm w-full lg:hidden" onclick={() => (panelOpen = false)}>Tutup panel</button>
+
+      <nav
+        class="sticky top-0 z-20 -mx-1 grid grid-cols-4 gap-0.5 rounded-xl border border-line bg-white/95 p-1 shadow-sm backdrop-blur"
+        aria-label="Panel editor desain"
+      >
+        <button
+          type="button"
+          class="flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] font-semibold transition-colors {sidebarTab === 'properties' ? 'bg-forest-800 text-white shadow-sm' : 'text-ink-soft hover:bg-stone-100'}"
+          aria-pressed={sidebarTab === 'properties'}
+          onclick={() => switchSidebarTab('properties')}
+        >
+          <SlidersHorizontal size={15} /> Properti
+        </button>
+        <button
+          type="button"
+          class="flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] font-semibold transition-colors {sidebarTab === 'layers' ? 'bg-forest-800 text-white shadow-sm' : 'text-ink-soft hover:bg-stone-100'}"
+          aria-pressed={sidebarTab === 'layers'}
+          onclick={() => switchSidebarTab('layers')}
+        >
+          <Layers size={15} /> Layer
+        </button>
+        <button
+          type="button"
+          class="flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] font-semibold transition-colors {sidebarTab === 'coverage' ? 'bg-forest-800 text-white shadow-sm' : 'text-ink-soft hover:bg-stone-100'}"
+          aria-pressed={sidebarTab === 'coverage'}
+          onclick={() => switchSidebarTab('coverage')}
+        >
+          <BarChart3 size={15} /> Cakupan
+        </button>
+        <button
+          type="button"
+          class="flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] font-semibold transition-colors {sidebarTab === 'page' ? 'bg-forest-800 text-white shadow-sm' : 'text-ink-soft hover:bg-stone-100'}"
+          aria-pressed={sidebarTab === 'page'}
+          onclick={() => switchSidebarTab('page')}
+        >
+          <FileText size={15} /> Halaman
+        </button>
+      </nav>
+
+      {#if sidebarTab === 'properties'}
       {#if activeElement}
         <section class="card overflow-hidden">
           <div class="panel-heading">
@@ -5282,6 +5060,14 @@
                   <CardTemplatePicker value={activeElement.card_template ?? 'classic'} onselect={applyCardTemplate} />
                 </div>
               </div>
+              <div class="rounded-xl border border-forest-200 bg-forest-50/70 p-3.5">
+                <p class="text-[11px] leading-relaxed text-forest-800">
+                  Atur font, ukuran, dan warna label, nilai, unit, dan detail secara terpisah lewat editor kartu.
+                </p>
+                <Button variant="primary" size="sm" class="mt-2.5 w-full" onclick={openCardEditor}>
+                  <SlidersHorizontal size={14} /> Buka editor kartu
+                </Button>
+              </div>
               {#if activeCardTemplate.layout !== 'none'}
                 <div class="rounded-xl border border-line p-3">
                   <div class="flex items-center gap-3">
@@ -5408,12 +5194,6 @@
                     oninput={(event) => updateElement({ fill: (event.currentTarget as HTMLInputElement).value })} />
                 </label>
                 <label class="block">
-                  <span class="label">Warna nilai</span>
-                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.color)}
-                    onfocus={pushHistory}
-                    oninput={(event) => updateElement({ color: (event.currentTarget as HTMLInputElement).value })} />
-                </label>
-                <label class="block">
                   <span class="label">Sudut (mm)</span>
                   <input class="input py-1.5 text-xs" type="number" min="0" step="0.5" value={activeElement.radius ?? 1.5}
                     onfocus={pushHistory}
@@ -5433,6 +5213,14 @@
                 </label>
               </div>
             {:else if activeElement.type === 'table'}
+              <div class="rounded-xl border border-forest-200 bg-forest-50/70 p-3.5">
+                <p class="text-[11px] leading-relaxed text-forest-800">
+                  Atur isi tabel, header, font, dan warna latar/teks tiap kolom secara terpisah lewat editor tabel.
+                </p>
+                <Button variant="primary" size="sm" class="mt-2.5 w-full" onclick={openTableEditor}>
+                  <SlidersHorizontal size={14} /> Buka editor tabel
+                </Button>
+              </div>
               <label class="block">
                 <span class="label">Sumber data</span>
                 <select class="input py-1.5 text-xs" value={activeElement.binding ?? ''}
@@ -5531,9 +5319,9 @@
                 </label>
                 <label class="block">
                   <span class="label">Baris ganjil</span>
-                  <input class="input py-1.5 text-xs" value={activeElement.table_stripe ?? '#f6f8f5'}
+                  <input class="input h-9 py-1" type="color" value={pickerColor(activeElement.table_stripe, '#f6f8f5')}
                     onfocus={pushHistory}
-                    onchange={(event) => updateElement({ table_stripe: (event.currentTarget as HTMLInputElement).value }, true)} />
+                    oninput={(event) => updateElement({ table_stripe: (event.currentTarget as HTMLInputElement).value })} />
                 </label>
               </div>
             {:else if activeElement.type === 'chart'}
@@ -5591,31 +5379,14 @@
                   onfocus={pushHistory}
                   onchange={(event) => updateElement({ chart_title: (event.currentTarget as HTMLInputElement).value }, true)} />
               </label>
-              {#if !activeElement.binding}
-                <label class="block">
-                  <span class="label">Label (satu per baris)</span>
-                  <textarea class="textarea text-xs" rows="4" value={(activeElement.chart_labels ?? []).join('\n')}
-                    data-chart-field="labels"
-                    onfocus={pushHistory}
-                    onchange={(event) => updateChartLabels((event.currentTarget as HTMLTextAreaElement).value)}
-                  ></textarea>
-                </label>
-                <label class="block">
-                  <span class="label">Nilai (satu per baris)</span>
-                  <textarea class="textarea text-xs" rows="4" value={(activeElement.chart_values ?? []).join('\n')}
-                    data-chart-field="values"
-                    onfocus={pushHistory}
-                    onchange={(event) => updateChartValues((event.currentTarget as HTMLTextAreaElement).value)}
-                  ></textarea>
-                </label>
-              {/if}
-              <label class="block">
-                <span class="label">Warna (pisahkan koma)</span>
-                <input class="input py-1.5 text-xs" value={(activeElement.chart_colors ?? []).join(', ')}
-                  data-chart-field="colors"
-                  onfocus={pushHistory}
-                  onchange={(event) => updateChartColors((event.currentTarget as HTMLInputElement).value)} />
-              </label>
+              <div class="rounded-xl border border-forest-200 bg-forest-50/70 p-3.5">
+                <p class="text-[11px] leading-relaxed text-forest-800">
+                  Atur font judul, wrap judul, ukuran &amp; sudut label, font nilai, warna seri, serta legend lewat editor grafik.
+                </p>
+                <Button variant="primary" size="sm" class="mt-2.5 w-full" onclick={openChartEditor}>
+                  <SlidersHorizontal size={14} /> Buka editor grafik
+                </Button>
+              </div>
               <div class="flex flex-wrap items-center gap-4 text-xs">
                 <label class="flex items-center gap-2"><input type="checkbox" checked={activeElement.chart_show_values !== false}
                   onchange={(event) => updateElement({ chart_show_values: (event.currentTarget as HTMLInputElement).checked }, true)} /> Tampilkan nilai</label>
@@ -5786,6 +5557,7 @@
           </ul>
         </section>
       {/if}
+      {/if}
 
       {#snippet cakupanUnits(options: {
         key: string
@@ -5867,6 +5639,7 @@
         {/if}
       {/snippet}
 
+      {#if sidebarTab === 'coverage'}
       <section class="card overflow-hidden">
         <div class="panel-heading">
           <div>
@@ -6064,7 +5837,9 @@
           {/if}
         </div>
       </section>
+      {/if}
 
+      {#if sidebarTab === 'page'}
       <section class="card overflow-hidden">
         <div class="panel-heading">
           <div>
@@ -6237,7 +6012,9 @@
           <p class="text-[10px] leading-relaxed text-ink-muted">Template menyimpan semua halaman, mode blank/laporan, orientasi, dan gambar. Menerapkannya akan mengganti desain versi impor ini (bisa di-undo).</p>
         </div>
       </section>
+      {/if}
 
+      {#if sidebarTab === 'layers'}
       <section class="card overflow-hidden">
         <div class="panel-heading">
           <div>
@@ -6303,6 +6080,7 @@
           </div>
         </section>
       {/if}
+      {/if}
     </aside>
   </div>
 
@@ -6319,6 +6097,36 @@
     onclose={() => (shareTarget = null)}
   />
 
+  {#if chartEditorTarget && chartEditorElement}
+    <ChartEditorDialog
+      element={chartEditorElement}
+      dataLocked={chartEditorLocked}
+      sourceLabel={chartEditorSourceLabel}
+      onclose={() => (chartEditorTarget = null)}
+      onsave={saveChartEditor}
+    />
+  {/if}
+
+  {#if cardEditorTarget && cardEditorElement}
+    <CardEditorDialog
+      element={cardEditorElement}
+      dataLocked={cardEditorLocked}
+      sourceLabel={cardEditorSourceLabel}
+      onclose={() => (cardEditorTarget = null)}
+      onsave={saveCardEditor}
+    />
+  {/if}
+
+  {#if tableEditorTarget && tableEditorElement}
+    <TableEditorDialog
+      element={tableEditorElement}
+      dataLocked={tableEditorLocked}
+      sourceLabel={tableEditorSourceLabel}
+      onclose={() => (tableEditorTarget = null)}
+      onsave={saveTableEditor}
+    />
+  {/if}
+
   {#if contextMenu}
     <div use:portal>
       <div
@@ -6329,6 +6137,12 @@
       >
         {#if contextMenu.kind === 'element' && contextElement}
           <p class="truncate px-3 pt-1 pb-1.5 text-[9px] font-bold tracking-[0.16em] text-ink-muted uppercase">{elementLabel(contextElement)}</p>
+          {#if contextElement.type === 'chart' || contextElement.type === 'card' || contextElement.type === 'table'}
+            <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-forest-800 hover:bg-forest-50" onclick={contextElement.type === 'chart' ? contextEditChart : contextElement.type === 'card' ? contextEditCard : contextEditTable}>
+              <SlidersHorizontal size={14} class="shrink-0" /> {contextElement.type === 'chart' ? 'Edit grafik' : contextElement.type === 'card' ? 'Edit kartu' : 'Edit tabel'}
+            </button>
+            <div class="my-1 h-px bg-line"></div>
+          {/if}
           <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-stone-100" onclick={() => contextMoveLayer(1)}>
             <ArrowUp size={14} class="shrink-0 text-ink-muted" /> Naikkan layer
           </button>
@@ -6382,7 +6196,7 @@
   {/if}
 
   {#if !panelOpen}
-    <button class="btn btn-primary fixed right-5 bottom-5 z-40 shadow-lift lg:hidden" onclick={() => (panelOpen = true)}>Properti</button>
+    <button class="btn btn-primary fixed right-5 bottom-5 z-40 shadow-lift lg:hidden" onclick={() => (panelOpen = true)}>Panel</button>
   {/if}
 
   {#if textPickerOpen}

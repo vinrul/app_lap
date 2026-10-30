@@ -92,6 +92,13 @@ pub struct LayoutElement {
     pub table_header_bg: String,
     pub table_header_color: String,
     pub table_stripe: String,
+    pub table_header_font_family: String,
+    pub table_header_font_size: f64,
+    pub table_column_backgrounds: Vec<String>,
+    pub table_column_colors: Vec<String>,
+    pub table_column_font_families: Vec<String>,
+    pub table_column_font_sizes: Vec<f64>,
+    pub table_column_aligns: Vec<String>,
     pub chart_type: String,
     pub chart_title: String,
     pub chart_labels: Vec<String>,
@@ -100,11 +107,31 @@ pub struct LayoutElement {
     pub chart_show_values: bool,
     pub chart_show_legend: bool,
     pub chart_axis_color: String,
+    pub chart_title_font_family: String,
+    pub chart_title_font_size: f64,
+    pub chart_title_wrap: bool,
+    pub chart_label_font_size: f64,
+    pub chart_label_rotation: f64,
+    pub chart_value_font_family: String,
+    pub chart_value_font_size: f64,
+    pub chart_legend_font_size: f64,
     pub card_label: String,
     pub card_value: String,
     pub card_unit: String,
     pub card_detail: String,
     pub card_accent: String,
+    pub card_label_font_family: String,
+    pub card_label_font_size: f64,
+    pub card_label_color: String,
+    pub card_value_font_family: String,
+    pub card_value_font_size: f64,
+    pub card_value_color: String,
+    pub card_unit_font_family: String,
+    pub card_unit_font_size: f64,
+    pub card_unit_color: String,
+    pub card_detail_font_family: String,
+    pub card_detail_font_size: f64,
+    pub card_detail_color: String,
     pub card_template: String,
     pub card_icon: String,
     pub card_icon_color: String,
@@ -196,6 +223,13 @@ impl Default for LayoutElement {
             table_header_bg: String::new(),
             table_header_color: String::new(),
             table_stripe: String::new(),
+            table_header_font_family: String::new(),
+            table_header_font_size: 0.0,
+            table_column_backgrounds: Vec::new(),
+            table_column_colors: Vec::new(),
+            table_column_font_families: Vec::new(),
+            table_column_font_sizes: Vec::new(),
+            table_column_aligns: Vec::new(),
             chart_type: String::new(),
             chart_title: String::new(),
             chart_labels: Vec::new(),
@@ -204,11 +238,31 @@ impl Default for LayoutElement {
             chart_show_values: true,
             chart_show_legend: true,
             chart_axis_color: String::new(),
+            chart_title_font_family: String::new(),
+            chart_title_font_size: 0.0,
+            chart_title_wrap: false,
+            chart_label_font_size: 0.0,
+            chart_label_rotation: 0.0,
+            chart_value_font_family: String::new(),
+            chart_value_font_size: 0.0,
+            chart_legend_font_size: 0.0,
             card_label: String::new(),
             card_value: String::new(),
             card_unit: String::new(),
             card_detail: String::new(),
             card_accent: String::new(),
+            card_label_font_family: String::new(),
+            card_label_font_size: 0.0,
+            card_label_color: String::new(),
+            card_value_font_family: String::new(),
+            card_value_font_size: 0.0,
+            card_value_color: String::new(),
+            card_unit_font_family: String::new(),
+            card_unit_font_size: 0.0,
+            card_unit_color: String::new(),
+            card_detail_font_family: String::new(),
+            card_detail_font_size: 0.0,
+            card_detail_color: String::new(),
             card_template: "classic".to_string(),
             card_icon: String::new(),
             card_icon_color: String::new(),
@@ -513,14 +567,7 @@ impl LayoutElement {
                 self.src.clear();
                 self.alt.clear();
                 self.font_size = clamp_num(self.font_size, 6.0, 72.0, 11.0);
-                self.font_family = {
-                    let key = self.font_family.trim().to_ascii_lowercase();
-                    if key == "sans" || key == "serif" || super::fonts::find(&key).is_some() {
-                        key
-                    } else {
-                        "sans".to_string()
-                    }
-                };
+                self.font_family = safe_font_family(&self.font_family);
                 self.color = safe_color(&self.color, "#143d30");
                 self.background = safe_color(&self.background, "transparent");
                 self.align = match self.align.trim().to_ascii_lowercase().as_str() {
@@ -548,6 +595,67 @@ impl LayoutElement {
                 self.table_header_bg = safe_color(&self.table_header_bg, "#143d30");
                 self.table_header_color = safe_color(&self.table_header_color, "#ffffff");
                 self.table_stripe = safe_color(&self.table_stripe, "#f6f8f5");
+                self.font_family = safe_font_family(&self.font_family);
+                self.table_header_font_family = safe_font_family(&self.table_header_font_family);
+                self.table_header_font_size =
+                    clamp_num(self.table_header_font_size, 0.0, 72.0, 0.0);
+                let row_columns = self
+                    .table_rows
+                    .iter()
+                    .map(|row| row.len())
+                    .max()
+                    .unwrap_or(0);
+                let style_columns = [
+                    self.table_column_backgrounds.len(),
+                    self.table_column_colors.len(),
+                    self.table_column_font_families.len(),
+                    self.table_column_font_sizes.len(),
+                    self.table_column_aligns.len(),
+                ]
+                .into_iter()
+                .max()
+                .unwrap_or(0);
+                let column_count = if self.binding.is_empty() {
+                    row_columns.max(style_columns).max(1)
+                } else {
+                    style_columns.max(1)
+                }
+                .min(12);
+                let mut backgrounds = std::mem::take(&mut self.table_column_backgrounds);
+                backgrounds.resize(column_count, String::new());
+                self.table_column_backgrounds = backgrounds
+                    .into_iter()
+                    .map(|color| safe_color(&color, ""))
+                    .collect();
+                let mut colors = std::mem::take(&mut self.table_column_colors);
+                colors.resize(column_count, String::new());
+                self.table_column_colors = colors
+                    .into_iter()
+                    .map(|color| safe_color(&color, ""))
+                    .collect();
+                let mut families = std::mem::take(&mut self.table_column_font_families);
+                families.resize(column_count, String::new());
+                self.table_column_font_families = families
+                    .into_iter()
+                    .map(|family| safe_optional_font_family(&family))
+                    .collect();
+                let mut sizes = std::mem::take(&mut self.table_column_font_sizes);
+                sizes.resize(column_count, 0.0);
+                self.table_column_font_sizes = sizes
+                    .into_iter()
+                    .map(|size| clamp_num(size, 0.0, 72.0, 0.0))
+                    .collect();
+                let mut aligns = std::mem::take(&mut self.table_column_aligns);
+                aligns.resize(column_count, String::new());
+                self.table_column_aligns = aligns
+                    .into_iter()
+                    .map(|align| match align.trim().to_ascii_lowercase().as_str() {
+                        "left" => "left".to_string(),
+                        "center" => "center".to_string(),
+                        "right" => "right".to_string(),
+                        _ => String::new(),
+                    })
+                    .collect();
             }
             "card" => {
                 self.src.clear();
@@ -589,6 +697,18 @@ impl LayoutElement {
                 self.border_width = clamp_num(self.border_width, 0.0, 10.0, 2.0);
                 self.radius = clamp_num(self.radius, 0.0, 20.0, 1.5);
                 self.font_size = clamp_num(self.font_size, 6.0, 24.0, 9.0);
+                self.card_label_font_family = safe_font_family(&self.card_label_font_family);
+                self.card_label_font_size = clamp_num(self.card_label_font_size, 0.0, 72.0, 0.0);
+                self.card_label_color = safe_color(&self.card_label_color, "");
+                self.card_value_font_family = safe_font_family(&self.card_value_font_family);
+                self.card_value_font_size = clamp_num(self.card_value_font_size, 0.0, 72.0, 0.0);
+                self.card_value_color = safe_color(&self.card_value_color, "");
+                self.card_unit_font_family = safe_font_family(&self.card_unit_font_family);
+                self.card_unit_font_size = clamp_num(self.card_unit_font_size, 0.0, 72.0, 0.0);
+                self.card_unit_color = safe_color(&self.card_unit_color, "");
+                self.card_detail_font_family = safe_font_family(&self.card_detail_font_family);
+                self.card_detail_font_size = clamp_num(self.card_detail_font_size, 0.0, 72.0, 0.0);
+                self.card_detail_color = safe_color(&self.card_detail_color, "");
             }
             "icon" => {
                 self.src.clear();
@@ -654,6 +774,14 @@ impl LayoutElement {
                 self.fill = safe_color(&self.fill, "#ffffff");
                 self.color = safe_color(&self.color, "#143d30");
                 self.font_size = clamp_num(self.font_size, 6.0, 24.0, 9.0);
+                self.chart_title_font_family = safe_font_family(&self.chart_title_font_family);
+                self.chart_title_font_size = clamp_num(self.chart_title_font_size, 0.0, 48.0, 0.0);
+                self.chart_label_font_size = clamp_num(self.chart_label_font_size, 0.0, 32.0, 0.0);
+                self.chart_label_rotation = clamp_num(self.chart_label_rotation, -90.0, 90.0, 0.0);
+                self.chart_value_font_family = safe_font_family(&self.chart_value_font_family);
+                self.chart_value_font_size = clamp_num(self.chart_value_font_size, 0.0, 32.0, 0.0);
+                self.chart_legend_font_size =
+                    clamp_num(self.chart_legend_font_size, 0.0, 32.0, 0.0);
             }
             _ => unreachable!(),
         }
@@ -743,6 +871,13 @@ impl LayoutElement {
         self.table_header_bg.clear();
         self.table_header_color.clear();
         self.table_stripe.clear();
+        self.table_header_font_family.clear();
+        self.table_header_font_size = 0.0;
+        self.table_column_backgrounds.clear();
+        self.table_column_colors.clear();
+        self.table_column_font_families.clear();
+        self.table_column_font_sizes.clear();
+        self.table_column_aligns.clear();
     }
 
     fn clear_chart(&mut self) {
@@ -751,6 +886,14 @@ impl LayoutElement {
         self.chart_values.clear();
         self.chart_colors.clear();
         self.chart_axis_color.clear();
+        self.chart_title_font_family.clear();
+        self.chart_title_font_size = 0.0;
+        self.chart_title_wrap = false;
+        self.chart_label_font_size = 0.0;
+        self.chart_label_rotation = 0.0;
+        self.chart_value_font_family.clear();
+        self.chart_value_font_size = 0.0;
+        self.chart_legend_font_size = 0.0;
     }
 
     fn clear_table_chart(&mut self) {
@@ -818,6 +961,26 @@ fn safe_color(value: &str, fallback: &str) -> String {
         }
     }
     fallback.to_string()
+}
+
+fn safe_font_family(value: &str) -> String {
+    let key = value.trim().to_ascii_lowercase();
+    if key == "sans" || key == "serif" || super::fonts::find(&key).is_some() {
+        key
+    } else {
+        "sans".to_string()
+    }
+}
+
+fn safe_optional_font_family(value: &str) -> String {
+    let key = value.trim().to_ascii_lowercase();
+    if key.is_empty() {
+        String::new()
+    } else if key == "sans" || key == "serif" || super::fonts::find(&key).is_some() {
+        key
+    } else {
+        String::new()
+    }
 }
 
 fn clamp_num(value: f64, min: f64, max: f64, fallback: f64) -> f64 {
@@ -1343,6 +1506,126 @@ mod tests {
         assert_eq!(page.elements[0].font_family, "lora");
         assert_eq!(page.elements[1].font_family, "serif");
         assert_eq!(page.elements[2].font_family, "sans");
+    }
+
+    #[test]
+    fn sanitizes_chart_typography() {
+        let layout = ReportLayout {
+            version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
+            pages: vec![PageLayout {
+                page: 2,
+                blocks: BTreeMap::new(),
+                elements: vec![LayoutElement {
+                    id: "chart-style".into(),
+                    kind: "chart".into(),
+                    chart_title_font_family: "LORA".into(),
+                    chart_title_font_size: 99.0,
+                    chart_title_wrap: true,
+                    chart_label_font_size: 4.0,
+                    chart_label_rotation: 180.0,
+                    chart_value_font_family: "comic-sans".into(),
+                    chart_value_font_size: 4.0,
+                    chart_legend_font_size: 50.0,
+                    ..Default::default()
+                }],
+                ..PageLayout::default()
+            }],
+        };
+        let sanitized = layout.sanitize();
+        let chart = &sanitized.pages[1].elements[0];
+        assert_eq!(chart.chart_title_font_family, "lora");
+        assert_eq!(chart.chart_title_font_size, 48.0);
+        assert!(chart.chart_title_wrap);
+        assert_eq!(chart.chart_label_font_size, 4.0);
+        assert_eq!(chart.chart_label_rotation, 90.0);
+        assert_eq!(chart.chart_value_font_family, "sans");
+        assert_eq!(chart.chart_value_font_size, 4.0);
+        assert_eq!(chart.chart_legend_font_size, 32.0);
+    }
+
+    #[test]
+    fn sanitizes_card_typography() {
+        let layout = ReportLayout {
+            version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
+            pages: vec![PageLayout {
+                page: 2,
+                blocks: BTreeMap::new(),
+                elements: vec![LayoutElement {
+                    id: "card-style".into(),
+                    kind: "card".into(),
+                    card_label_font_family: "LORA".into(),
+                    card_label_font_size: 99.0,
+                    card_label_color: "not-a-color".into(),
+                    card_value_font_family: "comic-sans".into(),
+                    card_value_font_size: 4.0,
+                    card_value_color: "#654321".into(),
+                    card_detail_font_size: -5.0,
+                    ..Default::default()
+                }],
+                ..PageLayout::default()
+            }],
+        };
+        let sanitized = layout.sanitize();
+        let card = &sanitized.pages[1].elements[0];
+        assert_eq!(card.card_label_font_family, "lora");
+        assert_eq!(card.card_label_font_size, 72.0);
+        assert_eq!(card.card_label_color, "");
+        assert_eq!(card.card_value_font_family, "sans");
+        assert_eq!(card.card_value_font_size, 4.0);
+        assert_eq!(card.card_value_color, "#654321");
+        assert_eq!(card.card_detail_font_size, 0.0);
+    }
+
+    #[test]
+    fn sanitizes_table_column_styles() {
+        let layout = ReportLayout {
+            version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
+            pages: vec![PageLayout {
+                page: 2,
+                blocks: BTreeMap::new(),
+                elements: vec![LayoutElement {
+                    id: "table-style".into(),
+                    kind: "table".into(),
+                    table_rows: vec![
+                        vec!["A".into(), "B".into(), "C".into()],
+                        vec!["1".into(), "2".into(), "3".into()],
+                    ],
+                    font_family: "MONTSERRAT".into(),
+                    table_header_font_family: "ROBOTO".into(),
+                    table_header_font_size: 99.0,
+                    table_column_backgrounds: vec![
+                        "#ffffff".into(),
+                        "not-a-color".into(),
+                        "transparent".into(),
+                    ],
+                    table_column_colors: vec!["#123456".into(), "bad".into()],
+                    table_column_font_families: vec!["LORA".into(), "comic-sans".into()],
+                    table_column_font_sizes: vec![9.0, -1.0, 99.0],
+                    table_column_aligns: vec!["CENTER".into(), "weird".into(), "right".into()],
+                    ..Default::default()
+                }],
+                ..PageLayout::default()
+            }],
+        };
+        let sanitized = layout.sanitize();
+        let table = &sanitized.pages[1].elements[0];
+        assert_eq!(table.font_family, "montserrat");
+        assert_eq!(table.table_header_font_family, "roboto");
+        assert_eq!(table.table_header_font_size, 72.0);
+        assert_eq!(
+            table.table_column_backgrounds,
+            vec!["#ffffff", "", "transparent"]
+        );
+        assert_eq!(table.table_column_colors, vec!["#123456", "", ""]);
+        assert_eq!(table.table_column_font_families, vec!["lora", "", ""]);
+        assert_eq!(table.table_column_font_sizes, vec![9.0, 0.0, 72.0]);
+        assert_eq!(table.table_column_aligns, vec!["center", "", "right"]);
     }
 
     #[test]

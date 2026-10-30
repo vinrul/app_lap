@@ -33,13 +33,23 @@ pub struct DashboardResponse {
 
 pub async fn load(db: &SqlitePool, config: &Config) -> ApiResult<DashboardResponse> {
     let counts = DashboardCounts {
-        periods: scalar(db, "SELECT COUNT(*) FROM report_periods").await?,
+        periods: scalar(
+            db,
+            "SELECT COUNT(*) FROM report_periods WHERE archived_at IS NULL",
+        )
+        .await?,
         imports: scalar(db, "SELECT COUNT(*) FROM imports").await?,
-        reports: scalar(db, "SELECT COUNT(*) FROM report_runs").await?,
+        reports: scalar(
+            db,
+            "SELECT COUNT(*) FROM report_runs r
+             JOIN report_periods p ON p.id = r.period_id
+             WHERE p.archived_at IS NULL",
+        )
+        .await?,
         rows: scalar(db, "SELECT COUNT(*) FROM import_rows").await?,
     };
 
-    let periods = periods::service::list(db).await?;
+    let periods = periods::service::list(db, false).await?;
     let latest_period = periods.first().cloned();
     let latest_import = imports::service::list(db).await?.into_iter().next();
 
@@ -77,6 +87,7 @@ async fn recent_reports(db: &SqlitePool) -> ApiResult<Vec<ReportView>> {
                 r.source_filename
          FROM report_runs r
          JOIN report_periods p ON p.id = r.period_id
+         WHERE p.archived_at IS NULL
          ORDER BY r.created_at DESC
          LIMIT 6",
     )

@@ -29,6 +29,7 @@ export interface Period {
   imports: number
   rows: number
   reports: number
+  archived_at: string | null
 }
 
 export interface ImportView {
@@ -99,19 +100,46 @@ export interface LayoutElement {
   table_header_bg?: string
   table_header_color?: string
   table_stripe?: string
+  table_header_font_family?: string
+  table_header_font_size?: number
+  table_column_backgrounds?: string[]
+  table_column_colors?: string[]
+  table_column_font_families?: string[]
+  table_column_font_sizes?: number[]
+  table_column_aligns?: ('left' | 'center' | 'right' | '')[]
   chart_type?: 'bar' | 'line' | 'pie' | 'donut' | 'hbar'
   chart_title?: string
+  chart_title_font_family?: string
+  chart_title_font_size?: number
+  chart_title_wrap?: boolean
   chart_labels?: string[]
   chart_values?: number[]
   chart_colors?: string[]
   chart_show_values?: boolean
   chart_show_legend?: boolean
   chart_axis_color?: string
+  chart_label_font_size?: number
+  chart_label_rotation?: number
+  chart_value_font_family?: string
+  chart_value_font_size?: number
+  chart_legend_font_size?: number
   card_label?: string
   card_value?: string
   card_unit?: string
   card_detail?: string
   card_accent?: string
+  card_label_font_family?: string
+  card_label_font_size?: number
+  card_label_color?: string
+  card_value_font_family?: string
+  card_value_font_size?: number
+  card_value_color?: string
+  card_unit_font_family?: string
+  card_unit_font_size?: number
+  card_unit_color?: string
+  card_detail_font_family?: string
+  card_detail_font_size?: number
+  card_detail_color?: string
   card_template?: string
   card_icon?: string
   card_icon_color?: string

@@ -44,13 +44,31 @@ export const dashboardApi = {
 }
 
 export const periodsApi = {
-  list: () => request<Period[]>('/periods'),
+  list: (includeArchived = false) =>
+    request<Period[]>(`/periods${includeArchived ? '?include_archived=true' : ''}`),
   create: (input: {
     start_date: string
     end_date: string
     label?: string
     period_type?: 'daily' | 'range' | 'monthly'
   }) => request<Period>('/periods', { method: 'POST', body: JSON.stringify(input) }),
+  update: (
+    periodId: string,
+    input: {
+      start_date?: string
+      end_date?: string
+      label?: string
+      period_type?: 'daily' | 'range' | 'monthly'
+    },
+  ) =>
+    request<Period>(`/periods/${periodId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  archive: (periodId: string) =>
+    request<Period>(`/periods/${periodId}/archive`, { method: 'POST' }),
+  restore: (periodId: string) =>
+    request<Period>(`/periods/${periodId}/restore`, { method: 'POST' }),
   detail: (periodId: string) => request<PeriodDetail>(`/periods/${periodId}`),
   metrics: (periodId: string) =>
     request<ReportMetrics>(`/periods/${periodId}/metrics`),
