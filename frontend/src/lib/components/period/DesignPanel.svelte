@@ -2654,6 +2654,10 @@
     'Pelaksanaan kegiatan': '#3f765d',
     'Masjid/musholla': '#b8894b',
     'Jumlah jamaah': '#2f6db0',
+    'Personel bermasalah': '#b0413e',
+    'Personel dibina': '#3f765d',
+    'Dengan dokumentasi': '#2f6db0',
+    'Tanpa dokumentasi': '#b8894b',
   }
 
   function tableSeriesColor(label: string, index: number): string {

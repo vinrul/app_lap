@@ -2645,6 +2645,118 @@ fn feedback_table(matching: &[&RecordView]) -> Option<CoverageTable> {
     })
 }
 
+#[derive(Default)]
+struct DimtaqSummary {
+    bermasalah: i64,
+    bermasalah_filled: i64,
+    dibina: i64,
+    dibina_filled: i64,
+    documented: i64,
+}
+
+/// Angka personel bermasalah/dibina dan status dokumentasi satu laporan QW1.14.
+fn dimtaq_row(row: &RecordView) -> (Option<i64>, Option<i64>, bool) {
+    let mut bermasalah: Option<i64> = None;
+    let mut dibina: Option<i64> = None;
+    for (key, value) in &row.fields {
+        let lower = key.trim().to_ascii_lowercase();
+        if !lower.contains("anggota") || lower.contains("rincian") {
+            continue;
+        }
+        let Some(count) = first_count(value) else {
+            continue;
+        };
+        if lower.contains("bermasalah") {
+            merge_best(&mut bermasalah, count);
+        } else if lower.contains("pembinaan") || lower.contains("dibina") {
+            merge_best(&mut dibina, count);
+        }
+    }
+    let documented = row.fields.iter().any(|(key, value)| {
+        let lower = key.trim().to_ascii_lowercase();
+        (lower.contains("dokumentasi") || lower.contains("bukti dukung"))
+            && !extract_links(value).is_empty()
+    });
+    (bermasalah, dibina, documented)
+}
+
+fn dimtaq_summary(matching: &[&RecordView]) -> DimtaqSummary {
+    let mut summary = DimtaqSummary::default();
+    for row in matching {
+        let (bermasalah, dibina, documented) = dimtaq_row(row);
+        if let Some(count) = bermasalah {
+            summary.bermasalah += count;
+            summary.bermasalah_filled += 1;
+        }
+        if let Some(count) = dibina {
+            summary.dibina += count;
+            summary.dibina_filled += 1;
+        }
+        if documented {
+            summary.documented += 1;
+        }
+    }
+    summary
+}
+
+/// Rekap laporan, personel bermasalah/dibina, dan dokumentasi per polres (QW1.14).
+fn dimtaq_table(matching: &[&RecordView]) -> Option<CoverageTable> {
+    struct UnitRow {
+        label: String,
+        values: [i64; 5],
+    }
+    let mut per_unit: BTreeMap<String, UnitRow> = BTreeMap::new();
+    for row in matching {
+        let Some(label) = row_unit_label(row) else {
+            continue;
+        };
+        let (bermasalah, dibina, documented) = dimtaq_row(row);
+        let entry = per_unit
+            .entry(label.to_ascii_lowercase())
+            .or_insert_with(|| UnitRow {
+                label: label.clone(),
+                values: [0; 5],
+            });
+        entry.values[0] += 1;
+        entry.values[1] += bermasalah.unwrap_or(0);
+        entry.values[2] += dibina.unwrap_or(0);
+        if documented {
+            entry.values[3] += 1;
+        } else {
+            entry.values[4] += 1;
+        }
+    }
+    if per_unit.is_empty() {
+        return None;
+    }
+    let mut rows: Vec<CoverageTableRow> = per_unit
+        .into_values()
+        .map(|unit| CoverageTableRow {
+            label: unit.label,
+            values: unit.values.to_vec(),
+        })
+        .collect();
+    rows.sort_by(|left, right| {
+        right.values[0]
+            .cmp(&left.values[0])
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    Some(CoverageTable {
+        key: "dimtaq-per-polres".to_string(),
+        label: "Rekap personel DIMTAQ per polres".to_string(),
+        columns: vec![
+            "Polres".to_string(),
+            "Jumlah laporan".to_string(),
+            "Personel bermasalah".to_string(),
+            "Personel dibina".to_string(),
+            "Dengan dokumentasi".to_string(),
+            "Tanpa dokumentasi".to_string(),
+        ],
+        rows,
+        filled_rows: matching.len() as i64,
+    })
+}
+
 fn strip_list_prefix(key: &str) -> &str {
     let trimmed = key.trim_start();
     let digits = trimmed
@@ -2763,7 +2875,8 @@ fn build_code_cards(
     let is_jumling = code == "QW1.6";
     let is_subuh = code == "QW1.7";
     let is_minggu = code == "QW1.8";
-    if polri_filled > 0 || is_gatur {
+    let is_dimtaq = code == "QW1.14";
+    if is_gatur || (polri_filled > 0 && !is_dimtaq) {
         metrics.push(card_metric(
             if is_gatur {
                 "jumlah-personel-bertugas"
@@ -2785,6 +2898,52 @@ fn build_code_cards(
         if let Some(breakdown) = personnel_breakdown(matching) {
             breakdowns.push(breakdown);
         }
+    }
+    // QW1.14 berfokus pada personel Polri yang bermasalah dan dibina,
+    // bukan angka masyarakat yang berpotensi melanggar norma.
+    if is_dimtaq {
+        let summary = dimtaq_summary(matching);
+        metrics.push(card_metric(
+            "total-laporan",
+            "Total laporan",
+            "laporan",
+            total as f64,
+            total,
+            total,
+        ));
+        metrics.push(card_metric(
+            "personel-bermasalah",
+            "Personel bermasalah",
+            "orang",
+            summary.bermasalah as f64,
+            summary.bermasalah_filled as usize,
+            total,
+        ));
+        metrics.push(card_metric(
+            "personel-dibina",
+            "Personel dibina",
+            "orang",
+            summary.dibina as f64,
+            summary.dibina_filled as usize,
+            total,
+        ));
+        metrics.push(card_metric(
+            "laporan-dengan-dokumentasi",
+            "Laporan dengan dokumentasi",
+            "laporan",
+            summary.documented as f64,
+            summary.documented as usize,
+            total,
+        ));
+        let tanpa_dokumentasi = total as i64 - summary.documented;
+        metrics.push(card_metric(
+            "laporan-tanpa-dokumentasi",
+            "Laporan tanpa dokumentasi",
+            "laporan",
+            tanpa_dokumentasi as f64,
+            tanpa_dokumentasi as usize,
+            total,
+        ));
     }
 
     let jamaah_total: i64 = attendance.iter().filter_map(|item| item.jamaah).sum();
@@ -3082,6 +3241,12 @@ fn build_code_cards(
             continue;
         }
 
+        // QW1.14 memakai kartu jumlah personel, bukan angka masyarakat berpotensi
+        // melakukan pelanggaran norma yang panjang dan tidak dipakai di laporan.
+        if is_dimtaq && lower.contains("berpotensi melakukan pelanggaran norma") {
+            continue;
+        }
+
         // Luas area dan bibit sudah dijumlahkan pada kartu tersendiri.
         if is_area_key(&key) || is_bibit_key(&key) {
             continue;
@@ -3306,6 +3471,7 @@ fn build_code_programs(
                 )
                 .into_iter()
                 .collect(),
+                "QW1.14" => dimtaq_table(&matching).into_iter().collect(),
                 _ => Vec::new(),
             };
             let performed_polres = units_of(&matching, mode, Scope::Polres);
@@ -5163,6 +5329,120 @@ mod tests {
                 "kategori {label} tidak ditemukan"
             );
         }
+    }
+
+    #[test]
+    fn builds_dimtaq_personnel_cards_and_table() {
+        let bermasalah = "Jumlah dan nama anggota yang bermasalah (Jumlah)";
+        let dibina = "Jumlah dan nama anggota yang dilakukan pembinaan (Jumlah)";
+        let dokumentasi = "Dokumentasi kegiatan";
+        let violator =
+            "Jumlah masyarakat yang berpotensi melakukan pelanggaran norma saat razia (Jumlah)";
+        let rows = vec![
+            row(
+                "QW1.14",
+                "Polda",
+                "",
+                &[
+                    (bermasalah, "15"),
+                    (dibina, "10"),
+                    (dokumentasi, "https://drive.google.com/file/d/abc"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.14",
+                "Polres",
+                "Polres Badung",
+                &[
+                    (bermasalah, "2"),
+                    (dibina, "1"),
+                    (dokumentasi, "https://drive.google.com/drive/folders/xyz"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.14",
+                "Polres",
+                "Polres Badung",
+                &[(bermasalah, "0"), (dibina, "3"), (dokumentasi, "NIHIL")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.14",
+                "Polres",
+                "Polres Bangli",
+                &[(violator, "12"), (dokumentasi, "TIDAK ADA")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.14")
+            .unwrap();
+        let metric = |key: &str| {
+            code.metrics
+                .iter()
+                .find(|metric| metric.key == key)
+                .unwrap()
+        };
+        assert_eq!(metric("total-laporan").total, 4.0);
+        let bermasalah_card = metric("personel-bermasalah");
+        assert_eq!(bermasalah_card.total, 17.0);
+        assert_eq!(bermasalah_card.filled_rows, 3);
+        let dibina_card = metric("personel-dibina");
+        assert_eq!(dibina_card.total, 14.0);
+        assert_eq!(dibina_card.filled_rows, 3);
+        assert_eq!(metric("laporan-dengan-dokumentasi").total, 2.0);
+        assert_eq!(metric("laporan-tanpa-dokumentasi").total, 2.0);
+        assert!(
+            !code
+                .metrics
+                .iter()
+                .any(|metric| metric.key == "jumlah-personel")
+        );
+        assert!(code.metrics.iter().all(|metric| {
+            !metric
+                .label
+                .contains("berpotensi melakukan pelanggaran norma")
+        }));
+
+        let table = code
+            .tables
+            .iter()
+            .find(|item| item.key == "dimtaq-per-polres")
+            .unwrap();
+        assert_eq!(table.label, "Rekap personel DIMTAQ per polres");
+        assert_eq!(
+            table.columns,
+            vec![
+                "Polres",
+                "Jumlah laporan",
+                "Personel bermasalah",
+                "Personel dibina",
+                "Dengan dokumentasi",
+                "Tanpa dokumentasi"
+            ]
+        );
+        let unit = |label: &str| table.rows.iter().find(|row| row.label == label).unwrap();
+        assert_eq!(unit("Polda Bali").values, vec![1, 15, 10, 1, 0]);
+        assert_eq!(unit("Polres Badung").values, vec![2, 2, 4, 1, 1]);
+        assert_eq!(unit("Polres Bangli").values, vec![1, 0, 0, 0, 1]);
     }
 
     #[test]
