@@ -13,7 +13,7 @@
     Type,
   } from 'lucide-svelte'
   import { fontOptions } from '../../fonts/catalog'
-  import type { LayoutElement } from '../../types'
+  import type { ChartSeries, LayoutElement } from '../../types'
   import { CHART_PALETTE, chartColor, createChartSvg } from '../../utils/chartSvg'
   import Modal from '../ui/Modal.svelte'
   import Button from '../ui/Button.svelte'
@@ -44,6 +44,20 @@
 
   function roundedSize(value: number): number {
     return Math.round(value * 10) / 10
+  }
+
+  function normalizeChartSeries(input: ChartSeries[] | undefined, count: number): ChartSeries[] {
+    return (input ?? [])
+      .slice(0, 6)
+      .filter((item) => item && Array.isArray(item.values))
+      .map((item, index) => ({
+        label: (item.label ?? '').trim() || `Seri ${index + 1}`,
+        values: Array.from({ length: count }, (_, valueIndex) => {
+          const value = Number(item.values?.[valueIndex])
+          return Number.isFinite(value) ? Math.max(0, value) : 0
+        }),
+        color: item.color || CHART_PALETTE[index % CHART_PALETTE.length],
+      }))
   }
 
   function prepare(input: LayoutElement): LayoutElement {
@@ -88,6 +102,7 @@
     copy.chart_colors = labels.map(
       (_, index) => copy.chart_colors?.[index] ?? CHART_PALETTE[index % CHART_PALETTE.length],
     )
+    copy.chart_series = normalizeChartSeries(copy.chart_series, labels.length)
     return copy
   }
 
@@ -97,6 +112,13 @@
 
   const labels = $derived(draft.chart_labels ?? [])
   const values = $derived(draft.chart_values ?? [])
+  const series = $derived(draft.chart_series ?? [])
+  const isMultiSeries = $derived(series.length > 0)
+  const dataSummary = $derived(
+    isMultiSeries
+      ? `${labels.length} kategori · ${series.length} seri`
+      : `${labels.length} kategori`,
+  )
   const isPieLike = $derived(draft.chart_type === 'pie' || draft.chart_type === 'donut')
   const isSingleColor = $derived(draft.chart_type === 'hbar' || draft.chart_type === 'line')
   const chartTypeLabel = $derived(
@@ -156,28 +178,97 @@
     draft.chart_colors = colors
   }
 
-  function setSeriesColor(value: string): void {
+  function setUniformColor(value: string): void {
     draft.chart_colors = (draft.chart_labels ?? []).map(() => value)
   }
 
-  function addSeries(): void {
-    if (dataLocked || (draft.chart_labels?.length ?? 0) >= 20) return
-    const nextLabels = [...(draft.chart_labels ?? [])]
-    const index = nextLabels.length
-    nextLabels.push(`Seri ${index + 1}`)
-    draft.chart_labels = nextLabels
-    draft.chart_values = [...(draft.chart_values ?? []), 0]
-    draft.chart_colors = [
-      ...(draft.chart_colors ?? []),
-      CHART_PALETTE[index % CHART_PALETTE.length],
-    ]
+  function syncAggregate(next = draft.chart_series ?? []): void {
+    const count = draft.chart_labels?.length ?? 0
+    draft.chart_values = Array.from({ length: count }, (_, index) =>
+      next.reduce((sum, item) => sum + (item.values[index] ?? 0), 0),
+    )
   }
 
-  function removeSeries(index: number): void {
+  function addLabel(): void {
+    if (dataLocked) return
+    const nextLabels = [...(draft.chart_labels ?? [])]
+    if (nextLabels.length >= 20) return
+    nextLabels.push(`Kategori ${nextLabels.length + 1}`)
+    draft.chart_labels = nextLabels
+    draft.chart_colors = nextLabels.map(
+      (_, index) => draft.chart_colors?.[index] ?? CHART_PALETTE[index % CHART_PALETTE.length],
+    )
+    if (isMultiSeries) {
+      draft.chart_series = (draft.chart_series ?? []).map((item) => ({
+        ...item,
+        values: [...item.values, 0],
+      }))
+      syncAggregate()
+      return
+    }
+    draft.chart_values = [...(draft.chart_values ?? []), 0]
+  }
+
+  function removeLabel(index: number): void {
     if (dataLocked || (draft.chart_labels?.length ?? 0) <= 1) return
     draft.chart_labels = (draft.chart_labels ?? []).filter((_, itemIndex) => itemIndex !== index)
-    draft.chart_values = (draft.chart_values ?? []).filter((_, itemIndex) => itemIndex !== index)
     draft.chart_colors = (draft.chart_colors ?? []).filter((_, itemIndex) => itemIndex !== index)
+    if (isMultiSeries) {
+      draft.chart_series = (draft.chart_series ?? []).map((item) => ({
+        ...item,
+        values: item.values.filter((_, itemIndex) => itemIndex !== index),
+      }))
+      syncAggregate()
+      return
+    }
+    draft.chart_values = (draft.chart_values ?? []).filter((_, itemIndex) => itemIndex !== index)
+  }
+
+  function setChartSeriesLabel(seriesIndex: number, value: string): void {
+    draft.chart_series = (draft.chart_series ?? []).map((item, itemIndex) =>
+      itemIndex === seriesIndex ? { ...item, label: value } : item,
+    )
+  }
+
+  function setChartSeriesColor(seriesIndex: number, value: string): void {
+    draft.chart_series = (draft.chart_series ?? []).map((item, itemIndex) =>
+      itemIndex === seriesIndex ? { ...item, color: value } : item,
+    )
+  }
+
+  function setChartSeriesValue(seriesIndex: number, valueIndex: number, value: number): void {
+    const next = Math.max(0, Number.isFinite(value) ? value : 0)
+    draft.chart_series = (draft.chart_series ?? []).map((item, itemIndex) => {
+      if (itemIndex !== seriesIndex) return item
+      const seriesValues = [...item.values]
+      seriesValues[valueIndex] = next
+      return { ...item, values: seriesValues }
+    })
+    syncAggregate()
+  }
+
+  function addChartSeries(): void {
+    if (dataLocked) return
+    const current = draft.chart_series ?? []
+    if (current.length >= 6) return
+    const labelCount = draft.chart_labels?.length ?? 0
+    draft.chart_series = [
+      ...current,
+      {
+        label: `Seri ${current.length + 1}`,
+        values: Array.from({ length: labelCount }, () => 0),
+        color: CHART_PALETTE[current.length % CHART_PALETTE.length],
+      },
+    ]
+    syncAggregate()
+  }
+
+  function removeChartSeries(seriesIndex: number): void {
+    if (dataLocked || (draft.chart_series?.length ?? 0) <= 1) return
+    draft.chart_series = (draft.chart_series ?? []).filter(
+      (_, itemIndex) => itemIndex !== seriesIndex,
+    )
+    syncAggregate()
   }
 
   function resetStyle(): void {
@@ -211,6 +302,11 @@
       chart_show_legend: draft.chart_show_legend !== false,
       chart_axis_color: draft.chart_axis_color,
       fill: draft.fill,
+      chart_series: (draft.chart_series ?? []).map((item, index) => ({
+        label: item.label.trim() || `Seri ${index + 1}`,
+        values: [...item.values],
+        color: item.color || CHART_PALETTE[index % CHART_PALETTE.length],
+      })),
     }
     if (!dataLocked) {
       patch.chart_labels = [...(draft.chart_labels ?? [])]
@@ -276,7 +372,7 @@
           ></div>
         </div>
         <div class="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-3 text-[10px] text-ink-muted">
-          <span>{labels.length} seri · {dataLocked ? 'data terhubung' : 'data manual'}</span>
+          <span>{dataSummary} · {dataLocked ? 'data terhubung' : 'data manual'}</span>
           <span>Kanvas 600 × 360</span>
         </div>
       </div>
@@ -286,7 +382,7 @@
         </div>
       {:else}
         <p class="mt-3 text-[10px] leading-relaxed text-ink-muted">
-          Data manual dapat diubah pada tabel di kanan. Setiap seri memiliki label, nilai, dan warna sendiri.
+          Data manual dapat diubah pada tabel di kanan. Kategori sumbu dipakai bersama; setiap seri punya label, warna, dan nilai sendiri per kategori.
         </p>
       {/if}
     </div>
@@ -297,7 +393,7 @@
           <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-forest-50 text-forest-700"><BarChart3 size={15} /></span>
           <div>
             <p class="text-xs font-semibold text-ink">Jenis & data</p>
-            <p class="text-[10px] text-ink-muted">Tipe grafik dan seri yang ditampilkan.</p>
+            <p class="text-[10px] text-ink-muted">Tipe grafik, kategori sumbu, dan seri data.</p>
           </div>
         </div>
 
@@ -313,74 +409,177 @@
           </select>
         </label>
 
-        <div class="mt-4 flex items-center justify-between">
-          <span class="label mb-0">Data seri</span>
-          {#if !dataLocked}
-            <button type="button" class="btn btn-ghost btn-sm" disabled={labels.length >= 20} onclick={addSeries}>
-              <Plus size={13} /> Tambah
-            </button>
-          {/if}
-        </div>
+        {#if isMultiSeries}
+          <p class="mt-3 rounded-xl border border-line bg-stone-50 px-3 py-2 text-[10px] leading-relaxed text-ink-muted">
+            Grafik ini memakai <strong class="text-ink-soft">{series.length} seri</strong>. Seri berkelompok dirender pada jenis grafik <strong class="text-ink-soft">Bar</strong>; jenis lain memakai total per kategori.
+          </p>
 
-        <div class="mt-2 space-y-1.5">
-          {#each labels as label, index (index)}
-            <div class="flex items-center gap-1.5">
-              <input
-                class="input min-w-0 flex-1 py-1.5 text-xs"
-                value={label}
-                placeholder={`Label ${index + 1}`}
-                disabled={dataLocked}
-                oninput={(event) => setLabel(index, (event.currentTarget as HTMLInputElement).value)}
-              />
-              <input
-                class="input w-20 py-1.5 text-right text-xs"
-                type="number"
-                min="0"
-                step="any"
-                value={values[index] ?? 0}
-                disabled={dataLocked}
-                oninput={(event) => setValue(index, (event.currentTarget as HTMLInputElement).valueAsNumber)}
-              />
-              {#if !isSingleColor}
-                <label class="relative inline-flex h-8 w-8 shrink-0 cursor-pointer overflow-hidden rounded-lg border border-line" title={chartColor(draft, index)}>
-                  <span class="h-full w-full" style={swatchStyle(chartColor(draft, index))}></span>
-                  <input
-                    class="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                    type="color"
-                    value={chartColor(draft, index)}
-                    oninput={(event) => setColor(index, (event.currentTarget as HTMLInputElement).value)}
-                  />
-                </label>
-              {/if}
-              {#if !dataLocked}
-                <button
-                  type="button"
-                  class="btn-icon h-8 w-8 shrink-0"
-                  aria-label="Hapus seri"
-                  title="Hapus seri"
-                  disabled={labels.length <= 1}
-                  onclick={() => removeSeries(index)}
-                >
-                  <Minus size={14} />
-                </button>
-              {/if}
-            </div>
-          {/each}
-        </div>
-
-        {#if isSingleColor}
-          <div class="mt-3 flex items-center justify-between rounded-xl border border-line bg-stone-50 px-3 py-2.5">
-            <span class="text-[11px] font-medium text-ink-soft">Warna {draft.chart_type === 'line' ? 'garis' : 'batang'}</span>
-            <label class="relative inline-flex h-8 w-8 cursor-pointer overflow-hidden rounded-lg border border-line" title={chartColor(draft, 0)}>
-              <span class="h-full w-full" style={swatchStyle(chartColor(draft, 0))}></span>
-              <input
-                class="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                type="color"
-                value={chartColor(draft, 0)}
-                oninput={(event) => setSeriesColor((event.currentTarget as HTMLInputElement).value)}
-              />
-            </label>
+          <div class="mt-4 flex items-center justify-between">
+            <span class="label mb-0">Kategori sumbu</span>
+            {#if !dataLocked}
+              <button type="button" class="btn btn-ghost btn-sm" disabled={labels.length >= 20} onclick={addLabel}>
+                <Plus size={13} /> Tambah
+              </button>
+            {/if}
           </div>
+
+          <div class="mt-2 space-y-1.5">
+            {#each labels as label, index (index)}
+              <div class="flex items-center gap-1.5">
+                <input
+                  class="input min-w-0 flex-1 py-1.5 text-xs"
+                  value={label}
+                  placeholder={`Kategori ${index + 1}`}
+                  disabled={dataLocked}
+                  oninput={(event) => setLabel(index, (event.currentTarget as HTMLInputElement).value)}
+                />
+                {#if !dataLocked}
+                  <button
+                    type="button"
+                    class="btn-icon h-8 w-8 shrink-0"
+                    aria-label="Hapus kategori"
+                    title="Hapus kategori"
+                    disabled={labels.length <= 1}
+                    onclick={() => removeLabel(index)}
+                  >
+                    <Minus size={14} />
+                  </button>
+                {/if}
+              </div>
+            {/each}
+          </div>
+
+          <div class="mt-4 flex items-center justify-between">
+            <span class="label mb-0">Seri data</span>
+            {#if !dataLocked}
+              <button type="button" class="btn btn-ghost btn-sm" disabled={series.length >= 6} onclick={addChartSeries}>
+                <Plus size={13} /> Tambah seri
+              </button>
+            {/if}
+          </div>
+
+          <div class="mt-2 space-y-2">
+            {#each series as item, seriesIndex (seriesIndex)}
+              <div class="rounded-xl border border-line bg-stone-50/60 p-2.5">
+                <div class="flex items-center gap-1.5">
+                  <input
+                    class="input min-w-0 flex-1 py-1.5 text-xs"
+                    value={item.label}
+                    placeholder={`Seri ${seriesIndex + 1}`}
+                    disabled={dataLocked}
+                    oninput={(event) => setChartSeriesLabel(seriesIndex, (event.currentTarget as HTMLInputElement).value)}
+                  />
+                  <label class="relative inline-flex h-8 w-8 shrink-0 cursor-pointer overflow-hidden rounded-lg border border-line" title={item.color}>
+                    <span class="h-full w-full" style={swatchStyle(item.color)}></span>
+                    <input
+                      class="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                      type="color"
+                      value={item.color || CHART_PALETTE[seriesIndex % CHART_PALETTE.length]}
+                      oninput={(event) => setChartSeriesColor(seriesIndex, (event.currentTarget as HTMLInputElement).value)}
+                    />
+                  </label>
+                  {#if !dataLocked}
+                    <button
+                      type="button"
+                      class="btn-icon h-8 w-8 shrink-0"
+                      aria-label="Hapus seri"
+                      title="Hapus seri"
+                      disabled={series.length <= 1}
+                      onclick={() => removeChartSeries(seriesIndex)}
+                    >
+                      <Minus size={14} />
+                    </button>
+                  {/if}
+                </div>
+                <div class="mt-2 grid grid-cols-2 gap-1.5">
+                  {#each labels as label, labelIndex (labelIndex)}
+                    <label class="block">
+                      <span class="mb-0.5 block truncate text-[9px] text-ink-muted" title={label}>{label || `Kategori ${labelIndex + 1}`}</span>
+                      <input
+                        class="input py-1 text-right text-xs"
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={item.values[labelIndex] ?? 0}
+                        disabled={dataLocked}
+                        oninput={(event) => setChartSeriesValue(seriesIndex, labelIndex, (event.currentTarget as HTMLInputElement).valueAsNumber)}
+                      />
+                    </label>
+                  {/each}
+                </div>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <div class="mt-4 flex items-center justify-between">
+            <span class="label mb-0">Kategori data</span>
+            {#if !dataLocked}
+              <button type="button" class="btn btn-ghost btn-sm" disabled={labels.length >= 20} onclick={addLabel}>
+                <Plus size={13} /> Tambah
+              </button>
+            {/if}
+          </div>
+
+          <div class="mt-2 space-y-1.5">
+            {#each labels as label, index (index)}
+              <div class="flex items-center gap-1.5">
+                <input
+                  class="input min-w-0 flex-1 py-1.5 text-xs"
+                  value={label}
+                  placeholder={`Kategori ${index + 1}`}
+                  disabled={dataLocked}
+                  oninput={(event) => setLabel(index, (event.currentTarget as HTMLInputElement).value)}
+                />
+                <input
+                  class="input w-20 py-1.5 text-right text-xs"
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={values[index] ?? 0}
+                  disabled={dataLocked}
+                  oninput={(event) => setValue(index, (event.currentTarget as HTMLInputElement).valueAsNumber)}
+                />
+                {#if !isSingleColor}
+                  <label class="relative inline-flex h-8 w-8 shrink-0 cursor-pointer overflow-hidden rounded-lg border border-line" title={chartColor(draft, index)}>
+                    <span class="h-full w-full" style={swatchStyle(chartColor(draft, index))}></span>
+                    <input
+                      class="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                      type="color"
+                      value={chartColor(draft, index)}
+                      oninput={(event) => setColor(index, (event.currentTarget as HTMLInputElement).value)}
+                    />
+                  </label>
+                {/if}
+                {#if !dataLocked}
+                  <button
+                    type="button"
+                    class="btn-icon h-8 w-8 shrink-0"
+                    aria-label="Hapus kategori"
+                    title="Hapus kategori"
+                    disabled={labels.length <= 1}
+                    onclick={() => removeLabel(index)}
+                  >
+                    <Minus size={14} />
+                  </button>
+                {/if}
+              </div>
+            {/each}
+          </div>
+
+          {#if isSingleColor}
+            <div class="mt-3 flex items-center justify-between rounded-xl border border-line bg-stone-50 px-3 py-2.5">
+              <span class="text-[11px] font-medium text-ink-soft">Warna {draft.chart_type === 'line' ? 'garis' : 'batang'}</span>
+              <label class="relative inline-flex h-8 w-8 cursor-pointer overflow-hidden rounded-lg border border-line" title={chartColor(draft, 0)}>
+                <span class="h-full w-full" style={swatchStyle(chartColor(draft, 0))}></span>
+                <input
+                  class="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                  type="color"
+                  value={chartColor(draft, 0)}
+                  oninput={(event) => setUniformColor((event.currentTarget as HTMLInputElement).value)}
+                />
+              </label>
+            </div>
+          {/if}
         {/if}
       </section>
 
@@ -506,6 +705,12 @@
           Tampilkan nilai pada grafik
         </label>
 
+        {#if isMultiSeries && series.length > 2}
+          <p class="mb-3 text-[10px] leading-relaxed text-ink-muted">
+            Nilai per batang hanya dirender bila seri maksimal 2 agar tidak bertumpuk.
+          </p>
+        {/if}
+
         <div class="grid grid-cols-[minmax(0,1fr)_84px] gap-2">
           <label class="block">
             <span class="label">Font nilai</span>
@@ -532,14 +737,16 @@
         </div>
       </section>
 
-      {#if isPieLike}
+      {#if isPieLike || isMultiSeries}
         <section class="rounded-2xl border border-line bg-white p-4">
           <div class="mb-3 flex items-center justify-between gap-3">
             <div class="flex items-center gap-2.5">
               <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-forest-50 text-forest-700"><ListTree size={15} /></span>
               <div>
                 <p class="text-xs font-semibold text-ink">Legend</p>
-                <p class="text-[10px] text-ink-muted">Tampilkan keterangan seri di samping grafik.</p>
+                <p class="text-[10px] text-ink-muted">
+                  {isPieLike ? 'Tampilkan keterangan seri di samping grafik.' : 'Tampilkan keterangan seri di atas grafik.'}
+                </p>
               </div>
             </div>
             <input
@@ -563,7 +770,7 @@
                 oninput={(event) => setSize('chart_legend_font_size', (event.currentTarget as HTMLInputElement).valueAsNumber, 5, 32)}
               />
             </label>
-            <p class="mt-2 text-[10px] leading-relaxed text-ink-muted">Teks item legend mengikuti label seri pada tabel data dan warnanya mengikuti warna seri.</p>
+            <p class="mt-2 text-[10px] leading-relaxed text-ink-muted">Teks item legend mengikuti label {isMultiSeries ? 'seri' : 'kategori'} dan warnanya mengikuti warna {isMultiSeries ? 'seri' : 'kategori'}.</p>
           {/if}
         </section>
       {/if}

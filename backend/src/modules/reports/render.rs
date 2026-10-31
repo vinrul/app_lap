@@ -1571,6 +1571,9 @@ fn chart_value_text(value: f64) -> String {
 }
 
 fn render_bar_chart(element: &LayoutElement, top: f64, base: f64) -> String {
+    if !element.chart_series.is_empty() {
+        return render_grouped_bar_chart(element, top, base);
+    }
     let left = 55.0;
     let right = 575.0;
     let bottom = 316.0;
@@ -1627,6 +1630,104 @@ fn render_bar_chart(element: &LayoutElement, top: f64, base: f64) -> String {
                 escape_html(&shorten(label, 14))
             ));
         }
+    }
+    svg
+}
+
+fn render_grouped_bar_chart(element: &LayoutElement, top: f64, base: f64) -> String {
+    let left = 55.0;
+    let right = 575.0;
+    let bottom = 316.0;
+    let labels = &element.chart_labels;
+    let count = labels.len().max(1);
+    let series = &element.chart_series;
+    let legend_size = chart_text_size(element.chart_legend_font_size, base - 4.0);
+    let legend_height = if element.chart_show_legend {
+        legend_size + 10.0
+    } else {
+        0.0
+    };
+    let plot_top = top + legend_height;
+    let plot_height = (bottom - plot_top).max(40.0);
+    let max = series
+        .iter()
+        .flat_map(|item| item.values.iter())
+        .cloned()
+        .fold(0.0_f64, f64::max)
+        .max(1.0);
+    let step = (right - left) / count as f64;
+    let group_width = step * 0.78;
+    let bar_width = (group_width / series.len().max(1) as f64).max(2.0);
+    let label_size = chart_text_size(element.chart_label_font_size, base - 2.0);
+    let value_size = chart_text_size(element.chart_value_font_size, base - 2.0);
+    let value_family = escape_html(fonts::stack(&element.chart_value_font_family));
+    let rotation = element.chart_label_rotation.clamp(-90.0, 90.0);
+    let mut svg = String::new();
+
+    if element.chart_show_legend {
+        let mut x = left;
+        for item in series {
+            svg.push_str(&format!(
+                "<rect x=\"{x:.2}\" y=\"{:.2}\" width=\"10\" height=\"10\" rx=\"2\" fill=\"{}\"/>",
+                top + 1.0,
+                item.color
+            ));
+            svg.push_str(&format!(
+                "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{legend_size:.1}\" fill=\"{}\">{}</text>",
+                x + 14.0,
+                top + legend_size,
+                element.color,
+                escape_html(&shorten(&item.label, 28))
+            ));
+            let advance = item.label.chars().count() as f64 * legend_size * 0.55 + 26.0;
+            if x + advance > right {
+                break;
+            }
+            x += advance;
+        }
+    }
+
+    svg.push_str(&format!(
+        "<line x1=\"{left}\" y1=\"{bottom}\" x2=\"{right}\" y2=\"{bottom}\" stroke=\"{}\" stroke-width=\"1.2\"/>\n",
+        element.chart_axis_color
+    ));
+    svg.push_str(&format!(
+        "<text x=\"{}\" y=\"{}\" text-anchor=\"end\" font-family=\"{value_family}\" font-size=\"{value_size:.1}\" fill=\"{}\">{}</text>",
+        left - 8.0,
+        plot_top + base,
+        element.chart_axis_color,
+        chart_value_text(max)
+    ));
+
+    for (index, label) in labels.iter().enumerate() {
+        let group_x = left + step * index as f64 + (step - group_width) / 2.0;
+        for (series_index, item) in series.iter().enumerate() {
+            let value = item.values.get(index).copied().unwrap_or(0.0);
+            let height = (value / max) * plot_height;
+            let x = group_x + series_index as f64 * bar_width;
+            let y = bottom - height;
+            svg.push_str(&format!(
+                "<rect x=\"{x:.2}\" y=\"{y:.2}\" width=\"{bar_width:.2}\" height=\"{height:.2}\" rx=\"1.5\" fill=\"{}\"/>",
+                item.color
+            ));
+            if element.chart_show_values && series.len() <= 2 {
+                svg.push_str(&format!(
+                    "<text x=\"{:.2}\" y=\"{:.2}\" text-anchor=\"middle\" font-family=\"{value_family}\" font-size=\"{value_size:.1}\" fill=\"{}\">{}</text>",
+                    x + bar_width / 2.0,
+                    (y - 3.0).max(plot_top + base),
+                    element.color,
+                    chart_value_text(value)
+                ));
+            }
+        }
+        let tx = group_x + group_width / 2.0;
+        let ty = bottom + base + 8.0;
+        let transform = chart_label_transform(tx, ty, rotation);
+        svg.push_str(&format!(
+            "<text x=\"{tx:.2}\" y=\"{ty:.2}\" text-anchor=\"middle\" font-size=\"{label_size:.1}\" fill=\"{}\"{transform}>{}</text>",
+            element.chart_axis_color,
+            escape_html(&shorten(label, 14))
+        ));
     }
     svg
 }
@@ -2426,6 +2527,7 @@ table.data.compact td { padding: 1.3mm 1.5mm; }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::reports::layout::ChartSeries;
     use crate::modules::reports::models::{MetricCard, ReportMetrics};
 
     #[test]
@@ -2937,6 +3039,62 @@ mod tests {
         assert!(html.contains("Green Policing"));
         assert!(html.contains(">12<"));
         assert!(!html.contains("Nilai lama"));
+    }
+
+    #[test]
+    fn renders_grouped_bar_chart() {
+        let metrics = ReportMetrics::default();
+        let layout = ReportLayout {
+            version: 1,
+            mode: "report".to_string(),
+            orientation: "portrait".to_string(),
+            pages: vec![crate::modules::reports::layout::PageLayout {
+                page: 2,
+                blocks: std::collections::BTreeMap::new(),
+                elements: vec![LayoutElement {
+                    id: "chart-grouped".into(),
+                    kind: "chart".into(),
+                    x: 10.0,
+                    y: 10.0,
+                    width: 120.0,
+                    height: 80.0,
+                    chart_type: "bar".into(),
+                    chart_title: "Rekap jenis kerawanan".into(),
+                    chart_labels: vec!["Polres Tabanan".into(), "Polres Bangli".into()],
+                    chart_values: vec![3.0, 3.0],
+                    chart_series: vec![
+                        ChartSeries {
+                            label: "Rawan macet".into(),
+                            values: vec![3.0, 2.0],
+                            color: "#143d30".into(),
+                        },
+                        ChartSeries {
+                            label: "Rawan laka".into(),
+                            values: vec![0.0, 1.0],
+                            color: "#b0413e".into(),
+                        },
+                    ],
+                    fill: "#ffffff".into(),
+                    color: "#143d30".into(),
+                    font_size: 9.0,
+                    ..Default::default()
+                }],
+                ..PageLayout::default()
+            }],
+        };
+
+        let html = render_with_layout(
+            &metrics,
+            &ReportContent::default(),
+            &Config::test_config(),
+            &layout,
+            &HashMap::new(),
+        );
+        assert!(html.contains("Rawan macet"));
+        assert!(html.contains("Rawan laka"));
+        assert!(html.contains("#b0413e"));
+        assert!(html.contains("Polres Tabanan"));
+        assert!(html.contains("Rekap jenis kerawanan"));
     }
 
     #[test]

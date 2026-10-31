@@ -60,6 +60,12 @@ export interface LayoutBlockOffset {
   texts?: Record<string, string>
 }
 
+export interface ChartSeries {
+  label: string
+  values: number[]
+  color: string
+}
+
 export interface LayoutElement {
   id: string
   type: 'image' | 'rect' | 'text' | 'table' | 'chart' | 'card' | 'icon'
@@ -115,6 +121,7 @@ export interface LayoutElement {
   chart_labels?: string[]
   chart_values?: number[]
   chart_colors?: string[]
+  chart_series?: ChartSeries[]
   chart_show_values?: boolean
   chart_show_legend?: boolean
   chart_axis_color?: string
@@ -663,6 +670,20 @@ export interface CoverageProgram {
   by_polres: CoverageUnit[]
   by_satker: CoverageUnit[]
   breakdowns: CoverageBreakdown[]
+  tables: CoverageTable[]
+}
+
+export interface CoverageTableRow {
+  label: string
+  values: number[]
+}
+
+export interface CoverageTable {
+  key: string
+  label: string
+  columns: string[]
+  rows: CoverageTableRow[]
+  filled_rows: number
 }
 
 export interface CoverageBreakdown {

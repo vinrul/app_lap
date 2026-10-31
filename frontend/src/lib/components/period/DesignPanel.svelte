@@ -132,6 +132,8 @@
     | { kind: 'card'; code: string }
     | { kind: 'cardMetric'; code: string; metric: string }
     | { kind: 'cardBreakdown'; code: string; breakdown: string }
+    | { kind: 'cardTable'; code: string; table: string }
+    | { kind: 'cardTableSeries'; code: string; table: string }
     | { kind: 'groups' }
     | { kind: 'group'; code: string }
     | { kind: 'code'; code: string }
@@ -154,6 +156,8 @@
     icon: string
   }
 
+  type CakupanSeries = { label: string; values: number[]; color: string }
+
   type CakupanDataset = {
     title: string
     summaryLabel: string
@@ -165,6 +169,8 @@
     chartLabels: string[]
     chartValues: number[]
     chartTitle: string
+    chartColor?: string
+    chartSeries?: CakupanSeries[]
     items: CakupanItem[]
   }
 
@@ -2600,6 +2606,21 @@
     return CAKUPAN_PROGRAM_ICONS[key] ?? 'chart-column'
   }
 
+  const KERAWANAN_COLORS: Record<string, string> = {
+    'Rawan kemacetan': '#2f6db0',
+    'Rawan keramaian': '#3f765d',
+    'Rawan pelanggaran': '#b8894b',
+    'Rawan kecelakaan': '#b0413e',
+    'Rawan banjir': '#2f5d7c',
+    'Rawan kriminalitas': '#7a857f',
+    'Rawan narkoba': '#6b4c8a',
+    Lainnya: '#a4743d',
+  }
+
+  function kerawananColor(label: string): string {
+    return KERAWANAN_COLORS[label] ?? CHART_PALETTE[0]
+  }
+
   function cakupanProgram(key: string) {
     return coverage?.programs.find((program) => program.key === key)
   }
@@ -2660,6 +2681,14 @@
       const card = cakupanCard(node.code)
       const breakdown = card?.breakdowns.find((item) => item.key === node.breakdown)
       return [card?.code, breakdown?.label].filter(Boolean).join(' · ') || node.breakdown
+    }
+    if (node.kind === 'cardTable') {
+      const card = cakupanCard(node.code)
+      const table = card?.tables.find((item) => item.key === node.table)
+      return [card?.code, table?.label].filter(Boolean).join(' · ') || node.table
+    }
+    if (node.kind === 'cardTableSeries') {
+      return 'Grafik rekap jenis kerawanan'
     }
     if (node.kind === 'groups') return 'Semua kelompok Quick Wins'
     if (node.kind === 'programs') return 'Program prioritas'
@@ -2833,6 +2862,80 @@
           value: item.count,
           unit: 'laporan',
           detail: `${card.code} · ${breakdown.label}`,
+          icon: 'chart-column',
+        })),
+      }
+    }
+    if (node.kind === 'cardTable') {
+      const card = cakupanCard(node.code)
+      const table = card?.tables.find((item) => item.key === node.table)
+      if (!card || !table) return null
+      const totals = table.rows.map((row) =>
+        row.values.reduce((sum, value) => sum + value, 0),
+      )
+      return {
+        title: `${card.code} · ${table.label}`,
+        summaryLabel: table.label,
+        summaryValue: totals.reduce((sum, value) => sum + value, 0),
+        summaryDetail: `${table.rows.length} polres · ${table.columns.length - 1} jenis`,
+        summaryIcon: 'clipboard-list',
+        tableColumns: table.columns,
+        tableRows: [
+          [...table.columns],
+          ...table.rows.map((row) => [
+            row.label,
+            ...row.values.map((value) => formatNumber(value)),
+          ]),
+        ],
+        chartLabels: table.rows.map((row) => row.label),
+        chartValues: totals,
+        chartTitle: `${card.code} · ${table.label}`,
+        items: table.rows.map((row, index) => ({
+          label: row.label,
+          value: totals[index] ?? 0,
+          unit: 'laporan',
+          detail: `${card.code} · ${table.label}`,
+          icon: 'chart-column',
+        })),
+      }
+    }
+    if (node.kind === 'cardTableSeries') {
+      const card = cakupanCard(node.code)
+      const table = card?.tables.find((item) => item.key === node.table)
+      if (!card || !table) return null
+      const labels = table.rows.map((row) => row.label)
+      const series: CakupanSeries[] = table.columns.slice(1).map((column, index) => ({
+        label: column,
+        values: table.rows.map((row) => row.values[index] ?? 0),
+        color: kerawananColor(column),
+      }))
+      if (!series.length) return null
+      const totals = labels.map((_, index) =>
+        series.reduce((sum, item) => sum + (item.values[index] ?? 0), 0),
+      )
+      return {
+        title: `${card.code} · ${table.label}`,
+        summaryLabel: table.label,
+        summaryValue: totals.reduce((sum, value) => sum + value, 0),
+        summaryDetail: `${labels.length} polres · ${series.length} jenis`,
+        summaryIcon: 'chart-column',
+        tableColumns: table.columns,
+        tableRows: [
+          [...table.columns],
+          ...table.rows.map((row) => [
+            row.label,
+            ...row.values.map((value) => formatNumber(value)),
+          ]),
+        ],
+        chartLabels: labels,
+        chartValues: totals,
+        chartTitle: 'Rekap jenis kerawanan',
+        chartSeries: series,
+        items: labels.map((label, index) => ({
+          label,
+          value: totals[index] ?? 0,
+          unit: 'laporan',
+          detail: `${card.code} · ${series.length} jenis kerawanan`,
           icon: 'chart-column',
         })),
       }
@@ -3298,11 +3401,24 @@
       element.chart_title = dataset.chartTitle
       element.chart_labels = [...dataset.chartLabels]
       element.chart_values = [...dataset.chartValues]
-      element.chart_colors = dataset.chartLabels.map(
-        (_, index) => CHART_PALETTE[index % CHART_PALETTE.length],
-      )
+      element.chart_colors = dataset.chartColor
+        ? dataset.chartLabels.map(() => dataset.chartColor as string)
+        : dataset.chartLabels.map(
+            (_, index) => CHART_PALETTE[index % CHART_PALETTE.length],
+          )
+      element.chart_series = dataset.chartSeries
+        ? dataset.chartSeries.map((item) => ({
+            label: item.label,
+            values: [...item.values],
+            color: item.color,
+          }))
+        : []
       element.chart_show_values = true
-      element.chart_show_legend = dataset.chartLabels.length <= 8
+      element.chart_show_legend = dataset.chartSeries?.length
+        ? true
+        : dataset.chartLabels.length <= 8
+      element.chart_label_rotation =
+        dataset.chartSeries?.length && dataset.chartLabels.length > 6 ? -35 : 0
     }
     if (point) {
       element.x = clamp(point.x, 2, PAGE_WIDTH - element.width - 2)
@@ -5946,6 +6062,42 @@
                             </button>
                             <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
                               onclick={() => openCakupanDialog({ kind: 'cardBreakdown', code: card.code, breakdown: breakdown.key })}>
+                              <Plus size={12} />
+                            </button>
+                          </div>
+                        {/each}
+                        {#each card.tables as table (table.key)}
+                          <div class="ml-6 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                            <span class="flex w-4 shrink-0 justify-center"><span class="h-1.5 w-1.5 rounded-full bg-forest-700"></span></span>
+                            <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
+                              draggable="true"
+                              data-cakupan-node={`cardTable:${card.code}:${table.key}`}
+                              ondragstart={(event) => startCakupanDrag(event, { kind: 'cardTable', code: card.code, table: table.key })}
+                              ondragend={endCakupanDrag}>
+                              <span class="block truncate text-[11px] font-medium text-ink">{table.label}</span>
+                              <span class="block text-[10px] text-ink-muted">
+                                {table.rows.length} polres · {table.columns.length - 1} jenis
+                              </span>
+                            </button>
+                            <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                              onclick={() => openCakupanDialog({ kind: 'cardTable', code: card.code, table: table.key })}>
+                              <Plus size={12} />
+                            </button>
+                          </div>
+                          <div class="ml-8 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                            <span class="flex w-4 shrink-0 justify-center">
+                              <span class="h-1.5 w-1.5 rounded-full bg-forest-700"></span>
+                            </span>
+                            <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
+                              draggable="true"
+                              data-cakupan-node={`cardTableSeries:${card.code}:${table.key}`}
+                              ondragstart={(event) => startCakupanDrag(event, { kind: 'cardTableSeries', code: card.code, table: table.key })}
+                              ondragend={endCakupanDrag}>
+                              <span class="block truncate text-[11px] font-medium text-ink">Grafik rekap jenis kerawanan</span>
+                              <span class="block text-[10px] text-ink-muted">{table.rows.length} polres · {table.columns.length - 1} jenis</span>
+                            </button>
+                            <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                              onclick={() => openCakupanDialog({ kind: 'cardTableSeries', code: card.code, table: table.key })}>
                               <Plus size={12} />
                             </button>
                           </div>

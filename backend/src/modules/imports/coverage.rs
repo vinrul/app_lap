@@ -4,7 +4,8 @@ use crate::{
     modules::imports::{
         models::{
             CoverageBreakdown, CoverageCode, CoverageGroup, CoverageMetric, CoverageProgram,
-            CoverageResponse, CoverageUnit, CoverageUnitCount, CoverageUnitValue, RecordView,
+            CoverageResponse, CoverageTable, CoverageTableRow, CoverageUnit, CoverageUnitCount,
+            CoverageUnitValue, RecordView,
         },
         qw,
     },
@@ -1425,6 +1426,200 @@ fn area_kind(text: &str) -> Option<&'static str> {
     Some("Lainnya")
 }
 
+/// Jumlah lokasi titik gatur per polres dari field "Jumlah lokasi gatur pagi".
+fn gatur_location_breakdown(matching: &[&RecordView]) -> Option<CoverageBreakdown> {
+    let mut counts: BTreeMap<String, (String, i64)> = BTreeMap::new();
+    let mut filled = 0_i64;
+    for row in matching {
+        let mut count: Option<i64> = None;
+        for (key, value) in &row.fields {
+            let lower = key.trim().to_ascii_lowercase();
+            if lower.contains("jumlah lokasi") && lower.contains("gatur") {
+                if let Some(parsed) = first_count(value) {
+                    count = Some(parsed);
+                    break;
+                }
+            }
+        }
+        let Some(count) = count else {
+            continue;
+        };
+        let label = if !row.polres.trim().is_empty() {
+            row.polres.trim().to_string()
+        } else if !row.satuan.trim().is_empty() {
+            row.satuan.trim().to_string()
+        } else {
+            continue;
+        };
+        filled += 1;
+        let entry = counts
+            .entry(label.to_ascii_lowercase())
+            .or_insert((label, 0));
+        entry.1 += count;
+    }
+    if counts.is_empty() {
+        return None;
+    }
+    let mut values: Vec<LabeledCount> = counts
+        .into_values()
+        .map(|(label, count)| LabeledCount::new(label, count))
+        .collect();
+    values.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    Some(CoverageBreakdown {
+        key: "lokasi-gatur-per-polres".to_string(),
+        label: "Jumlah lokasi titik gatur per polres".to_string(),
+        filled_rows: filled,
+        values,
+    })
+}
+
+const KERAWANAN_KINDS: &[&str] = &[
+    "Rawan kemacetan",
+    "Rawan keramaian",
+    "Rawan pelanggaran",
+    "Rawan kecelakaan",
+    "Rawan banjir",
+    "Rawan kriminalitas",
+    "Rawan narkoba",
+    "Lainnya",
+];
+
+fn kerawanan_kinds(value: &str) -> BTreeSet<&'static str> {
+    let mut text = value.trim();
+    if let Some(rest) = text
+        .strip_prefix("Lainnya:")
+        .or_else(|| text.strip_prefix("lainnya:"))
+    {
+        text = rest.trim();
+    }
+    let lower = text.to_ascii_lowercase();
+    let mut kinds = BTreeSet::new();
+    if is_card_noise(text)
+        || [
+            "tidak dilaksanakan",
+            "tidak melaksanakan",
+            "belum melakukan",
+            "tidak ada giat",
+            "nihil kegiatan",
+            "sesuai jadwal tidak",
+        ]
+        .iter()
+        .any(|phrase| lower.contains(phrase))
+    {
+        return kinds;
+    }
+    if lower.contains("kemacetan") || lower.contains("macet") {
+        kinds.insert("Rawan kemacetan");
+    }
+    if lower.contains("keramaian") {
+        kinds.insert("Rawan keramaian");
+    }
+    if lower.contains("pelanggaran") {
+        kinds.insert("Rawan pelanggaran");
+    }
+    if lower.contains("laka") || lower.contains("kecelakaan") {
+        kinds.insert("Rawan kecelakaan");
+    }
+    if lower.contains("banjir") {
+        kinds.insert("Rawan banjir");
+    }
+    if lower.contains("kriminal") || lower.contains("kamtibmas") {
+        kinds.insert("Rawan kriminalitas");
+    }
+    if lower.contains("narkoba") {
+        kinds.insert("Rawan narkoba");
+    }
+    if kinds.is_empty() && lower.contains("rawan") {
+        kinds.insert("Lainnya");
+    }
+    kinds
+}
+
+/// Rekap jenis kerawanan per polres dari "Pertimbangan pilihan lokasi".
+fn kerawanan_table(matching: &[&RecordView]) -> Option<CoverageTable> {
+    let mut counts: BTreeMap<String, (String, BTreeMap<&'static str, i64>)> = BTreeMap::new();
+    let mut filled = 0_i64;
+    for row in matching {
+        let mut kinds: BTreeSet<&'static str> = BTreeSet::new();
+        for (key, value) in &row.fields {
+            let lower = key.trim().to_ascii_lowercase();
+            if (lower == "pertimbangan pilihan lokasi"
+                || lower == "pertimbangan pilihan lokasi (alasan utama)")
+                && !is_card_noise(value)
+            {
+                kinds.extend(kerawanan_kinds(value));
+            }
+        }
+        if kinds.is_empty() {
+            continue;
+        }
+        let label = if !row.polres.trim().is_empty() {
+            row.polres.trim().to_string()
+        } else if !row.satuan.trim().is_empty() {
+            row.satuan.trim().to_string()
+        } else {
+            continue;
+        };
+        filled += 1;
+        let entry = counts
+            .entry(label.to_ascii_lowercase())
+            .or_insert((label, BTreeMap::new()));
+        for kind in kinds {
+            *entry.1.entry(kind).or_default() += 1;
+        }
+    }
+    if counts.is_empty() {
+        return None;
+    }
+
+    let columns: Vec<&'static str> = KERAWANAN_KINDS
+        .iter()
+        .copied()
+        .filter(|kind| {
+            counts
+                .values()
+                .any(|(_, items)| items.get(kind).is_some_and(|count| *count > 0))
+        })
+        .collect();
+    if columns.is_empty() {
+        return None;
+    }
+
+    let mut rows: Vec<CoverageTableRow> = counts
+        .into_values()
+        .map(|(label, items)| CoverageTableRow {
+            label,
+            values: columns
+                .iter()
+                .map(|kind| items.get(kind).copied().unwrap_or(0))
+                .collect(),
+        })
+        .collect();
+    rows.sort_by(|left, right| {
+        right
+            .values
+            .iter()
+            .sum::<i64>()
+            .cmp(&left.values.iter().sum::<i64>())
+            .then_with(|| left.label.cmp(&right.label))
+    });
+
+    let mut header = vec!["Polres".to_string()];
+    header.extend(columns.iter().map(|kind| (*kind).to_string()));
+    Some(CoverageTable {
+        key: "kerawanan-per-polres".to_string(),
+        label: "Rekap jenis kerawanan per polres".to_string(),
+        columns: header,
+        rows,
+        filled_rows: filled,
+    })
+}
+
 fn area_kind_counts(matching: &[&RecordView]) -> (Vec<LabeledCount>, i64) {
     let mut counts: BTreeMap<&'static str, i64> = BTreeMap::new();
     let mut filled = 0_i64;
@@ -2177,6 +2372,10 @@ fn build_code_cards(matching: &[&RecordView]) -> (Vec<CoverageMetric>, Vec<Cover
         });
     }
 
+    if let Some(breakdown) = gatur_location_breakdown(matching) {
+        breakdowns.push(breakdown);
+    }
+
     (metrics, breakdowns)
 }
 
@@ -2194,6 +2393,11 @@ fn build_code_programs(
                 .filter(|row| qw::normalize(&row.kode) == code.code)
                 .collect();
             let (metrics, breakdowns) = build_code_cards(&matching);
+            let tables: Vec<CoverageTable> = if code.code == "QW1.1" {
+                kerawanan_table(&matching).into_iter().collect()
+            } else {
+                Vec::new()
+            };
             let performed_polres = units_of(&matching, mode, Scope::Polres);
             let performed_satker = units_of(&matching, mode, Scope::Satker);
             CoverageProgram {
@@ -2237,6 +2441,7 @@ fn build_code_programs(
                 by_polres: unit_row_counts(&matching, mode, Scope::Polres),
                 by_satker: unit_row_counts(&matching, mode, Scope::Satker),
                 breakdowns,
+                tables,
             }
         })
         .collect()
@@ -2816,6 +3021,7 @@ fn build_program(
         by_polres: build_units(polres_acc, spec),
         by_satker: build_units(satker_acc, spec),
         breakdowns: Vec::new(),
+        tables: Vec::new(),
     }
 }
 
@@ -4435,6 +4641,150 @@ mod tests {
             .iter()
             .any(|value| value.label == "Gereja" && value.count == 2));
         assert!(!kinds.values.iter().any(|value| value.label == "Masjid"));
+    }
+
+    #[test]
+    fn builds_gatur_locations_per_polres() {
+        let field = "Jumlah lokasi gatur pagi";
+        let rows = vec![
+            row(
+                "QW1.1",
+                "Polres",
+                "Polres Gianyar",
+                &[(field, "5")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.1",
+                "Polsek",
+                "Polres Gianyar",
+                &[(field, "3")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.1",
+                "Polres",
+                "Polres Bangli",
+                &[(field, "2")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row("QW1.1", "Polda", "", &[(field, "1")], 0, 0, 0.0, 0),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.1")
+            .unwrap();
+        let breakdown = code
+            .breakdowns
+            .iter()
+            .find(|item| item.key == "lokasi-gatur-per-polres")
+            .unwrap();
+        assert_eq!(breakdown.label, "Jumlah lokasi titik gatur per polres");
+        assert_eq!(breakdown.filled_rows, 4);
+        assert!(breakdown
+            .values
+            .iter()
+            .any(|value| value.label == "Polres Gianyar" && value.count == 8));
+        assert!(breakdown
+            .values
+            .iter()
+            .any(|value| value.label == "Polres Bangli" && value.count == 2));
+        assert!(breakdown
+            .values
+            .iter()
+            .any(|value| value.label == "Polda Bali" && value.count == 1));
+    }
+
+    #[test]
+    fn builds_kerawanan_table_per_polres() {
+        let field = "Pertimbangan pilihan lokasi";
+        let rows = vec![
+            row(
+                "QW1.1",
+                "Polres",
+                "Polres Gianyar",
+                &[(field, "Rawan kemacetan")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.1",
+                "Polsek",
+                "Polres Gianyar",
+                &[(field, "Rawan keramaian")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.1",
+                "Polres",
+                "Polres Bangli",
+                &[(field, "Lainnya: RAWAN KEMACETAN DAN PELANGGARAN")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row("QW1.1", "Polda", "", &[(field, "Rawan laka")], 0, 0, 0.0, 0),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.1")
+            .unwrap();
+        let table = code
+            .tables
+            .iter()
+            .find(|item| item.key == "kerawanan-per-polres")
+            .unwrap();
+        assert_eq!(table.label, "Rekap jenis kerawanan per polres");
+        assert_eq!(table.filled_rows, 4);
+        assert_eq!(
+            table.columns,
+            vec![
+                "Polres",
+                "Rawan kemacetan",
+                "Rawan keramaian",
+                "Rawan pelanggaran",
+                "Rawan kecelakaan",
+            ]
+        );
+        let bangli = table
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Bangli")
+            .unwrap();
+        assert_eq!(bangli.values, vec![1, 0, 1, 0]);
+        let gianyar = table
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Gianyar")
+            .unwrap();
+        assert_eq!(gianyar.values, vec![1, 1, 0, 0]);
+        let polda = table
+            .rows
+            .iter()
+            .find(|row| row.label == "Polda Bali")
+            .unwrap();
+        assert_eq!(polda.values, vec![0, 0, 0, 1]);
     }
 
     #[test]

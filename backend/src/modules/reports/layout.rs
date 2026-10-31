@@ -50,6 +50,24 @@ pub struct BlockLayout {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
+pub struct ChartSeries {
+    pub label: String,
+    pub values: Vec<f64>,
+    pub color: String,
+}
+
+impl Default for ChartSeries {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            values: Vec::new(),
+            color: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct LayoutElement {
     pub id: String,
     #[serde(rename = "type")]
@@ -104,6 +122,7 @@ pub struct LayoutElement {
     pub chart_labels: Vec<String>,
     pub chart_values: Vec<f64>,
     pub chart_colors: Vec<String>,
+    pub chart_series: Vec<ChartSeries>,
     pub chart_show_values: bool,
     pub chart_show_legend: bool,
     pub chart_axis_color: String,
@@ -252,6 +271,7 @@ impl Default for LayoutElement {
             chart_labels: Vec::new(),
             chart_values: Vec::new(),
             chart_colors: Vec::new(),
+            chart_series: Vec::new(),
             chart_show_values: true,
             chart_show_legend: true,
             chart_axis_color: String::new(),
@@ -787,6 +807,33 @@ impl LayoutElement {
                     }
                 }
                 self.chart_colors = colors;
+                let series = std::mem::take(&mut self.chart_series);
+                self.chart_series = series
+                    .into_iter()
+                    .take(6)
+                    .enumerate()
+                    .filter_map(|(index, mut series)| {
+                        series.label = truncate(series.label.trim(), 40);
+                        if series.label.is_empty() {
+                            series.label = format!("Seri {}", index + 1);
+                        }
+                        series.values = series
+                            .values
+                            .into_iter()
+                            .take(count)
+                            .map(|value| clamp_num(value, 0.0, 1_000_000_000.0, 0.0))
+                            .collect();
+                        if series.values.is_empty() {
+                            return None;
+                        }
+                        series.values.resize(count, 0.0);
+                        series.color = safe_color(&series.color, "");
+                        if series.color.is_empty() {
+                            series.color = chart_palette(index).to_string();
+                        }
+                        Some(series)
+                    })
+                    .collect();
                 self.chart_axis_color = safe_color(&self.chart_axis_color, "#6d7872");
                 self.fill = safe_color(&self.fill, "#ffffff");
                 self.color = safe_color(&self.color, "#143d30");
@@ -902,6 +949,7 @@ impl LayoutElement {
         self.chart_labels.clear();
         self.chart_values.clear();
         self.chart_colors.clear();
+        self.chart_series.clear();
         self.chart_axis_color.clear();
         self.chart_title_font_family.clear();
         self.chart_title_font_size = 0.0;
@@ -1797,5 +1845,38 @@ mod tests {
         assert_eq!(chart.chart_values[0], 0.0);
         assert_eq!(chart.chart_values[1], 10.0);
         assert!(!chart.chart_colors[0].is_empty());
+    }
+
+    #[test]
+    fn sanitizes_chart_series() {
+        let element = LayoutElement {
+            id: "chart-series".into(),
+            kind: "chart".into(),
+            chart_labels: vec!["A".into(), "B".into()],
+            chart_values: vec![1.0, 2.0],
+            chart_series: vec![
+                ChartSeries {
+                    label: String::new(),
+                    values: vec![5.0, 6.0, 7.0],
+                    color: String::new(),
+                },
+                ChartSeries {
+                    label: "Kedua".into(),
+                    values: vec![-1.0],
+                    color: "red;bad".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut used_ids = HashSet::new();
+        let sanitized = element
+            .sanitize(&mut used_ids, 800.0, 1120.0)
+            .expect("chart element");
+        assert_eq!(sanitized.chart_series.len(), 2);
+        assert_eq!(sanitized.chart_series[0].label, "Seri 1");
+        assert_eq!(sanitized.chart_series[0].values, vec![5.0, 6.0]);
+        assert!(!sanitized.chart_series[0].color.is_empty());
+        assert_eq!(sanitized.chart_series[1].values, vec![0.0, 0.0]);
+        assert_ne!(sanitized.chart_series[1].color, "red;bad");
     }
 }

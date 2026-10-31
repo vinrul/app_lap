@@ -387,6 +387,24 @@ pub struct CoverageProgram {
     pub by_satker: Vec<CoverageUnit>,
     /// Distribusi nilai field, mis. sebaran alasan pemilihan lokasi.
     pub breakdowns: Vec<CoverageBreakdown>,
+    /// Tabel rekap dua dimensi, mis. jenis kerawanan per polres.
+    pub tables: Vec<CoverageTable>,
+}
+
+/// Tabel rekap dua dimensi: baris per unit, kolom per kategori.
+#[derive(Clone, Debug, Serialize)]
+pub struct CoverageTable {
+    pub key: String,
+    pub label: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<CoverageTableRow>,
+    pub filled_rows: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CoverageTableRow {
+    pub label: String,
+    pub values: Vec<i64>,
 }
 
 /// Kartu distribusi: hitungan tiap nilai pada satu field laporan.

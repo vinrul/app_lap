@@ -165,6 +165,8 @@ export function createChartSvg(doc: Document, element: LayoutElement): SVGElemen
     appendHorizontalBarChart(doc, svg, element, top, base)
   } else if (element.chart_type === 'pie' || element.chart_type === 'donut') {
     appendPieChart(doc, svg, element, top, base, element.chart_type === 'donut')
+  } else if (element.chart_series?.length) {
+    appendGroupedBarChart(doc, svg, element, top, base)
   } else {
     appendBarChart(doc, svg, element, top, base)
   }
@@ -218,6 +220,109 @@ function appendBarChart(
     if (text) {
       svgText(doc, svg, x + barWidth / 2, bottom + base + 8, truncateText(text, 14), { fill: element.chart_axis_color ?? '#6d7872', size: label.size, anchor: 'middle', rotate: label.rotate })
     }
+  })
+}
+
+function appendGroupedBarChart(
+  doc: Document,
+  svg: SVGElement,
+  element: LayoutElement,
+  top: number,
+  base: number,
+): void {
+  const left = 55
+  const right = 575
+  const bottom = 316
+  const labels = element.chart_labels ?? []
+  const count = Math.max(1, labels.length)
+  const series = element.chart_series ?? []
+  if (!series.length) {
+    appendBarChart(doc, svg, element, top, base)
+    return
+  }
+  const legendSize = chartTextSize(element.chart_legend_font_size, base - 4)
+  const legendHeight = element.chart_show_legend !== false ? legendSize + 10 : 0
+  const plotTop = top + legendHeight
+  const plotHeight = Math.max(40, bottom - plotTop)
+  const max = Math.max(1, ...series.flatMap((item) => item.values))
+  const step = (right - left) / count
+  const groupWidth = step * 0.78
+  const barWidth = Math.max(2, groupWidth / Math.max(1, series.length))
+  const label = labelOptions(element, base - 2)
+  const value = valueOptions(element, base - 2)
+
+  if (element.chart_show_legend !== false) {
+    let x = left
+    for (const item of series) {
+      svg.appendChild(
+        svgNode(doc, 'rect', {
+          x,
+          y: top + 1,
+          width: 10,
+          height: 10,
+          rx: 2,
+          fill: item.color,
+        }),
+      )
+      svgText(doc, svg, x + 14, top + legendSize, truncateText(item.label, 28), {
+        fill: element.color ?? '#143d30',
+        size: legendSize,
+      })
+      const advance = item.label.length * legendSize * 0.55 + 26
+      if (x + advance > right) break
+      x += advance
+    }
+  }
+
+  svg.appendChild(
+    svgNode(doc, 'line', {
+      x1: left,
+      y1: bottom,
+      x2: right,
+      y2: bottom,
+      stroke: element.chart_axis_color ?? '#6d7872',
+      'stroke-width': 1.2,
+    }),
+  )
+  svgText(doc, svg, left - 8, plotTop + base, chartValueText(max), {
+    fill: element.chart_axis_color ?? '#6d7872',
+    size: value.size,
+    anchor: 'end',
+    family: value.family,
+  })
+
+  labels.forEach((text, index) => {
+    const groupX = left + step * index + (step - groupWidth) / 2
+    series.forEach((item, seriesIndex) => {
+      const valueItem = item.values[index] ?? 0
+      const height = (valueItem / max) * plotHeight
+      const x = groupX + seriesIndex * barWidth
+      const y = bottom - height
+      svg.appendChild(
+        svgNode(doc, 'rect', {
+          x,
+          y,
+          width: barWidth,
+          height,
+          rx: 1.5,
+          fill: item.color,
+        }),
+      )
+      if (element.chart_show_values !== false && series.length <= 2) {
+        svgText(doc, svg, x + barWidth / 2, Math.max(plotTop + base, y - 3), chartValueText(valueItem), {
+          fill: element.color ?? '#143d30',
+          size: value.size,
+          anchor: 'middle',
+          family: value.family,
+        })
+      }
+    })
+    svgText(doc, svg, groupX + groupWidth / 2, bottom + base + 8, truncateText(text, 14), {
+      fill: element.chart_axis_color ?? '#6d7872',
+      size: label.size,
+      anchor: 'middle',
+      rotate: label.rotate,
+    })
   })
 }
 

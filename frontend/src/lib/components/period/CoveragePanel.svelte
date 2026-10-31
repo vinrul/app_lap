@@ -613,6 +613,42 @@
             </div>
           {/if}
 
+          {#if activeCodeCard.tables.length}
+            <div class="space-y-3">
+              {#each activeCodeCard.tables as table (table.key)}
+                <article class="overflow-hidden rounded-xl border border-line">
+                  <div class="flex flex-wrap items-center justify-between gap-2 bg-stone-50/60 px-3.5 py-2.5">
+                    <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{table.label}</p>
+                    <span class="text-[10px] text-ink-muted">
+                      {formatNumber(table.filled_rows)} dari {formatNumber(activeCodeCard.rows)} laporan mengisi
+                    </span>
+                  </div>
+                  <div class="overflow-x-auto">
+                    <table class="min-w-full text-left text-[11px]">
+                      <thead class="bg-stone-50 text-[9px] tracking-[0.08em] text-ink-muted uppercase">
+                        <tr>
+                          {#each table.columns as column, index (index)}
+                            <th class="whitespace-nowrap px-3 py-2 {index ? 'text-right' : ''}">{column}</th>
+                          {/each}
+                        </tr>
+                      </thead>
+                      <tbody class="divide-y divide-line">
+                        {#each table.rows as row (row.label)}
+                          <tr class="hover:bg-stone-50/60">
+                            <td class="whitespace-nowrap px-3 py-1.5 font-medium text-ink">{row.label}</td>
+                            {#each row.values as value, index (index)}
+                              <td class="px-3 py-1.5 text-right">{formatNumber(value)}</td>
+                            {/each}
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  </div>
+                </article>
+              {/each}
+            </div>
+          {/if}
+
           <div class="grid gap-4 xl:grid-cols-2">
             <div class="rounded-xl border border-line p-3.5">
               <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{primaryLabel} belum melaksanakan</p>
