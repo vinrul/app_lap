@@ -703,6 +703,68 @@
       {/if}
     </section>
 
+    {#if (data.media_metrics?.length ?? 0) || (data.media_tables?.length ?? 0)}
+      <section class="card overflow-hidden">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">AMPLIFIKASI MEDIA PER KEGIATAN</span>
+            <h2 class="panel-title mt-0.5">Pemberitaan online</h2>
+            <p class="mt-1 text-[10px] text-ink-muted">
+              Rekap tautan berita dan media sosial yang dilampirkan pada laporan kegiatan. Angka views belum tersedia dari data impor.
+            </p>
+          </div>
+          <span class="badge badge-neutral">{data.media_tables?.length ?? 0} rekap</span>
+        </div>
+        <div class="space-y-4 p-5">
+          {#if data.media_metrics?.length}
+            <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {#each data.media_metrics ?? [] as metric (metric.key)}
+                <article class="rounded-xl border border-line bg-stone-50/60 p-3.5">
+                  <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{metric.label}</p>
+                  <p class="mt-1 font-display text-xl text-forest-900">{formatValue(metric.total, metric.unit)}</p>
+                  <p class="mt-1 text-[10px] text-ink-muted">
+                    {formatNumber(metric.filled_rows)} dari {formatNumber(data.total_rows)} laporan melampirkan tautan
+                  </p>
+                </article>
+              {/each}
+            </div>
+          {/if}
+
+          {#each data.media_tables ?? [] as table (table.key)}
+            <article class="overflow-hidden rounded-xl border border-line">
+              <div class="flex flex-wrap items-center justify-between gap-2 bg-stone-50/60 px-3.5 py-2.5">
+                <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{table.label}</p>
+                <span class="text-[10px] text-ink-muted">
+                  {formatNumber(table.filled_rows)} dari {formatNumber(data.total_rows)} laporan melampirkan tautan
+                </span>
+              </div>
+              <div class="max-h-80 overflow-auto">
+                <table class="min-w-full text-left text-[11px]">
+                  <thead class="sticky top-0 bg-stone-50 text-[9px] tracking-[0.08em] text-ink-muted uppercase">
+                    <tr>
+                      {#each table.columns as column, index (index)}
+                        <th class="whitespace-nowrap px-3 py-2 {index ? 'text-right' : ''}">{column}</th>
+                      {/each}
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-line">
+                    {#each table.rows as row (row.label)}
+                      <tr class="hover:bg-stone-50/60">
+                        <td class="whitespace-nowrap px-3 py-1.5 font-medium text-ink">{row.label}</td>
+                        {#each row.values as value, index (index)}
+                          <td class="px-3 py-1.5 text-right">{formatNumber(value)}</td>
+                        {/each}
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          {/each}
+        </div>
+      </section>
+    {/if}
+
     <section class="card overflow-hidden">
       <div class="panel-heading">
         <div>

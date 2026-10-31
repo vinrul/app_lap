@@ -2247,6 +2247,246 @@ fn worship_table(matching: &[&RecordView], key: &str, label: &str) -> Option<Cov
     })
 }
 
+#[derive(Default)]
+struct MediaUnit {
+    label: String,
+    links: BTreeSet<String>,
+    sosial: BTreeSet<String>,
+    rows: i64,
+}
+
+fn media_host(url: &str) -> String {
+    let lower = url.to_ascii_lowercase();
+    let rest = lower
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(&lower);
+    rest.split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("www.")
+        .to_string()
+}
+
+fn media_channel(host: &str) -> &'static str {
+    if host.contains("instagram") {
+        "Instagram"
+    } else if host.contains("facebook") || host == "fb.com" {
+        "Facebook"
+    } else if host == "x.com" || host.contains("twitter") {
+        "X"
+    } else if host.contains("telegram") || host == "t.me" {
+        "Telegram"
+    } else if host.contains("tiktok") {
+        "TikTok"
+    } else if host.contains("youtube") || host == "youtu.be" {
+        "YouTube"
+    } else if host.contains("whatsapp") || host == "wa.me" {
+        "WhatsApp"
+    } else {
+        "Media online"
+    }
+}
+
+fn media_is_documentation(lower: &str) -> bool {
+    lower.contains("drive.google")
+        || lower.contains("docs.google")
+        || lower.starts_with("/uploads/")
+        || lower.contains("nihil")
+}
+
+fn media_row_links(row: &RecordView) -> Vec<String> {
+    let mut links = Vec::new();
+    for (key, value) in &row.fields {
+        let lower = key.trim().to_ascii_lowercase();
+        if lower.contains("link posting") || lower.contains("link berita") {
+            links.extend(extract_links(value));
+        }
+    }
+    links.extend(row.links.iter().cloned());
+    links
+}
+
+fn media_activity_label(code: &str) -> String {
+    let title = qw::title(code);
+    let short = title.split(" (").next().unwrap_or(title).trim();
+    if short.is_empty() {
+        code.to_string()
+    } else {
+        format!("{short} ({code})")
+    }
+}
+
+/// Tautan media, tautan media sosial, dan jumlah laporan pada satu sub-kode.
+fn media_code_counts(matching: &[&RecordView]) -> (i64, i64, usize) {
+    let mut links: BTreeSet<String> = BTreeSet::new();
+    let mut sosial: BTreeSet<String> = BTreeSet::new();
+    let mut rows = 0_usize;
+    for row in matching {
+        let mut has = false;
+        for link in media_row_links(row) {
+            let lower = link.to_ascii_lowercase();
+            if !lower.starts_with("http") || media_is_documentation(&lower) {
+                continue;
+            }
+            has = true;
+            let host = media_host(&link);
+            if media_channel(&host) != "Media online" {
+                sosial.insert(link.clone());
+            }
+            links.insert(link);
+        }
+        if has {
+            rows += 1;
+        }
+    }
+    (links.len() as i64, sosial.len() as i64, rows)
+}
+
+/// Ringkasan amplifikasi media dan rekap per kegiatan/satuan.
+fn media_coverage(rows: &[RecordView]) -> (Vec<CoverageMetric>, Vec<CoverageTable>) {
+    let total_rows = rows.len();
+    let mut totals = MediaUnit::default();
+    let mut per_code: BTreeMap<String, MediaUnit> = BTreeMap::new();
+    let mut per_unit: BTreeMap<String, MediaUnit> = BTreeMap::new();
+    let mut rows_with_media = 0_i64;
+    for row in rows {
+        let code_key = qw::normalize(&row.kode);
+        let code_label = media_activity_label(&code_key);
+        let unit_label = row_unit_label(row).unwrap_or_default();
+        let unit_key = unit_label.to_ascii_lowercase();
+        let mut has = false;
+        for link in media_row_links(row) {
+            let lower = link.to_ascii_lowercase();
+            if !lower.starts_with("http") || media_is_documentation(&lower) {
+                continue;
+            }
+            has = true;
+            let host = media_host(&link);
+            let channel = media_channel(&host);
+            let code_entry = per_code
+                .entry(code_key.clone())
+                .or_insert_with(|| MediaUnit {
+                    label: code_label.clone(),
+                    ..Default::default()
+                });
+            code_entry.links.insert(link.clone());
+            if channel != "Media online" {
+                code_entry.sosial.insert(link.clone());
+                totals.sosial.insert(link.clone());
+            }
+            totals.links.insert(link.clone());
+            if !unit_key.is_empty() {
+                let unit_entry = per_unit
+                    .entry(unit_key.clone())
+                    .or_insert_with(|| MediaUnit {
+                        label: unit_label.clone(),
+                        ..Default::default()
+                    });
+                unit_entry.links.insert(link.clone());
+                if channel != "Media online" {
+                    unit_entry.sosial.insert(link.clone());
+                }
+            }
+        }
+        if has {
+            rows_with_media += 1;
+            if let Some(entry) = per_code.get_mut(&code_key) {
+                entry.rows += 1;
+            }
+            if !unit_key.is_empty() {
+                if let Some(entry) = per_unit.get_mut(&unit_key) {
+                    entry.rows += 1;
+                }
+            }
+        }
+    }
+    if totals.links.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let filled = rows_with_media as usize;
+    let mut metrics = vec![card_metric(
+        "media-postingan",
+        "Total postingan",
+        "postingan",
+        rows_with_media as f64,
+        filled,
+        total_rows,
+    )];
+    metrics.push(card_metric(
+        "media-online",
+        "Media online",
+        "tautan",
+        totals.links.len() as f64,
+        filled,
+        total_rows,
+    ));
+    if !totals.sosial.is_empty() {
+        metrics.push(card_metric(
+            "media-sosial",
+            "Postingan media sosial",
+            "postingan",
+            totals.sosial.len() as f64,
+            filled,
+            total_rows,
+        ));
+    }
+
+    let mut code_rows: Vec<CoverageTableRow> = per_code
+        .into_values()
+        .map(|unit| CoverageTableRow {
+            label: unit.label,
+            values: vec![unit.rows, unit.links.len() as i64, unit.sosial.len() as i64],
+        })
+        .collect();
+    code_rows.sort_by(|left, right| {
+        right
+            .values
+            .get(1)
+            .cmp(&left.values.get(1))
+            .then_with(|| right.values[0].cmp(&left.values[0]))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    let mut unit_rows: Vec<CoverageTableRow> = per_unit
+        .into_values()
+        .map(|unit| CoverageTableRow {
+            label: unit.label,
+            values: vec![unit.rows, unit.links.len() as i64, unit.sosial.len() as i64],
+        })
+        .collect();
+    unit_rows.sort_by(|left, right| {
+        right
+            .values
+            .get(1)
+            .cmp(&left.values.get(1))
+            .then_with(|| right.values[0].cmp(&left.values[0]))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    let columns = vec![
+        "Kegiatan".to_string(),
+        "Postingan".to_string(),
+        "Media online".to_string(),
+        "Media sosial".to_string(),
+    ];
+    let tables = vec![
+        CoverageTable {
+            key: "media-per-kegiatan".to_string(),
+            label: "Rekap media per jenis kegiatan".to_string(),
+            columns: columns.clone(),
+            rows: code_rows,
+            filled_rows: rows_with_media,
+        },
+        CoverageTable {
+            key: "media-per-satuan".to_string(),
+            label: "Rekap media per satuan".to_string(),
+            columns,
+            rows: unit_rows,
+            filled_rows: rows_with_media,
+        },
+    ];
+    (metrics, tables)
+}
+
 /// Rekap jenis kegiatan Green Policing per polres (QW1.5).
 fn activity_table(matching: &[&RecordView]) -> Option<CoverageTable> {
     let mut per_unit: BTreeMap<String, (String, BTreeMap<String, i64>)> = BTreeMap::new();
@@ -2741,6 +2981,36 @@ fn build_code_cards(
             peserta_filled,
             total,
         ));
+    }
+
+    let (media_links, media_sosial, media_rows) = media_code_counts(matching);
+    if media_rows > 0 {
+        metrics.push(card_metric(
+            "postingan-media",
+            "Postingan media",
+            "postingan",
+            media_rows as f64,
+            media_rows,
+            total,
+        ));
+        metrics.push(card_metric(
+            "media-online",
+            "Media online",
+            "tautan",
+            media_links as f64,
+            media_rows,
+            total,
+        ));
+        if media_sosial > 0 {
+            metrics.push(card_metric(
+                "media-sosial",
+                "Postingan media sosial",
+                "postingan",
+                media_sosial as f64,
+                media_rows,
+                total,
+            ));
+        }
     }
 
     if is_poliran {
@@ -3503,6 +3773,7 @@ pub fn build_coverage_scoped(
         .map(|spec| build_program(spec, rows, &known, mode))
         .collect();
     let codes = build_code_programs(rows, &known, mode);
+    let (media_metrics, media_tables) = media_coverage(rows);
 
     CoverageResponse {
         date_start: start.to_string(),
@@ -3525,6 +3796,8 @@ pub fn build_coverage_scoped(
         groups,
         programs,
         codes,
+        media_metrics,
+        media_tables,
     }
 }
 
@@ -5277,6 +5550,109 @@ mod tests {
             .find(|row| row.label == "Polres Bangli")
             .unwrap();
         assert_eq!(bangli.values, vec![1, 1, 0]);
+    }
+
+    #[test]
+    fn builds_media_recap_per_activity_and_unit() {
+        let field = "Link posting media sosial atau berita online";
+        let rows = vec![
+            row(
+                "QW1.6",
+                "Polres",
+                "Polres Tabanan",
+                &[(
+                    field,
+                    "https://www.instagram.com/p/abc, https://www.detik.com/news/1",
+                )],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.7",
+                "Polres",
+                "Polres Bangli",
+                &[(field, "https://www.detik.com/news/2")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let postingan = coverage
+            .media_metrics
+            .iter()
+            .find(|item| item.key == "media-postingan")
+            .unwrap();
+        assert_eq!(postingan.total, 2.0);
+        assert_eq!(postingan.filled_rows, 2);
+        let online = coverage
+            .media_metrics
+            .iter()
+            .find(|item| item.key == "media-online")
+            .unwrap();
+        assert_eq!(online.total, 3.0);
+        let sosial = coverage
+            .media_metrics
+            .iter()
+            .find(|item| item.key == "media-sosial")
+            .unwrap();
+        assert_eq!(sosial.total, 1.0);
+
+        let kegiatan = coverage
+            .media_tables
+            .iter()
+            .find(|item| item.key == "media-per-kegiatan")
+            .unwrap();
+        assert_eq!(
+            kegiatan.columns,
+            vec!["Kegiatan", "Postingan", "Media online", "Media sosial"]
+        );
+        let qw16 = kegiatan
+            .rows
+            .iter()
+            .find(|row| row.label.contains("QW1.6"))
+            .unwrap();
+        assert_eq!(qw16.values, vec![1, 2, 1]);
+        let qw17 = kegiatan
+            .rows
+            .iter()
+            .find(|row| row.label.contains("QW1.7"))
+            .unwrap();
+        assert_eq!(qw17.values, vec![1, 1, 0]);
+
+        let satuan = coverage
+            .media_tables
+            .iter()
+            .find(|item| item.key == "media-per-satuan")
+            .unwrap();
+        let tabanan = satuan
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Tabanan")
+            .unwrap();
+        assert_eq!(tabanan.values, vec![1, 2, 1]);
+        let bangli = satuan
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Bangli")
+            .unwrap();
+        assert_eq!(bangli.values, vec![1, 1, 0]);
+
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.6")
+            .unwrap();
+        let card = code
+            .metrics
+            .iter()
+            .find(|item| item.key == "postingan-media")
+            .unwrap();
+        assert_eq!(card.total, 1.0);
     }
 
     #[test]

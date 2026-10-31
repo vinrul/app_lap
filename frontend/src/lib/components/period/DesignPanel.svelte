@@ -473,16 +473,46 @@
   const cakupanTotalRows = $derived(
     cakupanGroups.reduce((total, group) => total + group.rows, 0),
   )
-  const cakupanCards = $derived(coverage?.codes ?? [])
-  const cakupanCardGroups = $derived(
-    cakupanGroups
+  const mediaCardCode = 'MEDIA'
+  const cakupanCards = $derived.by(() => {
+    const cards = [...(coverage?.codes ?? [])]
+    const metrics = coverage?.media_metrics ?? []
+    const tables = coverage?.media_tables ?? []
+    if (metrics.length || tables.length) {
+      cards.push({
+        key: 'media',
+        title: 'Amplifikasi media',
+        code: mediaCardCode,
+        rows: 0,
+        polres: 0,
+        satker: 0,
+        polres_total: 0,
+        satker_total: 0,
+        polres_missing: [],
+        satker_missing: [],
+        metrics,
+        by_polres: [],
+        by_satker: [],
+        breakdowns: [],
+        tables,
+      })
+    }
+    return cards
+  })
+  const cakupanCardGroups = $derived.by(() => {
+    const groups = cakupanGroups
       .map((group) => ({
         code: group.code,
         title: group.title,
         cards: cakupanCards.filter((card) => card.code.startsWith(`${group.code}.`)),
       }))
-      .filter((group) => group.cards.length > 0),
-  )
+      .filter((group) => group.cards.length > 0)
+    const media = cakupanCards.find((card) => card.code === mediaCardCode)
+    if (media) {
+      groups.push({ code: mediaCardCode, title: media.title, cards: [media] })
+    }
+    return groups
+  })
   const cakupanCardTotal = $derived(
     cakupanCards.reduce(
       (total, card) => total + card.metrics.length + card.breakdowns.length,
@@ -2599,6 +2629,7 @@
     minggu_kasih: 'heart-handshake',
     narkoba: 'shield-alert',
     media: 'megaphone',
+    MEDIA: 'megaphone',
   }
 
   function cakupanProgramIcon(key: string): string {
@@ -2631,6 +2662,12 @@
       TABLE_SERIES_COLORS[label] ??
       CHART_PALETTE[index % CHART_PALETTE.length]
     )
+  }
+
+  function tableRowNoun(table: { key: string }): string {
+    if (table.key === 'media-per-kegiatan') return 'kegiatan'
+    if (table.key === 'media-per-satuan') return 'satuan'
+    return 'polres'
   }
 
   function cakupanProgram(key: string) {
@@ -2681,7 +2718,9 @@
   function cakupanNodeLabel(node: CakupanNode): string {
     if (node.kind === 'cards') return 'Semua kartu cakupan Quick Wins'
     if (node.kind === 'cardGroup') {
-      const group = cakupanGroup(node.group)
+      const group =
+        cakupanGroup(node.group) ??
+        cakupanCardGroups.find((item) => item.code === node.group)
       return group ? `${group.code} · ${group.title}` : node.group
     }
     if (node.kind === 'card') {
@@ -2719,7 +2758,11 @@
       const card = cakupanCard(node.code)
       const table = card?.tables.find((item) => item.key === node.table)
       const column = table?.columns[node.column]
-      return [card?.code, column ? `Grafik ${column} per polres` : 'Grafik per polres']
+      const noun = table ? tableRowNoun(table) : 'polres'
+      return [
+        card?.code,
+        column ? `Grafik ${column} per ${noun}` : `Grafik per ${noun}`,
+      ]
         .filter(Boolean)
         .join(' · ')
     }
@@ -2910,7 +2953,7 @@
         title: `${card.code} · ${table.label}`,
         summaryLabel: table.label,
         summaryValue: totals.reduce((sum, value) => sum + value, 0),
-        summaryDetail: `${table.rows.length} polres · ${table.columns.length - 1} jenis`,
+        summaryDetail: `${table.rows.length} ${tableRowNoun(table)} · ${table.columns.length - 1} jenis`,
         summaryIcon: 'clipboard-list',
         tableColumns: table.columns,
         tableRows: [
@@ -2939,25 +2982,27 @@
       if (!card || !table || !column || node.column < 1) return null
       const labels = table.rows.map((row) => row.label)
       const values = table.rows.map((row) => row.values[node.column - 1] ?? 0)
+      const noun = tableRowNoun(table)
+      const firstColumn = noun === 'kegiatan' ? 'Kegiatan' : noun === 'satuan' ? 'Satuan' : 'Polres'
       return {
-        title: `${card.code} · ${column} per polres`,
-        summaryLabel: `${column} per polres`,
+        title: `${card.code} · ${column} per ${noun}`,
+        summaryLabel: `${column} per ${noun}`,
         summaryValue: values.reduce((sum, value) => sum + value, 0),
-        summaryDetail: `${labels.length} polres`,
+        summaryDetail: `${labels.length} ${noun}`,
         summaryIcon: 'chart-column',
-        tableColumns: ['Polres', column],
+        tableColumns: [firstColumn, column],
         tableRows: [
-          ['Polres', column],
+          [firstColumn, column],
           ...table.rows.map((row) => [row.label, formatNumber(row.values[node.column - 1] ?? 0)]),
         ],
         chartLabels: labels,
         chartValues: values,
-        chartTitle: `${column} per polres`,
+        chartTitle: `${column} per ${noun}`,
         chartColor: tableSeriesColor(column, node.column - 1),
         items: table.rows.map((row, index) => ({
           label: row.label,
           value: values[index] ?? 0,
-          unit: 'kegiatan',
+          unit: noun === 'kegiatan' ? 'kegiatan' : 'unit',
           detail: `${card.code} · ${column}`,
           icon: 'chart-column',
         })),
@@ -6039,7 +6084,7 @@
                   ondragend={endCakupanDrag}>
                   <span class="block truncate text-[11px] font-semibold text-ink">Kartu cakupan Quick Wins</span>
                   <span class="block text-[10px] text-ink-muted">
-                    {cakupanCardTotal} kartu · {cakupanCards.length} sub-kode
+                    {cakupanCardTotal} kartu · {cakupanCards.filter((card) => card.code !== mediaCardCode).length} sub-kode
                   </span>
                 </button>
                 <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
@@ -6142,7 +6187,7 @@
                               ondragend={endCakupanDrag}>
                               <span class="block truncate text-[11px] font-medium text-ink">{isWorshipCode(card.code) ? `Tabel ${table.label}` : table.label}</span>
                               <span class="block text-[10px] text-ink-muted">
-                                {table.rows.length} polres · {table.columns.length - 1} jenis
+                                {table.rows.length} {tableRowNoun(table)} · {table.columns.length - 1} jenis
                               </span>
                             </button>
                             <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
@@ -6161,7 +6206,7 @@
                                 ondragstart={(event) => startCakupanDrag(event, { kind: 'cardTableSeries', code: card.code, table: table.key })}
                                 ondragend={endCakupanDrag}>
                                 <span class="block truncate text-[11px] font-medium text-ink">Grafik {table.label}</span>
-                                <span class="block text-[10px] text-ink-muted">{table.rows.length} polres · {table.columns.length - 1} seri</span>
+                                <span class="block text-[10px] text-ink-muted">{table.rows.length} {tableRowNoun(table)} · {table.columns.length - 1} seri</span>
                               </button>
                               <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
                                 onclick={() => openCakupanDialog({ kind: 'cardTableSeries', code: card.code, table: table.key })}>
@@ -6177,8 +6222,8 @@
                                 data-cakupan-node={`cardTableColumn:${card.code}:${table.key}:${columnIndex + 1}`}
                                 ondragstart={(event) => startCakupanDrag(event, { kind: 'cardTableColumn', code: card.code, table: table.key, column: columnIndex + 1 })}
                                 ondragend={endCakupanDrag}>
-                                <span class="block truncate text-[11px] font-medium text-ink">Grafik {column} per polres</span>
-                                <span class="block text-[10px] text-ink-muted">1 seri · {table.rows.length} polres</span>
+                                <span class="block truncate text-[11px] font-medium text-ink">Grafik {column} per {tableRowNoun(table)}</span>
+                                <span class="block text-[10px] text-ink-muted">1 seri · {table.rows.length} {tableRowNoun(table)}</span>
                               </button>
                               <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
                                 onclick={() => openCakupanDialog({ kind: 'cardTableColumn', code: card.code, table: table.key, column: columnIndex + 1 })}>

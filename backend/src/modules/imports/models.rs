@@ -333,6 +333,10 @@ pub struct CoverageResponse {
     pub programs: Vec<CoverageProgram>,
     /// Kartu per sub-kode Quick Wins, dihitung otomatis dari isian laporan.
     pub codes: Vec<CoverageProgram>,
+    /// Ringkasan amplifikasi media dari tautan berita/media sosial.
+    pub media_metrics: Vec<CoverageMetric>,
+    /// Rekap media per kegiatan dan per satuan.
+    pub media_tables: Vec<CoverageTable>,
 }
 
 #[derive(Clone, Debug, Serialize)]

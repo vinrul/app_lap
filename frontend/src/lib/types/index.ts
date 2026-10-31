@@ -621,6 +621,8 @@ export interface CoverageResponse {
   groups: CoverageGroup[]
   programs: CoverageProgram[]
   codes: CoverageProgram[]
+  media_metrics?: CoverageMetric[]
+  media_tables?: CoverageTable[]
 }
 
 export interface CoverageGroup {
