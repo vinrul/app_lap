@@ -2616,16 +2616,19 @@
     Lainnya: '#a4743d',
   }
 
-  const FEEDBACK_COLORS: Record<string, string> = {
+  const TABLE_SERIES_COLORS: Record<string, string> = {
     Apresiasi: '#3f765d',
     Keluhan: '#b0413e',
     'Tindak lanjut': '#b8894b',
+    'Pelaksanaan kegiatan': '#3f765d',
+    'Masjid/musholla': '#b8894b',
+    'Jumlah jamaah': '#2f6db0',
   }
 
   function tableSeriesColor(label: string, index: number): string {
     return (
       KERAWANAN_COLORS[label] ??
-      FEEDBACK_COLORS[label] ??
+      TABLE_SERIES_COLORS[label] ??
       CHART_PALETTE[index % CHART_PALETTE.length]
     )
   }
@@ -2671,6 +2674,10 @@
       : [...cakupanExpanded, key]
   }
 
+  function isWorshipCode(code: string): boolean {
+    return code === 'QW1.6' || code === 'QW1.7'
+  }
+
   function cakupanNodeLabel(node: CakupanNode): string {
     if (node.kind === 'cards') return 'Semua kartu cakupan Quick Wins'
     if (node.kind === 'cardGroup') {
@@ -2694,7 +2701,12 @@
     if (node.kind === 'cardTable') {
       const card = cakupanCard(node.code)
       const table = card?.tables.find((item) => item.key === node.table)
-      return [card?.code, table?.label].filter(Boolean).join(' · ') || node.table
+      const label = table
+        ? isWorshipCode(card?.code ?? '')
+          ? `Tabel ${table.label}`
+          : table.label
+        : node.table
+      return [card?.code, label].filter(Boolean).join(' · ')
     }
     if (node.kind === 'cardTableSeries') {
       const card = cakupanCard(node.code)
@@ -6128,7 +6140,7 @@
                               data-cakupan-node={`cardTable:${card.code}:${table.key}`}
                               ondragstart={(event) => startCakupanDrag(event, { kind: 'cardTable', code: card.code, table: table.key })}
                               ondragend={endCakupanDrag}>
-                              <span class="block truncate text-[11px] font-medium text-ink">{table.label}</span>
+                              <span class="block truncate text-[11px] font-medium text-ink">{isWorshipCode(card.code) ? `Tabel ${table.label}` : table.label}</span>
                               <span class="block text-[10px] text-ink-muted">
                                 {table.rows.length} polres · {table.columns.length - 1} jenis
                               </span>
@@ -6138,23 +6150,25 @@
                               <Plus size={12} />
                             </button>
                           </div>
-                          <div class="ml-8 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
-                            <span class="flex w-4 shrink-0 justify-center">
-                              <span class="h-1.5 w-1.5 rounded-full bg-forest-700"></span>
-                            </span>
-                            <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
-                              draggable="true"
-                              data-cakupan-node={`cardTableSeries:${card.code}:${table.key}`}
-                              ondragstart={(event) => startCakupanDrag(event, { kind: 'cardTableSeries', code: card.code, table: table.key })}
-                              ondragend={endCakupanDrag}>
-                              <span class="block truncate text-[11px] font-medium text-ink">Grafik {table.label}</span>
-                              <span class="block text-[10px] text-ink-muted">{table.rows.length} polres · {table.columns.length - 1} seri</span>
-                            </button>
-                            <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
-                              onclick={() => openCakupanDialog({ kind: 'cardTableSeries', code: card.code, table: table.key })}>
-                              <Plus size={12} />
-                            </button>
-                          </div>
+                          {#if !isWorshipCode(card.code)}
+                            <div class="ml-8 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                              <span class="flex w-4 shrink-0 justify-center">
+                                <span class="h-1.5 w-1.5 rounded-full bg-forest-700"></span>
+                              </span>
+                              <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
+                                draggable="true"
+                                data-cakupan-node={`cardTableSeries:${card.code}:${table.key}`}
+                                ondragstart={(event) => startCakupanDrag(event, { kind: 'cardTableSeries', code: card.code, table: table.key })}
+                                ondragend={endCakupanDrag}>
+                                <span class="block truncate text-[11px] font-medium text-ink">Grafik {table.label}</span>
+                                <span class="block text-[10px] text-ink-muted">{table.rows.length} polres · {table.columns.length - 1} seri</span>
+                              </button>
+                              <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                                onclick={() => openCakupanDialog({ kind: 'cardTableSeries', code: card.code, table: table.key })}>
+                                <Plus size={12} />
+                              </button>
+                            </div>
+                          {/if}
                           {#each table.columns.slice(1) as column, columnIndex (column)}
                             <div class="ml-10 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
                               <span class="flex w-4 shrink-0 justify-center"><span class="h-1.5 w-1.5 rounded-full bg-gold-400"></span></span>

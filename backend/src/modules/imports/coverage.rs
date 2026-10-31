@@ -2170,6 +2170,83 @@ fn feedback_summary(matching: &[&RecordView]) -> FeedbackSummary {
     summary
 }
 
+/// Rekap kegiatan keagamaan per polres: kegiatan, masjid, dan jamaah (QW1.6/QW1.7).
+fn worship_table(matching: &[&RecordView], key: &str, label: &str) -> Option<CoverageTable> {
+    struct UnitRow {
+        label: String,
+        kegiatan: i64,
+        masjid: BTreeSet<String>,
+        jamaah: i64,
+    }
+    let mut per_unit: BTreeMap<String, UnitRow> = BTreeMap::new();
+    let mut filled = 0_i64;
+    for row in matching {
+        let Some(label) = row_unit_label(row) else {
+            continue;
+        };
+        let entry = per_unit
+            .entry(label.to_ascii_lowercase())
+            .or_insert_with(|| UnitRow {
+                label: label.clone(),
+                kegiatan: 0,
+                masjid: BTreeSet::new(),
+                jamaah: 0,
+            });
+        let mut counted = false;
+        for (key, value) in &row.fields {
+            if is_card_noise(value) {
+                continue;
+            }
+            if let Some((card_key, _, _)) = place_card(key) {
+                if card_key == "masjid" {
+                    entry.masjid.insert(place_name(value));
+                    counted = true;
+                }
+            }
+        }
+        if let Some(jamaah) = row_attendance(row).jamaah {
+            if jamaah > 0 {
+                entry.jamaah += jamaah;
+                counted = true;
+            }
+        }
+        if counted {
+            entry.kegiatan += 1;
+            filled += 1;
+        }
+    }
+    let mut rows: Vec<CoverageTableRow> = per_unit
+        .into_values()
+        .map(|unit| CoverageTableRow {
+            label: unit.label,
+            values: vec![unit.kegiatan, unit.masjid.len() as i64, unit.jamaah],
+        })
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+    rows.sort_by(|left, right| {
+        right
+            .values
+            .get(2)
+            .cmp(&left.values.get(2))
+            .then_with(|| right.values[0].cmp(&left.values[0]))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    Some(CoverageTable {
+        key: key.to_string(),
+        label: label.to_string(),
+        columns: vec![
+            "Polres".to_string(),
+            "Pelaksanaan kegiatan".to_string(),
+            "Masjid/musholla".to_string(),
+            "Jumlah jamaah".to_string(),
+        ],
+        rows,
+        filled_rows: filled,
+    })
+}
+
 /// Rekap jenis kegiatan Green Policing per polres (QW1.5).
 fn activity_table(matching: &[&RecordView]) -> Option<CoverageTable> {
     let mut per_unit: BTreeMap<String, (String, BTreeMap<String, i64>)> = BTreeMap::new();
@@ -2413,6 +2490,7 @@ fn build_code_cards(
     let is_gatur = code == "QW1.1";
     let is_poliran = code == "QW1.3";
     let is_green = code == "QW1.5";
+    let is_jumling = code == "QW1.6";
     if polri_filled > 0 || is_gatur {
         metrics.push(card_metric(
             if is_gatur {
@@ -2442,7 +2520,9 @@ fn build_code_cards(
         .iter()
         .filter(|item| item.jamaah.is_some())
         .count();
-    if jamaah_filled > 0 {
+    // QW1.6 selalu menampilkan kartu jamaah agar bisa dipakai di tab Desain,
+    // meski laporan periode ini belum mengisi jumlah jamaah.
+    if jamaah_filled > 0 || is_jumling {
         metrics.push(card_metric(
             "jumlah-jamaah",
             "Jumlah jamaah",
@@ -2892,6 +2972,20 @@ fn build_code_programs(
                 "QW1.1" => kerawanan_table(&matching).into_iter().collect(),
                 "QW1.4" => feedback_table(&matching).into_iter().collect(),
                 "QW1.5" => activity_table(&matching).into_iter().collect(),
+                "QW1.6" => worship_table(
+                    &matching,
+                    "jumling-per-polres",
+                    "Rekap Jumat Keliling per polres",
+                )
+                .into_iter()
+                .collect(),
+                "QW1.7" => worship_table(
+                    &matching,
+                    "subuh-per-polres",
+                    "Rekap Subuh Keliling per polres",
+                )
+                .into_iter()
+                .collect(),
                 _ => Vec::new(),
             };
             let performed_polres = units_of(&matching, mode, Scope::Polres);
@@ -4995,6 +5089,194 @@ mod tests {
             .find(|row| row.label == "Polres Bangli")
             .unwrap();
         assert_eq!(bangli.values, vec![1, 0, 0]);
+    }
+
+    #[test]
+    fn exposes_jumling_jamaah_card_without_data() {
+        let rows = vec![row(
+            "QW1.6",
+            "Polres",
+            "Polres Gianyar",
+            &[(
+                "Nama masjid dan titik koordinat",
+                "Masjid Agung Gianyar (-8.54, 115.32)",
+            )],
+            0,
+            0,
+            0.0,
+            0,
+        )];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.6")
+            .unwrap();
+        let card = code
+            .metrics
+            .iter()
+            .find(|item| item.key == "jumlah-jamaah")
+            .unwrap();
+        assert_eq!(card.label, "Jumlah jamaah");
+        assert_eq!(card.unit, "orang");
+        assert_eq!(card.total, 0.0);
+        assert_eq!(card.filled_rows, 0);
+        assert_eq!(card.missing_rows, 1);
+    }
+
+    #[test]
+    fn builds_qw16_jumling_table_per_polres() {
+        let masjid = "Nama masjid dan titik koordinat";
+        let jamaah = "Pertimbangan pilihan lokasi (Perkiraan jumlah jemaah)";
+        let rows = vec![
+            row(
+                "QW1.6",
+                "Polres",
+                "Polres Badung",
+                &[
+                    (masjid, "Masjid Agung Badung (-8.60, 115.20)"),
+                    (jamaah, "500"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.6",
+                "Polsek",
+                "Polres Badung",
+                &[(masjid, "Masjid Al-Amin (-8.61, 115.21)"), (jamaah, "250")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.6",
+                "Polres",
+                "Polres Bangli",
+                &[(masjid, "Masjid Agung Bangli (-8.50, 115.30)")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.6")
+            .unwrap();
+        let table = code
+            .tables
+            .iter()
+            .find(|item| item.key == "jumling-per-polres")
+            .unwrap();
+        assert_eq!(table.label, "Rekap Jumat Keliling per polres");
+        assert_eq!(
+            table.columns,
+            vec![
+                "Polres",
+                "Pelaksanaan kegiatan",
+                "Masjid/musholla",
+                "Jumlah jamaah"
+            ]
+        );
+        assert_eq!(table.filled_rows, 3);
+
+        let badung = table
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Badung")
+            .unwrap();
+        assert_eq!(badung.values, vec![2, 2, 750]);
+        let bangli = table
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Bangli")
+            .unwrap();
+        assert_eq!(bangli.values, vec![1, 1, 0]);
+    }
+
+    #[test]
+    fn builds_qw17_subuh_table_per_polres() {
+        let masjid = "Nama masjid dan titik koordinat";
+        let jamaah = "Pertimbangan pilihan lokasi (Perkiraan jumlah jemaah)";
+        let rows = vec![
+            row(
+                "QW1.7",
+                "Polres",
+                "Polres Gianyar",
+                &[
+                    (masjid, "Masjid Agung Gianyar (-8.54, 115.32)"),
+                    (jamaah, "120"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.7",
+                "Polsek",
+                "Polres Gianyar",
+                &[(masjid, "Masjid Al-Hidayah (-8.55, 115.33)")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.7",
+                "Polres",
+                "Polres Bangli",
+                &[(masjid, "Pasar Kidul Bangli (-8.47, 115.35)")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.7")
+            .unwrap();
+        let table = code
+            .tables
+            .iter()
+            .find(|item| item.key == "subuh-per-polres")
+            .unwrap();
+        assert_eq!(table.label, "Rekap Subuh Keliling per polres");
+        assert_eq!(
+            table.columns,
+            vec![
+                "Polres",
+                "Pelaksanaan kegiatan",
+                "Masjid/musholla",
+                "Jumlah jamaah"
+            ]
+        );
+        assert_eq!(table.filled_rows, 3);
+
+        let gianyar = table
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Gianyar")
+            .unwrap();
+        assert_eq!(gianyar.values, vec![2, 2, 120]);
+        let bangli = table
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Bangli")
+            .unwrap();
+        assert_eq!(bangli.values, vec![1, 1, 0]);
     }
 
     #[test]
