@@ -134,6 +134,7 @@
     | { kind: 'cardBreakdown'; code: string; breakdown: string }
     | { kind: 'cardTable'; code: string; table: string }
     | { kind: 'cardTableSeries'; code: string; table: string }
+    | { kind: 'cardTableColumn'; code: string; table: string; column: number }
     | { kind: 'groups' }
     | { kind: 'group'; code: string }
     | { kind: 'code'; code: string }
@@ -248,6 +249,7 @@
   let iconPickerOpen = $state(false)
   let shapePickerOpen = $state(false)
   let textPickerOpen = $state(false)
+  let chartPickerOpen = $state(false)
   let iconPickerTarget = $state<'new' | 'replace' | 'card'>('new')
   let iconSearch = $state('')
   let iconCategory = $state('Semua')
@@ -2541,29 +2543,26 @@
     addElement(element)
   }
 
-  function addChart() {
+  function addChart(series: 'single' | 'multi' = 'single') {
     const element = baseElement('chart')
     element.width = 120
     element.height = 80
     element.font_size = 9
-    element.chart_title = 'Grafik baru'
+    element.chart_title = series === 'multi' ? 'Grafik multi-seri' : 'Grafik baru'
     element.chart_type = 'bar'
     element.chart_labels = ['A', 'B', 'C', 'D']
-    element.chart_values = [10, 20, 15, 25]
     element.chart_colors = ['#143d30', '#b8894b', '#3f765d', '#5b8fa8']
-    addElement(element)
-  }
-
-  function addHBarChart() {
-    const element = baseElement('chart')
-    element.width = 110
-    element.height = 70
-    element.font_size = 9
-    element.chart_title = 'Jenis kegiatan'
-    element.chart_type = 'hbar'
-    element.chart_labels = ['QW2.1', 'QW2.3', 'QW2.4', 'QW2.2']
-    element.chart_values = [17, 2, 2, 1]
-    element.chart_colors = ['#3f765d', '#3f765d', '#3f765d', '#3f765d']
+    if (series === 'multi') {
+      element.chart_series = [
+        { label: 'Seri 1', values: [10, 20, 15, 25], color: CHART_PALETTE[0] },
+        { label: 'Seri 2', values: [8, 14, 12, 18], color: CHART_PALETTE[1] },
+      ]
+      element.chart_values = [18, 34, 27, 43]
+      element.chart_show_legend = true
+    } else {
+      element.chart_values = [10, 20, 15, 25]
+    }
+    chartPickerOpen = false
     addElement(element)
   }
 
@@ -2617,8 +2616,18 @@
     Lainnya: '#a4743d',
   }
 
-  function kerawananColor(label: string): string {
-    return KERAWANAN_COLORS[label] ?? CHART_PALETTE[0]
+  const FEEDBACK_COLORS: Record<string, string> = {
+    Apresiasi: '#3f765d',
+    Keluhan: '#b0413e',
+    'Tindak lanjut': '#b8894b',
+  }
+
+  function tableSeriesColor(label: string, index: number): string {
+    return (
+      KERAWANAN_COLORS[label] ??
+      FEEDBACK_COLORS[label] ??
+      CHART_PALETTE[index % CHART_PALETTE.length]
+    )
   }
 
   function cakupanProgram(key: string) {
@@ -2688,7 +2697,19 @@
       return [card?.code, table?.label].filter(Boolean).join(' · ') || node.table
     }
     if (node.kind === 'cardTableSeries') {
-      return 'Grafik rekap jenis kerawanan'
+      const card = cakupanCard(node.code)
+      const table = card?.tables.find((item) => item.key === node.table)
+      return [card?.code, table ? `Grafik ${table.label}` : 'Grafik tabel']
+        .filter(Boolean)
+        .join(' · ')
+    }
+    if (node.kind === 'cardTableColumn') {
+      const card = cakupanCard(node.code)
+      const table = card?.tables.find((item) => item.key === node.table)
+      const column = table?.columns[node.column]
+      return [card?.code, column ? `Grafik ${column} per polres` : 'Grafik per polres']
+        .filter(Boolean)
+        .join(' · ')
     }
     if (node.kind === 'groups') return 'Semua kelompok Quick Wins'
     if (node.kind === 'programs') return 'Program prioritas'
@@ -2899,6 +2920,37 @@
         })),
       }
     }
+    if (node.kind === 'cardTableColumn') {
+      const card = cakupanCard(node.code)
+      const table = card?.tables.find((item) => item.key === node.table)
+      const column = table?.columns[node.column]
+      if (!card || !table || !column || node.column < 1) return null
+      const labels = table.rows.map((row) => row.label)
+      const values = table.rows.map((row) => row.values[node.column - 1] ?? 0)
+      return {
+        title: `${card.code} · ${column} per polres`,
+        summaryLabel: `${column} per polres`,
+        summaryValue: values.reduce((sum, value) => sum + value, 0),
+        summaryDetail: `${labels.length} polres`,
+        summaryIcon: 'chart-column',
+        tableColumns: ['Polres', column],
+        tableRows: [
+          ['Polres', column],
+          ...table.rows.map((row) => [row.label, formatNumber(row.values[node.column - 1] ?? 0)]),
+        ],
+        chartLabels: labels,
+        chartValues: values,
+        chartTitle: `${column} per polres`,
+        chartColor: tableSeriesColor(column, node.column - 1),
+        items: table.rows.map((row, index) => ({
+          label: row.label,
+          value: values[index] ?? 0,
+          unit: 'kegiatan',
+          detail: `${card.code} · ${column}`,
+          icon: 'chart-column',
+        })),
+      }
+    }
     if (node.kind === 'cardTableSeries') {
       const card = cakupanCard(node.code)
       const table = card?.tables.find((item) => item.key === node.table)
@@ -2907,7 +2959,7 @@
       const series: CakupanSeries[] = table.columns.slice(1).map((column, index) => ({
         label: column,
         values: table.rows.map((row) => row.values[index] ?? 0),
-        color: kerawananColor(column),
+        color: tableSeriesColor(column, index),
       }))
       if (!series.length) return null
       const totals = labels.map((_, index) =>
@@ -2917,7 +2969,7 @@
         title: `${card.code} · ${table.label}`,
         summaryLabel: table.label,
         summaryValue: totals.reduce((sum, value) => sum + value, 0),
-        summaryDetail: `${labels.length} polres · ${series.length} jenis`,
+        summaryDetail: `${labels.length} polres · ${series.length} seri`,
         summaryIcon: 'chart-column',
         tableColumns: table.columns,
         tableRows: [
@@ -2929,7 +2981,7 @@
         ],
         chartLabels: labels,
         chartValues: totals,
-        chartTitle: 'Rekap jenis kerawanan',
+        chartTitle: table.label,
         chartSeries: series,
         items: labels.map((label, index) => ({
           label,
@@ -3418,7 +3470,10 @@
         ? true
         : dataset.chartLabels.length <= 8
       element.chart_label_rotation =
-        dataset.chartSeries?.length && dataset.chartLabels.length > 6 ? -35 : 0
+        dataset.chartLabels.length > 6 &&
+        dataset.chartLabels.some((label) => label.length > 10)
+          ? -35
+          : 0
     }
     if (point) {
       element.x = clamp(point.x, 2, PAGE_WIDTH - element.width - 2)
@@ -4936,8 +4991,7 @@
         <Button variant="secondary" size="sm" onclick={openMediaLibrary}><ImagePlus size={14} /> Gambar</Button>
         <Button variant="secondary" size="sm" onclick={addImageUrl}><Link2 size={14} /> URL</Button>
         <Button variant="secondary" size="sm" onclick={addTable}><Table2 size={14} /> Tabel</Button>
-        <Button variant="secondary" size="sm" onclick={addChart}><BarChart3 size={14} /> Grafik</Button>
-        <Button variant="secondary" size="sm" onclick={addHBarChart}><AlignLeft size={14} /> Bar Samping</Button>
+        <Button variant="secondary" size="sm" onclick={() => (chartPickerOpen = true)}><BarChart3 size={14} /> Grafik</Button>
         <Button variant="secondary" size="sm" onclick={addCard}><CreditCard size={14} /> Kartu</Button>
         <Button variant="secondary" size="sm" onclick={openIconPickerForNew}><Shapes size={14} /> Ikon</Button>
         <span class="mx-1 h-6 w-px bg-line"></span>
@@ -6093,14 +6147,31 @@
                               data-cakupan-node={`cardTableSeries:${card.code}:${table.key}`}
                               ondragstart={(event) => startCakupanDrag(event, { kind: 'cardTableSeries', code: card.code, table: table.key })}
                               ondragend={endCakupanDrag}>
-                              <span class="block truncate text-[11px] font-medium text-ink">Grafik rekap jenis kerawanan</span>
-                              <span class="block text-[10px] text-ink-muted">{table.rows.length} polres · {table.columns.length - 1} jenis</span>
+                              <span class="block truncate text-[11px] font-medium text-ink">Grafik {table.label}</span>
+                              <span class="block text-[10px] text-ink-muted">{table.rows.length} polres · {table.columns.length - 1} seri</span>
                             </button>
                             <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
                               onclick={() => openCakupanDialog({ kind: 'cardTableSeries', code: card.code, table: table.key })}>
                               <Plus size={12} />
                             </button>
                           </div>
+                          {#each table.columns.slice(1) as column, columnIndex (column)}
+                            <div class="ml-10 flex items-center gap-1 rounded-lg border border-line bg-white px-1.5 py-1.5">
+                              <span class="flex w-4 shrink-0 justify-center"><span class="h-1.5 w-1.5 rounded-full bg-gold-400"></span></span>
+                              <button type="button" class="min-w-0 flex-1 cursor-grab text-left active:cursor-grabbing"
+                                draggable="true"
+                                data-cakupan-node={`cardTableColumn:${card.code}:${table.key}:${columnIndex + 1}`}
+                                ondragstart={(event) => startCakupanDrag(event, { kind: 'cardTableColumn', code: card.code, table: table.key, column: columnIndex + 1 })}
+                                ondragend={endCakupanDrag}>
+                                <span class="block truncate text-[11px] font-medium text-ink">Grafik {column} per polres</span>
+                                <span class="block text-[10px] text-ink-muted">1 seri · {table.rows.length} polres</span>
+                              </button>
+                              <button type="button" class="rounded p-1 text-ink-muted hover:bg-stone-100" title="Tambahkan ke kanvas"
+                                onclick={() => openCakupanDialog({ kind: 'cardTableColumn', code: card.code, table: table.key, column: columnIndex + 1 })}>
+                                <Plus size={12} />
+                              </button>
+                            </div>
+                          {/each}
                         {/each}
                       {/if}
                     {/each}
@@ -6611,6 +6682,46 @@
             <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-stone-100 text-ink-soft"><Type size={17} /></span>
             <span class="mt-3 text-sm font-semibold text-ink">Teks biasa</span>
             <span class="mt-1 text-[10px] leading-relaxed text-ink-muted">Tambah teks kosong untuk diisi dan diatur secara bebas.</span>
+          </button>
+        </div>
+      </Modal>
+    </div>
+  {/if}
+
+  {#if chartPickerOpen}
+    <div use:portal>
+      <Modal
+        open={true}
+        title="Tambah grafik"
+        description="Pilih jenis data grafik. Keduanya memakai editor grafik yang sama dan bisa diubah kapan saja."
+        onclose={() => (chartPickerOpen = false)}
+        width="max-w-2xl"
+      >
+        <div class="grid gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            class="flex h-full flex-col items-start rounded-2xl border border-line bg-white p-4 text-left transition-colors hover:border-gold-300 hover:bg-gold-50/40"
+            data-chart-option="single"
+            onclick={() => addChart('single')}
+          >
+            <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-forest-50 text-forest-700"><BarChart3 size={17} /></span>
+            <span class="mt-3 text-sm font-semibold text-ink">Satu seri</span>
+            <span class="mt-1 text-[10px] leading-relaxed text-ink-muted">
+              Satu nilai per kategori. Cocok untuk perbandingan sederhana antar polres atau kegiatan.
+            </span>
+          </button>
+
+          <button
+            type="button"
+            class="flex h-full flex-col items-start rounded-2xl border border-line bg-white p-4 text-left transition-colors hover:border-gold-300 hover:bg-gold-50/40"
+            data-chart-option="multi"
+            onclick={() => addChart('multi')}
+          >
+            <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-gold-50 text-gold-700"><Layers size={17} /></span>
+            <span class="mt-3 text-sm font-semibold text-ink">Multi seri</span>
+            <span class="mt-1 text-[10px] leading-relaxed text-ink-muted">
+              Beberapa seri per kategori sebagai bar berkelompok, lengkap dengan legenda. Nilai dan warna tiap seri diatur di editor grafik.
+            </span>
           </button>
         </div>
       </Modal>

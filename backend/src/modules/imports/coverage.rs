@@ -1444,11 +1444,7 @@ fn gatur_location_breakdown(matching: &[&RecordView]) -> Option<CoverageBreakdow
         let Some(count) = count else {
             continue;
         };
-        let label = if !row.polres.trim().is_empty() {
-            row.polres.trim().to_string()
-        } else if !row.satuan.trim().is_empty() {
-            row.satuan.trim().to_string()
-        } else {
+        let Some(label) = row_unit_label(row) else {
             continue;
         };
         filled += 1;
@@ -1478,6 +1474,276 @@ fn gatur_location_breakdown(matching: &[&RecordView]) -> Option<CoverageBreakdow
     })
 }
 
+/// Label unit laporan: polres, lalu satuan bila polres kosong.
+fn row_unit_label(row: &RecordView) -> Option<String> {
+    if !row.polres.trim().is_empty() {
+        Some(row.polres.trim().to_string())
+    } else if !row.satuan.trim().is_empty() {
+        Some(row.satuan.trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// Field yang mencatat peserta/pihak yang terlibat (QW1.5).
+fn is_participant_key(key: &str) -> bool {
+    let lower = key.trim().to_ascii_lowercase();
+    if [
+        "uraian",
+        "rincian",
+        "daftar",
+        "nama",
+        "link",
+        "dokumentasi",
+        "foto",
+        "unggah",
+        "upload",
+        "dokumen",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+    {
+        return false;
+    }
+    lower.contains("peserta")
+        || lower.contains("terlibat")
+        || lower.contains("hadir")
+        || lower.contains("jumlah orang")
+}
+
+/// Field angka jumlah warga yang didata/direkrut (QW1.3).
+fn is_warga_count_key(key: &str) -> bool {
+    let lower = key.trim().to_ascii_lowercase();
+    lower.contains("warga")
+        && ![
+            "uraian", "rincian", "daftar", "nama", "link", "unggah", "upload", "foto", "dokumen",
+        ]
+        .iter()
+        .any(|word| lower.contains(word))
+}
+
+/// Angka terbesar yang berada dekat kata kunci pada satu isian.
+fn max_count_near(value: &str, anchors: &[&str]) -> Option<i64> {
+    let mut best: Option<i64> = None;
+    for line in value.split(['\n', ';']) {
+        let lower = line.to_ascii_lowercase();
+        for (start, end) in number_spans(line) {
+            let Some(count) = parse_count(&line[start..end]) else {
+                continue;
+            };
+            if count <= 0 || count > 1_000_000 {
+                continue;
+            }
+            let before: String = lower[..start]
+                .chars()
+                .rev()
+                .take(24)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let after: String = lower[end..].chars().take(24).collect();
+            if anchors
+                .iter()
+                .any(|anchor| before.contains(anchor) || after.contains(anchor))
+            {
+                merge_best(&mut best, count);
+            }
+        }
+    }
+    best
+}
+
+/// Jumlah peserta dari satu isian, mis. `melibatkan 470 orang` atau daftar
+/// `1. Polri : 225 Pers, 2. Dinas Terkait : 100 Orang`.
+fn participant_count(value: &str) -> Option<i64> {
+    let text = value.trim();
+    if text.is_empty() || is_card_noise(text) {
+        return None;
+    }
+    let explicit = max_count_near(text, &["orang", "peserta"]);
+    let labeled: i64 = embedded_personnel(text).into_values().sum();
+    let total = explicit.unwrap_or(0).max(labeled);
+    if total > 0 {
+        return Some(total);
+    }
+    let first = first_count(text)?;
+    (first > 0).then_some(first)
+}
+
+/// Total peserta terlibat dan jumlah laporan yang mengisinya (QW1.5).
+fn green_participants(matching: &[&RecordView]) -> (i64, usize) {
+    let mut total = 0_i64;
+    let mut filled = 0_usize;
+    for row in matching {
+        let mut best: Option<i64> = None;
+        for (key, value) in &row.fields {
+            if !is_participant_key(key) {
+                continue;
+            }
+            if let Some(count) = participant_count(value) {
+                merge_best(&mut best, count);
+            }
+        }
+        if let Some(count) = best {
+            total += count;
+            filled += 1;
+        }
+    }
+    (total, filled)
+}
+
+/// Field nama mitra/lembaga kerja sama (bukan metode atau tautan dokumen).
+fn is_mitra_name_key(key: &str) -> bool {
+    let lower = strip_list_marker(key).to_ascii_lowercase();
+    if [
+        "pertimbangan",
+        "alasan",
+        "uraian",
+        "rincian",
+        "daftar",
+        "link",
+        "drive",
+        "unggah",
+        "upload",
+        "foto",
+        "dokumen",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+    {
+        return false;
+    }
+    // "Jalin kemitraan" mencatat metode, bukan nama mitra.
+    if lower.starts_with("jalin") || lower.starts_with("menjalin") {
+        return false;
+    }
+    ["mitra", "kerja sama", "kerjasama"]
+        .iter()
+        .any(|word| lower.contains(word))
+}
+
+fn mitra_name(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.contains("http") || trimmed.starts_with("/uploads/") {
+        return None;
+    }
+    let text = if trimmed.to_ascii_lowercase().starts_with("lainnya:") {
+        trimmed[8..].trim()
+    } else {
+        trimmed
+    };
+    if is_card_noise(text) || text.contains("http") || text.starts_with("/uploads/") {
+        return None;
+    }
+    let name = place_name(text);
+    (!name.is_empty()).then_some(name)
+}
+
+/// Jumlah mitra kerja sama unik beserta sebarannya per polres (QW1.3).
+fn mitra_summary(matching: &[&RecordView]) -> Option<(usize, usize, CoverageBreakdown)> {
+    let mut per_unit: BTreeMap<String, (String, BTreeSet<String>)> = BTreeMap::new();
+    let mut all: BTreeSet<String> = BTreeSet::new();
+    let mut filled = 0_usize;
+    for row in matching {
+        let Some(label) = row_unit_label(row) else {
+            continue;
+        };
+        let mut found = false;
+        for (key, value) in &row.fields {
+            if !is_mitra_name_key(key) {
+                continue;
+            }
+            let Some(name) = mitra_name(value) else {
+                continue;
+            };
+            all.insert(name.clone());
+            per_unit
+                .entry(label.to_ascii_lowercase())
+                .or_insert_with(|| (label.clone(), BTreeSet::new()))
+                .1
+                .insert(name);
+            found = true;
+        }
+        if found {
+            filled += 1;
+        }
+    }
+    if all.is_empty() {
+        return None;
+    }
+    let mut values: Vec<LabeledCount> = per_unit
+        .into_values()
+        .map(|(label, names)| LabeledCount::new(label, names.len() as i64))
+        .collect();
+    values.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    Some((
+        all.len(),
+        filled,
+        CoverageBreakdown {
+            key: "mitra-per-polres".to_string(),
+            label: "Jumlah mitra per polres".to_string(),
+            filled_rows: filled as i64,
+            values,
+        },
+    ))
+}
+
+/// Jumlah warga yang didata/direkrut per polres (QW1.3).
+fn warga_per_polres(matching: &[&RecordView]) -> Option<CoverageBreakdown> {
+    let mut counts: BTreeMap<String, (String, i64)> = BTreeMap::new();
+    let mut filled = 0_i64;
+    for row in matching {
+        let mut count: Option<i64> = None;
+        for (key, value) in &row.fields {
+            if !is_warga_count_key(key) {
+                continue;
+            }
+            if let Some(parsed) = first_count(value) {
+                merge_best(&mut count, parsed);
+            }
+        }
+        let Some(count) = count else {
+            continue;
+        };
+        if count <= 0 {
+            continue;
+        }
+        let Some(label) = row_unit_label(row) else {
+            continue;
+        };
+        filled += 1;
+        counts
+            .entry(label.to_ascii_lowercase())
+            .or_insert((label, 0))
+            .1 += count;
+    }
+    if counts.is_empty() {
+        return None;
+    }
+    let mut values: Vec<LabeledCount> = counts
+        .into_values()
+        .map(|(label, count)| LabeledCount::new(label, count))
+        .collect();
+    values.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    Some(CoverageBreakdown {
+        key: "warga-per-polres".to_string(),
+        label: "Jumlah warga per polres".to_string(),
+        filled_rows: filled,
+        values,
+    })
+}
+
 /// Jumlah personel Polri yang bertugas per polres pada laporan gatur.
 fn personnel_breakdown(matching: &[&RecordView]) -> Option<CoverageBreakdown> {
     let mut counts: BTreeMap<String, (String, i64)> = BTreeMap::new();
@@ -1489,11 +1755,7 @@ fn personnel_breakdown(matching: &[&RecordView]) -> Option<CoverageBreakdown> {
         if count <= 0 {
             continue;
         }
-        let label = if !row.polres.trim().is_empty() {
-            row.polres.trim().to_string()
-        } else if !row.satuan.trim().is_empty() {
-            row.satuan.trim().to_string()
-        } else {
+        let Some(label) = row_unit_label(row) else {
             continue;
         };
         filled += 1;
@@ -1908,6 +2170,140 @@ fn feedback_summary(matching: &[&RecordView]) -> FeedbackSummary {
     summary
 }
 
+/// Rekap jenis kegiatan Green Policing per polres (QW1.5).
+fn activity_table(matching: &[&RecordView]) -> Option<CoverageTable> {
+    let mut per_unit: BTreeMap<String, (String, BTreeMap<String, i64>)> = BTreeMap::new();
+    let mut total_map: BTreeMap<String, (String, i64)> = BTreeMap::new();
+    let mut filled = 0_i64;
+    for row in matching {
+        let mut kind: Option<String> = None;
+        for (key, value) in &row.fields {
+            if key.trim().eq_ignore_ascii_case("kegiatan") && !is_card_noise(value) {
+                kind = Some(card_value_label(value));
+                break;
+            }
+        }
+        let Some(kind) = kind else {
+            continue;
+        };
+        let Some(label) = row_unit_label(row) else {
+            continue;
+        };
+        filled += 1;
+        let unit = per_unit
+            .entry(label.to_ascii_lowercase())
+            .or_insert_with(|| (label.clone(), BTreeMap::new()));
+        *unit.1.entry(kind.to_ascii_lowercase()).or_default() += 1;
+        let total = total_map
+            .entry(kind.to_ascii_lowercase())
+            .or_insert_with(|| (kind.clone(), 0));
+        total.1 += 1;
+    }
+    if per_unit.is_empty() {
+        return None;
+    }
+    let mut columns: Vec<(String, String, i64)> = total_map
+        .into_iter()
+        .map(|(key, (label, count))| (key, label, count))
+        .collect();
+    columns.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.1.cmp(&right.1)));
+    columns.truncate(8);
+    let column_keys: Vec<String> = columns.iter().map(|(key, _, _)| key.clone()).collect();
+    let mut rows: Vec<CoverageTableRow> = per_unit
+        .into_values()
+        .map(|(label, items)| CoverageTableRow {
+            label,
+            values: column_keys
+                .iter()
+                .map(|key| items.get(key).copied().unwrap_or(0))
+                .collect(),
+        })
+        .filter(|row| row.values.iter().any(|value| *value > 0))
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+    rows.sort_by(|left, right| {
+        let left_total: i64 = left.values.iter().sum();
+        let right_total: i64 = right.values.iter().sum();
+        right_total
+            .cmp(&left_total)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    let mut header = vec!["Polres".to_string()];
+    header.extend(columns.into_iter().map(|(_, label, _)| label));
+    Some(CoverageTable {
+        key: "kegiatan-per-polres".to_string(),
+        label: "Rekap jenis kegiatan per polres".to_string(),
+        columns: header,
+        rows,
+        filled_rows: filled,
+    })
+}
+
+/// Rekap apresiasi, keluhan, dan tindak lanjut per polres (QW1.4).
+fn feedback_table(matching: &[&RecordView]) -> Option<CoverageTable> {
+    let mut per_unit: BTreeMap<String, (String, [i64; 3])> = BTreeMap::new();
+    let mut filled = 0_i64;
+    for row in matching {
+        let Some(text) = public_feedback(row) else {
+            continue;
+        };
+        let Some(label) = row_unit_label(row) else {
+            continue;
+        };
+        let lower = text.to_ascii_lowercase();
+        let apresiasi = if lower.contains("apresiasi")
+            || lower.contains("terima kasih")
+            || lower.contains("trimakasih")
+            || lower.contains("ucapan terima")
+        {
+            1
+        } else {
+            0
+        };
+        let keluhan = sum_number_before(text, "saran atau keluhan");
+        let tindak_lanjut = sum_number_before(text, "ditindaklanjuti");
+        filled += 1;
+        let entry = per_unit
+            .entry(label.to_ascii_lowercase())
+            .or_insert((label, [0; 3]));
+        entry.1[0] += apresiasi;
+        entry.1[1] += keluhan;
+        entry.1[2] += tindak_lanjut;
+    }
+    let mut rows: Vec<CoverageTableRow> = per_unit
+        .into_values()
+        .filter(|(_, values)| values.iter().any(|value| *value > 0))
+        .map(|(label, values)| CoverageTableRow {
+            label,
+            values: values.to_vec(),
+        })
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+    rows.sort_by(|left, right| {
+        let left_total: i64 = left.values.iter().sum();
+        let right_total: i64 = right.values.iter().sum();
+        right_total
+            .cmp(&left_total)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    Some(CoverageTable {
+        key: "umpan-balik-per-polres".to_string(),
+        label: "Apresiasi, keluhan, dan tindak lanjut per polres".to_string(),
+        columns: vec![
+            "Polres".to_string(),
+            "Apresiasi".to_string(),
+            "Keluhan".to_string(),
+            "Tindak lanjut".to_string(),
+        ],
+        rows,
+        filled_rows: filled,
+    })
+}
+
 fn strip_list_prefix(key: &str) -> &str {
     let trimmed = key.trim_start();
     let digits = trimmed
@@ -2015,6 +2411,8 @@ fn build_code_cards(
     // QW1.1 selalu menampilkan kartu personel agar bisa dipakai di tab Desain,
     // meski laporan periode ini belum mengisi jumlah personel.
     let is_gatur = code == "QW1.1";
+    let is_poliran = code == "QW1.3";
+    let is_green = code == "QW1.5";
     if polri_filled > 0 || is_gatur {
         metrics.push(card_metric(
             if is_gatur {
@@ -2253,6 +2651,35 @@ fn build_code_cards(
         }
     }
 
+    if is_green {
+        let (peserta_total, peserta_filled) = green_participants(matching);
+        metrics.push(card_metric(
+            "peserta-terlibat",
+            "Jumlah peserta terlibat",
+            "orang",
+            peserta_total as f64,
+            peserta_filled,
+            total,
+        ));
+    }
+
+    if is_poliran {
+        if let Some((mitra_total, mitra_filled, breakdown)) = mitra_summary(matching) {
+            metrics.push(card_metric(
+                "mitra",
+                "Jumlah mitra",
+                "mitra",
+                mitra_total as f64,
+                mitra_filled,
+                total,
+            ));
+            breakdowns.push(breakdown);
+        }
+        if let Some(breakdown) = warga_per_polres(matching) {
+            breakdowns.push(breakdown);
+        }
+    }
+
     for (key, values) in entries {
         let lower = key.to_ascii_lowercase();
 
@@ -2332,6 +2759,10 @@ fn build_code_cards(
 
         // Nama sekolah/masjid/tempat/lokasi: hitung jumlah tempat unik.
         if let Some((card_key, label, unit)) = place_card(&key) {
+            // QW1.3 memakai nama mitra dari "Pihak kerja sama", bukan metode kemitraan.
+            if is_poliran && card_key == "mitra" {
+                continue;
+            }
             if metrics.iter().any(|metric| metric.key == card_key) {
                 continue;
             }
@@ -2457,10 +2888,11 @@ fn build_code_programs(
                 .filter(|row| qw::normalize(&row.kode) == code.code)
                 .collect();
             let (metrics, breakdowns) = build_code_cards(&matching, code.code);
-            let tables: Vec<CoverageTable> = if code.code == "QW1.1" {
-                kerawanan_table(&matching).into_iter().collect()
-            } else {
-                Vec::new()
+            let tables: Vec<CoverageTable> = match code.code {
+                "QW1.1" => kerawanan_table(&matching).into_iter().collect(),
+                "QW1.4" => feedback_table(&matching).into_iter().collect(),
+                "QW1.5" => activity_table(&matching).into_iter().collect(),
+                _ => Vec::new(),
             };
             let performed_polres = units_of(&matching, mode, Scope::Polres);
             let performed_satker = units_of(&matching, mode, Scope::Satker);
@@ -4423,6 +4855,149 @@ mod tests {
     }
 
     #[test]
+    fn builds_qw15_participants_card() {
+        let rows = vec![
+            row(
+                "QW1.5",
+                "Polres",
+                "Polres Badung",
+                &[(
+                    "Pihak yang terlibat",
+                    "Kegiatan melibatkan 470 orang, terdiri dari 1. Polri : 225 Pers, 2. Dinas Terkait : 100 Orang, 3. Warga : 100 orang, 4. Komunitas : 45 orang",
+                )],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.5",
+                "Polsek",
+                "Polres Badung",
+                &[("Jumlah peserta", "50")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.5",
+                "Polres",
+                "Polres Bangli",
+                &[("Pihak yang terlibat", "Warga, BKSDA, TNI")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.5")
+            .unwrap();
+        let card = code
+            .metrics
+            .iter()
+            .find(|item| item.key == "peserta-terlibat")
+            .unwrap();
+        assert_eq!(card.label, "Jumlah peserta terlibat");
+        assert_eq!(card.unit, "orang");
+        assert_eq!(card.total, 520.0);
+        assert_eq!(card.filled_rows, 2);
+        assert_eq!(card.missing_rows, 1);
+    }
+
+    #[test]
+    fn builds_qw15_activity_table_per_polres() {
+        let rows = vec![
+            row(
+                "QW1.5",
+                "Polres",
+                "Polres Tabanan",
+                &[("Kegiatan", "Kerja bakti kebersihan")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.5",
+                "Polsek",
+                "Polres Tabanan",
+                &[("Kegiatan", "Tanam pohon")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.5",
+                "Polres",
+                "Polres Tabanan",
+                &[("Kegiatan", "Lainnya: membersihkan tanaman liar")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.5",
+                "Polres",
+                "Polres Bangli",
+                &[("Kegiatan", "Kerja bakti kebersihan")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.5",
+                "Polres",
+                "Polres Bangli",
+                &[("Kegiatan", "-")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.5")
+            .unwrap();
+        let table = code
+            .tables
+            .iter()
+            .find(|item| item.key == "kegiatan-per-polres")
+            .unwrap();
+        assert_eq!(table.label, "Rekap jenis kegiatan per polres");
+        assert_eq!(
+            table.columns,
+            vec!["Polres", "Kerja bakti kebersihan", "Lainnya", "Tanam pohon"]
+        );
+        assert_eq!(table.filled_rows, 4);
+
+        let tabanan = table
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Tabanan")
+            .unwrap();
+        assert_eq!(tabanan.values, vec![1, 1, 1]);
+        let bangli = table
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Bangli")
+            .unwrap();
+        assert_eq!(bangli.values, vec![1, 0, 0]);
+    }
+
+    #[test]
     fn builds_qw16_jamaah_and_personel_cards() {
         let rows = vec![
             row(
@@ -4826,6 +5401,118 @@ mod tests {
     }
 
     #[test]
+    fn builds_poliran_mitra_and_warga_per_polres() {
+        let mitra = "Pihak kerja sama";
+        let warga = "Jumlah warga yang didata atau direkrut (Jumlah)";
+        let rows = vec![
+            row(
+                "QW1.3",
+                "Polres",
+                "Polres Gianyar",
+                &[(mitra, "LPK ASKA BALI"), (warga, "10")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.3",
+                "Polsek",
+                "Polres Gianyar",
+                &[(mitra, "lpk aska bali"), (warga, "5")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.3",
+                "Polres",
+                "Polres Bangli",
+                &[(mitra, "WTC (WORLD TRAINING CENTER)"), (warga, "3")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.3",
+                "Polda",
+                "",
+                &[("Jalin kemitraan", "Forum tatap muka")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.3")
+            .unwrap();
+
+        let mitra_card = code
+            .metrics
+            .iter()
+            .find(|item| item.key == "mitra")
+            .unwrap();
+        assert_eq!(mitra_card.label, "Jumlah mitra");
+        assert_eq!(mitra_card.unit, "mitra");
+        assert_eq!(mitra_card.total, 2.0);
+        assert_eq!(mitra_card.filled_rows, 3);
+        assert_eq!(
+            code.metrics
+                .iter()
+                .filter(|item| item.key == "mitra")
+                .count(),
+            1
+        );
+
+        let mitra_breakdown = code
+            .breakdowns
+            .iter()
+            .find(|item| item.key == "mitra-per-polres")
+            .unwrap();
+        assert_eq!(mitra_breakdown.label, "Jumlah mitra per polres");
+        assert_eq!(mitra_breakdown.filled_rows, 3);
+        assert!(
+            mitra_breakdown
+                .values
+                .iter()
+                .any(|value| value.label == "Polres Gianyar" && value.count == 1)
+        );
+        assert!(
+            mitra_breakdown
+                .values
+                .iter()
+                .any(|value| value.label == "Polres Bangli" && value.count == 1)
+        );
+
+        let warga_breakdown = code
+            .breakdowns
+            .iter()
+            .find(|item| item.key == "warga-per-polres")
+            .unwrap();
+        assert_eq!(warga_breakdown.label, "Jumlah warga per polres");
+        assert_eq!(warga_breakdown.filled_rows, 3);
+        assert!(
+            warga_breakdown
+                .values
+                .iter()
+                .any(|value| value.label == "Polres Gianyar" && value.count == 15)
+        );
+        assert!(
+            warga_breakdown
+                .values
+                .iter()
+                .any(|value| value.label == "Polres Bangli" && value.count == 3)
+        );
+    }
+
+    #[test]
     fn exposes_gatur_personnel_card_without_data() {
         let rows = vec![row(
             "QW1.1",
@@ -4858,6 +5545,86 @@ mod tests {
                 .iter()
                 .any(|item| item.key == "personel-bertugas-per-polres")
         );
+    }
+
+    #[test]
+    fn builds_qw14_feedback_table_per_polres() {
+        let field = "Saran masukan dan problem, masalah, keluhan, kegelisahan, atau komplain dari masyarakat";
+        let rows = vec![
+            row(
+                "QW1.4",
+                "Polres",
+                "Polres Gianyar",
+                &[(
+                    field,
+                    "1) Pasar: 2 saran atau keluhan, 2 ditindaklanjuti. Apresiasi dari masyarakat.",
+                )],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.4",
+                "Polsek",
+                "Polres Gianyar",
+                &[(
+                    field,
+                    "1) Sekolah: 1 saran atau keluhan, 0 ditindaklanjuti.",
+                )],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.4",
+                "Polres",
+                "Polres Bangli",
+                &[(
+                    field,
+                    "1) Terminal: 3 saran atau keluhan, 2 ditindaklanjuti.",
+                )],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.4")
+            .unwrap();
+        let table = code
+            .tables
+            .iter()
+            .find(|item| item.key == "umpan-balik-per-polres")
+            .unwrap();
+        assert_eq!(
+            table.label,
+            "Apresiasi, keluhan, dan tindak lanjut per polres"
+        );
+        assert_eq!(
+            table.columns,
+            vec!["Polres", "Apresiasi", "Keluhan", "Tindak lanjut"]
+        );
+        assert_eq!(table.filled_rows, 3);
+
+        let gianyar = table
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Gianyar")
+            .unwrap();
+        assert_eq!(gianyar.values, vec![1, 3, 2]);
+        let bangli = table
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Bangli")
+            .unwrap();
+        assert_eq!(bangli.values, vec![0, 3, 2]);
     }
 
     #[test]

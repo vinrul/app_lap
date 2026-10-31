@@ -577,9 +577,9 @@
                   <p class="mt-1 text-[10px] text-ink-muted">
                     {formatNumber(metric.filled_rows)} dari {formatNumber(activeCodeCard.rows)} laporan mengisi
                   </p>
-                  {#if metric.key === 'jumlah-personel-bertugas' && metric.filled_rows === 0}
+                  {#if (metric.key === 'jumlah-personel-bertugas' || metric.key === 'peserta-terlibat') && metric.filled_rows === 0}
                     <p class="mt-1 text-[10px] leading-relaxed text-gold-700">
-                      Belum ada laporan pada import ini yang mengisi jumlah personel.
+                      Belum ada laporan pada import ini yang mengisi {metric.label.toLowerCase()}.
                     </p>
                   {/if}
                 </article>
