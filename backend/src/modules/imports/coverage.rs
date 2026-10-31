@@ -9,7 +9,7 @@ use crate::{
         },
         qw,
     },
-    shared::{extract_links, is_noise, parse_count, LabeledCount},
+    shared::{LabeledCount, extract_links, is_noise, parse_count},
 };
 
 use super::duties::{self, DutyLevel};
@@ -1478,6 +1478,51 @@ fn gatur_location_breakdown(matching: &[&RecordView]) -> Option<CoverageBreakdow
     })
 }
 
+/// Jumlah personel Polri yang bertugas per polres pada laporan gatur.
+fn personnel_breakdown(matching: &[&RecordView]) -> Option<CoverageBreakdown> {
+    let mut counts: BTreeMap<String, (String, i64)> = BTreeMap::new();
+    let mut filled = 0_i64;
+    for row in matching {
+        let Some(count) = row_attendance(row).polri else {
+            continue;
+        };
+        if count <= 0 {
+            continue;
+        }
+        let label = if !row.polres.trim().is_empty() {
+            row.polres.trim().to_string()
+        } else if !row.satuan.trim().is_empty() {
+            row.satuan.trim().to_string()
+        } else {
+            continue;
+        };
+        filled += 1;
+        let entry = counts
+            .entry(label.to_ascii_lowercase())
+            .or_insert((label, 0));
+        entry.1 += count;
+    }
+    if counts.is_empty() {
+        return None;
+    }
+    let mut values: Vec<LabeledCount> = counts
+        .into_values()
+        .map(|(label, count)| LabeledCount::new(label, count))
+        .collect();
+    values.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    Some(CoverageBreakdown {
+        key: "personel-bertugas-per-polres".to_string(),
+        label: "Jumlah personel bertugas per polres".to_string(),
+        filled_rows: filled,
+        values,
+    })
+}
+
 const KERAWANAN_KINDS: &[&str] = &[
     "Rawan kemacetan",
     "Rawan keramaian",
@@ -1907,7 +1952,10 @@ fn labeled_number(value: &str) -> Option<i64> {
 }
 
 /// Membangun kartu angka dan distribusi dari isian laporan satu sub-kode.
-fn build_code_cards(matching: &[&RecordView]) -> (Vec<CoverageMetric>, Vec<CoverageBreakdown>) {
+fn build_code_cards(
+    matching: &[&RecordView],
+    code: &str,
+) -> (Vec<CoverageMetric>, Vec<CoverageBreakdown>) {
     let total = matching.len();
     if total == 0 {
         return (Vec::new(), Vec::new());
@@ -1964,15 +2012,31 @@ fn build_code_cards(matching: &[&RecordView]) -> (Vec<CoverageMetric>, Vec<Cover
         .iter()
         .filter(|item| item.polri.is_some())
         .count();
-    if polri_filled > 0 {
+    // QW1.1 selalu menampilkan kartu personel agar bisa dipakai di tab Desain,
+    // meski laporan periode ini belum mengisi jumlah personel.
+    let is_gatur = code == "QW1.1";
+    if polri_filled > 0 || is_gatur {
         metrics.push(card_metric(
-            "jumlah-personel",
-            "Jumlah personel",
+            if is_gatur {
+                "jumlah-personel-bertugas"
+            } else {
+                "jumlah-personel"
+            },
+            if is_gatur {
+                "Jumlah personel yang bertugas"
+            } else {
+                "Jumlah personel"
+            },
             "orang",
             polri_total as f64,
             polri_filled,
             total,
         ));
+    }
+    if is_gatur {
+        if let Some(breakdown) = personnel_breakdown(matching) {
+            breakdowns.push(breakdown);
+        }
     }
 
     let jamaah_total: i64 = attendance.iter().filter_map(|item| item.jamaah).sum();
@@ -2392,7 +2456,7 @@ fn build_code_programs(
                 .iter()
                 .filter(|row| qw::normalize(&row.kode) == code.code)
                 .collect();
-            let (metrics, breakdowns) = build_code_cards(&matching);
+            let (metrics, breakdowns) = build_code_cards(&matching, code.code);
             let tables: Vec<CoverageTable> = if code.code == "QW1.1" {
                 kerawanan_table(&matching).into_iter().collect()
             } else {
@@ -3889,8 +3953,9 @@ mod tests {
         let personel = code
             .metrics
             .iter()
-            .find(|metric| metric.label == "Jumlah personel")
+            .find(|metric| metric.key == "jumlah-personel-bertugas")
             .unwrap();
+        assert_eq!(personel.label, "Jumlah personel yang bertugas");
         assert_eq!(personel.total, 9.0);
         assert_eq!(personel.unit, "orang");
     }
@@ -3928,14 +3993,16 @@ mod tests {
             .unwrap();
         assert_eq!(card.values[0].label, "Warga/masyarakat");
         assert_eq!(card.values[0].count, 70);
-        assert!(card
-            .values
-            .iter()
-            .any(|value| value.label == "Polri" && value.count == 8));
-        assert!(card
-            .values
-            .iter()
-            .any(|value| value.label == "BNN" && value.count == 5));
+        assert!(
+            card.values
+                .iter()
+                .any(|value| value.label == "Polri" && value.count == 8)
+        );
+        assert!(
+            card.values
+                .iter()
+                .any(|value| value.label == "BNN" && value.count == 5)
+        );
     }
 
     #[test]
@@ -4096,10 +4163,11 @@ mod tests {
             .iter()
             .find(|item| item.code == "QW1.2")
             .unwrap();
-        assert!(code
-            .metrics
-            .iter()
-            .all(|metric| metric.label != "Jumlah personel"));
+        assert!(
+            code.metrics
+                .iter()
+                .all(|metric| metric.label != "Jumlah personel")
+        );
     }
 
     #[test]
@@ -4216,14 +4284,16 @@ mod tests {
             .iter()
             .find(|item| item.key == "giat-polda-polres")
             .unwrap();
-        assert!(giat
-            .values
-            .iter()
-            .any(|value| value.label == "Polda" && value.count == 1));
-        assert!(giat
-            .values
-            .iter()
-            .any(|value| value.label == "Polres jajaran" && value.count == 3));
+        assert!(
+            giat.values
+                .iter()
+                .any(|value| value.label == "Polda" && value.count == 1)
+        );
+        assert!(
+            giat.values
+                .iter()
+                .any(|value| value.label == "Polres jajaran" && value.count == 3)
+        );
 
         let communities = code
             .breakdowns
@@ -4344,10 +4414,12 @@ mod tests {
             );
         }
 
-        assert!(!code
-            .metrics
-            .iter()
-            .any(|metric| metric.key.starts_with("field-luas")));
+        assert!(
+            !code
+                .metrics
+                .iter()
+                .any(|metric| metric.key.starts_with("field-luas"))
+        );
     }
 
     #[test]
@@ -4445,10 +4517,12 @@ mod tests {
             .unwrap();
         assert_eq!(masjid.total, 3.0);
 
-        assert!(!code
-            .metrics
-            .iter()
-            .any(|metric| metric.label.contains("Perkiraan jumlah jemaah")));
+        assert!(
+            !code
+                .metrics
+                .iter()
+                .any(|metric| metric.label.contains("Perkiraan jumlah jemaah"))
+        );
     }
 
     #[test]
@@ -4611,10 +4685,12 @@ mod tests {
             .find(|item| item.code == "QW1.8")
             .unwrap();
 
-        assert!(!code
-            .metrics
-            .iter()
-            .any(|metric| metric.key == "jumlah-personel"));
+        assert!(
+            !code
+                .metrics
+                .iter()
+                .any(|metric| metric.key == "jumlah-personel")
+        );
 
         let jemaat = code
             .metrics
@@ -4636,22 +4712,25 @@ mod tests {
             .iter()
             .find(|item| item.key == "jenis-ibadah")
             .unwrap();
-        assert!(kinds
-            .values
-            .iter()
-            .any(|value| value.label == "Gereja" && value.count == 2));
+        assert!(
+            kinds
+                .values
+                .iter()
+                .any(|value| value.label == "Gereja" && value.count == 2)
+        );
         assert!(!kinds.values.iter().any(|value| value.label == "Masjid"));
     }
 
     #[test]
     fn builds_gatur_locations_per_polres() {
         let field = "Jumlah lokasi gatur pagi";
+        let personel = "Cara bertindak (Jumlah personel)";
         let rows = vec![
             row(
                 "QW1.1",
                 "Polres",
                 "Polres Gianyar",
-                &[(field, "5")],
+                &[(field, "5"), (personel, "4")],
                 0,
                 0,
                 0.0,
@@ -4661,7 +4740,7 @@ mod tests {
                 "QW1.1",
                 "Polsek",
                 "Polres Gianyar",
-                &[(field, "3")],
+                &[(field, "3"), (personel, "2")],
                 0,
                 0,
                 0.0,
@@ -4671,7 +4750,7 @@ mod tests {
                 "QW1.1",
                 "Polres",
                 "Polres Bangli",
-                &[(field, "2")],
+                &[(field, "2"), (personel, "3")],
                 0,
                 0,
                 0.0,
@@ -4693,18 +4772,92 @@ mod tests {
             .unwrap();
         assert_eq!(breakdown.label, "Jumlah lokasi titik gatur per polres");
         assert_eq!(breakdown.filled_rows, 4);
-        assert!(breakdown
-            .values
+        assert!(
+            breakdown
+                .values
+                .iter()
+                .any(|value| value.label == "Polres Gianyar" && value.count == 8)
+        );
+        assert!(
+            breakdown
+                .values
+                .iter()
+                .any(|value| value.label == "Polres Bangli" && value.count == 2)
+        );
+        assert!(
+            breakdown
+                .values
+                .iter()
+                .any(|value| value.label == "Polda Bali" && value.count == 1)
+        );
+
+        let personel_card = code
+            .metrics
             .iter()
-            .any(|value| value.label == "Polres Gianyar" && value.count == 8));
-        assert!(breakdown
-            .values
+            .find(|item| item.key == "jumlah-personel-bertugas")
+            .unwrap();
+        assert_eq!(personel_card.label, "Jumlah personel yang bertugas");
+        assert_eq!(personel_card.unit, "orang");
+        assert_eq!(personel_card.total, 9.0);
+        assert_eq!(personel_card.filled_rows, 3);
+
+        let personel_per_polres = code
+            .breakdowns
             .iter()
-            .any(|value| value.label == "Polres Bangli" && value.count == 2));
-        assert!(breakdown
-            .values
+            .find(|item| item.key == "personel-bertugas-per-polres")
+            .unwrap();
+        assert_eq!(
+            personel_per_polres.label,
+            "Jumlah personel bertugas per polres"
+        );
+        assert_eq!(personel_per_polres.filled_rows, 3);
+        assert!(
+            personel_per_polres
+                .values
+                .iter()
+                .any(|value| value.label == "Polres Gianyar" && value.count == 6)
+        );
+        assert!(
+            personel_per_polres
+                .values
+                .iter()
+                .any(|value| value.label == "Polres Bangli" && value.count == 3)
+        );
+    }
+
+    #[test]
+    fn exposes_gatur_personnel_card_without_data() {
+        let rows = vec![row(
+            "QW1.1",
+            "Polres",
+            "Polres Gianyar",
+            &[("Jumlah lokasi gatur pagi", "5")],
+            0,
+            0,
+            0.0,
+            0,
+        )];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
             .iter()
-            .any(|value| value.label == "Polda Bali" && value.count == 1));
+            .find(|item| item.code == "QW1.1")
+            .unwrap();
+        let personel = code
+            .metrics
+            .iter()
+            .find(|item| item.key == "jumlah-personel-bertugas")
+            .unwrap();
+        assert_eq!(personel.total, 0.0);
+        assert_eq!(personel.filled_rows, 0);
+        assert_eq!(personel.missing_rows, 1);
+        assert!(
+            !code
+                .breakdowns
+                .iter()
+                .any(|item| item.key == "personel-bertugas-per-polres")
+        );
     }
 
     #[test]
