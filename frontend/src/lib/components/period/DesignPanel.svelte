@@ -2712,7 +2712,7 @@
   }
 
   function isWorshipCode(code: string): boolean {
-    return code === 'QW1.6' || code === 'QW1.7'
+    return code === 'QW1.6' || code === 'QW1.7' || code === 'QW1.8'
   }
 
   function cakupanNodeLabel(node: CakupanNode): string {

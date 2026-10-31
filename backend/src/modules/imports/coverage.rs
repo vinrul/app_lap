@@ -994,26 +994,37 @@ fn count_near(value: &str, anchors: &[&str]) -> Option<i64> {
     for line in value.split(['\n', ';']) {
         let lower = line.to_ascii_lowercase();
         for anchor_word in anchors {
-            let Some(anchor) = lower.find(anchor_word) else {
-                continue;
-            };
-            let anchor_end = anchor + anchor_word.len();
-            for (start, end) in number_spans(line) {
-                let Some(count) = parse_count(&line[start..end]) else {
-                    continue;
-                };
-                if count <= 0 || count > 1_000_000 {
+            let mut search = 0;
+            while let Some(offset) = lower[search..].find(anchor_word) {
+                let anchor = search + offset;
+                let anchor_end = anchor + anchor_word.len();
+                search = anchor_end;
+                // Hindari "umat" yang sebenarnya bagian dari "Jumat".
+                if *anchor_word == "umat"
+                    && lower[..anchor]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|character| character.is_alphanumeric())
+                {
                     continue;
                 }
-                let distance = if end <= anchor {
-                    anchor - end
-                } else if start >= anchor_end {
-                    start - anchor_end
-                } else {
-                    0
-                };
-                if distance <= 20 && best.map_or(true, |(closest, _)| distance < closest) {
-                    best = Some((distance, count));
+                for (start, end) in number_spans(line) {
+                    let Some(count) = parse_count(&line[start..end]) else {
+                        continue;
+                    };
+                    if count <= 0 || count > 1_000_000 {
+                        continue;
+                    }
+                    let distance = if end <= anchor {
+                        anchor - end
+                    } else if start >= anchor_end {
+                        start - anchor_end
+                    } else {
+                        0
+                    };
+                    if distance <= 20 && best.map_or(true, |(closest, _)| distance < closest) {
+                        best = Some((distance, count));
+                    }
                 }
             }
         }
@@ -2171,12 +2182,19 @@ fn feedback_summary(matching: &[&RecordView]) -> FeedbackSummary {
 }
 
 /// Rekap kegiatan keagamaan per polres: kegiatan, masjid, dan jamaah (QW1.6/QW1.7).
-fn worship_table(matching: &[&RecordView], key: &str, label: &str) -> Option<CoverageTable> {
+fn worship_table(
+    matching: &[&RecordView],
+    key: &str,
+    label: &str,
+    place_label: &str,
+    people_label: &str,
+    use_jemaat: bool,
+) -> Option<CoverageTable> {
     struct UnitRow {
         label: String,
         kegiatan: i64,
-        masjid: BTreeSet<String>,
-        jamaah: i64,
+        places: BTreeSet<String>,
+        people: i64,
     }
     let mut per_unit: BTreeMap<String, UnitRow> = BTreeMap::new();
     let mut filled = 0_i64;
@@ -2189,8 +2207,8 @@ fn worship_table(matching: &[&RecordView], key: &str, label: &str) -> Option<Cov
             .or_insert_with(|| UnitRow {
                 label: label.clone(),
                 kegiatan: 0,
-                masjid: BTreeSet::new(),
-                jamaah: 0,
+                places: BTreeSet::new(),
+                people: 0,
             });
         let mut counted = false;
         for (key, value) in &row.fields {
@@ -2198,15 +2216,21 @@ fn worship_table(matching: &[&RecordView], key: &str, label: &str) -> Option<Cov
                 continue;
             }
             if let Some((card_key, _, _)) = place_card(key) {
-                if card_key == "masjid" {
-                    entry.masjid.insert(place_name(value));
+                if card_key == "masjid" || card_key == "ibadah" {
+                    entry.places.insert(place_name(value));
                     counted = true;
                 }
             }
         }
-        if let Some(jamaah) = row_attendance(row).jamaah {
-            if jamaah > 0 {
-                entry.jamaah += jamaah;
+        let attendance = row_attendance(row);
+        let people = if use_jemaat {
+            attendance.jemaat
+        } else {
+            attendance.jamaah
+        };
+        if let Some(people) = people {
+            if people > 0 {
+                entry.people += people;
                 counted = true;
             }
         }
@@ -2219,7 +2243,7 @@ fn worship_table(matching: &[&RecordView], key: &str, label: &str) -> Option<Cov
         .into_values()
         .map(|unit| CoverageTableRow {
             label: unit.label,
-            values: vec![unit.kegiatan, unit.masjid.len() as i64, unit.jamaah],
+            values: vec![unit.kegiatan, unit.places.len() as i64, unit.people],
         })
         .collect();
     if rows.is_empty() {
@@ -2239,8 +2263,8 @@ fn worship_table(matching: &[&RecordView], key: &str, label: &str) -> Option<Cov
         columns: vec![
             "Polres".to_string(),
             "Pelaksanaan kegiatan".to_string(),
-            "Masjid/musholla".to_string(),
-            "Jumlah jamaah".to_string(),
+            place_label.to_string(),
+            people_label.to_string(),
         ],
         rows,
         filled_rows: filled,
@@ -2710,7 +2734,7 @@ fn build_code_cards(
 
     // Personel Polri dan masyarakat yang hadir dari field angka maupun teks laporan.
     // Laporan masjid tidak dihitung pada QW1.8 (khusus non-Islam).
-    let attendance: Vec<Attendance> = matching
+    let mut attendance: Vec<Attendance> = matching
         .iter()
         .map(|row| {
             if has_ibadah_place && row_is_masjid(row) {
@@ -2720,6 +2744,12 @@ fn build_code_cards(
             }
         })
         .collect();
+    // QW1.6 (Jumat Keliling) dan QW1.7 (Subuh Keliling) hanya memakai jamaah.
+    if code == "QW1.6" || code == "QW1.7" {
+        for item in &mut attendance {
+            item.jemaat = None;
+        }
+    }
     let polri_total: i64 = attendance.iter().filter_map(|item| item.polri).sum();
     let polri_filled = attendance
         .iter()
@@ -2731,6 +2761,8 @@ fn build_code_cards(
     let is_poliran = code == "QW1.3";
     let is_green = code == "QW1.5";
     let is_jumling = code == "QW1.6";
+    let is_subuh = code == "QW1.7";
+    let is_minggu = code == "QW1.8";
     if polri_filled > 0 || is_gatur {
         metrics.push(card_metric(
             if is_gatur {
@@ -2760,9 +2792,9 @@ fn build_code_cards(
         .iter()
         .filter(|item| item.jamaah.is_some())
         .count();
-    // QW1.6 selalu menampilkan kartu jamaah agar bisa dipakai di tab Desain,
+    // QW1.6 dan QW1.7 selalu menampilkan kartu jamaah agar bisa dipakai di tab Desain,
     // meski laporan periode ini belum mengisi jumlah jamaah.
-    if jamaah_filled > 0 || is_jumling {
+    if jamaah_filled > 0 || is_jumling || is_subuh {
         metrics.push(card_metric(
             "jumlah-jamaah",
             "Jumlah jamaah",
@@ -2778,7 +2810,9 @@ fn build_code_cards(
         .iter()
         .filter(|item| item.jemaat.is_some())
         .count();
-    if jemaat_filled > 0 {
+    // QW1.8 selalu menampilkan kartu jemaat agar bisa dipakai di tab Desain,
+    // meski laporan periode ini belum mengisi jumlah jemaat.
+    if jemaat_filled > 0 || is_minggu {
         metrics.push(card_metric(
             "jumlah-jemaat",
             "Jumlah jemaat",
@@ -3246,6 +3280,9 @@ fn build_code_programs(
                     &matching,
                     "jumling-per-polres",
                     "Rekap Jumat Keliling per polres",
+                    "Masjid/musholla",
+                    "Jumlah jamaah",
+                    false,
                 )
                 .into_iter()
                 .collect(),
@@ -3253,6 +3290,19 @@ fn build_code_programs(
                     &matching,
                     "subuh-per-polres",
                     "Rekap Subuh Keliling per polres",
+                    "Masjid/musholla",
+                    "Jumlah jamaah",
+                    false,
+                )
+                .into_iter()
+                .collect(),
+                "QW1.8" => worship_table(
+                    &matching,
+                    "minggu-per-polres",
+                    "Rekap Minggu Kasih per polres",
+                    "Tempat ibadah",
+                    "Jumlah jemaat",
+                    true,
                 )
                 .into_iter()
                 .collect(),
@@ -5656,6 +5706,44 @@ mod tests {
     }
 
     #[test]
+    fn does_not_read_jumat_as_umat() {
+        assert_eq!(
+            jemaat_from_text("Kegiatan Jumat Keliling tanggal 30 Oktober 2026"),
+            None
+        );
+        assert_eq!(jemaat_from_text("Umat beragama hadir 80 orang"), Some(80));
+        assert_eq!(jemaat_from_text("Jemaat gereja 120 orang"), Some(120));
+    }
+
+    #[test]
+    fn skips_jemaat_card_for_islamic_programs() {
+        let rows = vec![row(
+            "QW1.6",
+            "Polres",
+            "Polres Tabanan",
+            &[
+                (
+                    "Nama masjid dan titik koordinat",
+                    "Masjid Al-Amin (-8.53, 115.12)",
+                ),
+                ("Peran", "umat muslim yang hadir 80 orang"),
+            ],
+            0,
+            0,
+            0.0,
+            0,
+        )];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.6")
+            .unwrap();
+        assert!(!code.metrics.iter().any(|item| item.key == "jumlah-jemaat"));
+    }
+
+    #[test]
     fn builds_qw16_jamaah_and_personel_cards() {
         let rows = vec![
             row(
@@ -5756,6 +5844,149 @@ mod tests {
                 .iter()
                 .any(|metric| metric.label.contains("Perkiraan jumlah jemaah"))
         );
+    }
+
+    #[test]
+    fn exposes_subuh_jamaah_card_without_data() {
+        let rows = vec![row(
+            "QW1.7",
+            "Polres",
+            "Polres Gianyar",
+            &[(
+                "Nama masjid dan titik koordinat",
+                "Masjid Agung Gianyar (-8.54, 115.32)",
+            )],
+            0,
+            0,
+            0.0,
+            0,
+        )];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.7")
+            .unwrap();
+        let card = code
+            .metrics
+            .iter()
+            .find(|item| item.key == "jumlah-jamaah")
+            .unwrap();
+        assert_eq!(card.label, "Jumlah jamaah");
+        assert_eq!(card.total, 0.0);
+        assert_eq!(card.filled_rows, 0);
+    }
+
+    #[test]
+    fn exposes_minggu_jemaat_card_without_data() {
+        let rows = vec![row(
+            "QW1.8",
+            "Polres",
+            "Polres Bangli",
+            &[(
+                "Nama tempat ibadah dan titik koordinat",
+                "Pura Besakih (-8.37, 115.45)",
+            )],
+            0,
+            0,
+            0.0,
+            0,
+        )];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.8")
+            .unwrap();
+        let card = code
+            .metrics
+            .iter()
+            .find(|item| item.key == "jumlah-jemaat")
+            .unwrap();
+        assert_eq!(card.label, "Jumlah jemaat");
+        assert_eq!(card.total, 0.0);
+        assert_eq!(card.filled_rows, 0);
+    }
+
+    #[test]
+    fn builds_qw18_minggu_table_per_polres() {
+        let place = "Nama tempat ibadah dan titik koordinat";
+        let rows = vec![
+            row(
+                "QW1.8",
+                "Polres",
+                "Polres Badung",
+                &[
+                    (place, "Pura Jagat Tirtha, Tuban (-8.74, 115.17)"),
+                    ("Peran", "1. Polri : 10 2. Jemaat : 450"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.8",
+                "Polsek",
+                "Polres Badung",
+                &[
+                    (place, "Gereja Katolik Paroki (-8.63, 115.19)"),
+                    ("Peran", "1. Jemaat : 200"),
+                ],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.8",
+                "Polres",
+                "Polres Bangli",
+                &[(place, "Pura Besakih (-8.37, 115.45)")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-15", "2026-10-23", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.8")
+            .unwrap();
+        let table = code
+            .tables
+            .iter()
+            .find(|item| item.key == "minggu-per-polres")
+            .unwrap();
+        assert_eq!(table.label, "Rekap Minggu Kasih per polres");
+        assert_eq!(
+            table.columns,
+            vec![
+                "Polres",
+                "Pelaksanaan kegiatan",
+                "Tempat ibadah",
+                "Jumlah jemaat"
+            ]
+        );
+        assert_eq!(table.filled_rows, 3);
+
+        let badung = table
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Badung")
+            .unwrap();
+        assert_eq!(badung.values, vec![2, 2, 650]);
+        let bangli = table
+            .rows
+            .iter()
+            .find(|row| row.label == "Polres Bangli")
+            .unwrap();
+        assert_eq!(bangli.values, vec![1, 1, 0]);
     }
 
     #[test]
