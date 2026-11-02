@@ -144,6 +144,10 @@ cargo test
 cargo run --release
 ```
 
+Hentikan server dengan Ctrl+C. Server menyelesaikan permintaan yang sedang berjalan,
+menghentikan pengambilan tugas unduhan bukti dukung baru, lalu menutup database
+dengan rapi. Di Linux, SIGTERM dari `systemctl stop`/`restart` diperlakukan sama.
+
 Pengujian backend mencakup parser workbook contoh (termasuk dedupe dan hierarki unit), analisis isian laporan, normalisasi tautan bukti dukung, klasifikasi folder Google Drive dan batas 100 berkas, normalisasi tanggal/angka, klasifikasi tautan media, render 9 halaman/halaman blank, dan agregasi metrik.
 
 ## Data dan cadangan

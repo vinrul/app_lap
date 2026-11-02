@@ -18,7 +18,9 @@ use crate::{
             },
             service,
         },
+        reports,
     },
+    shared::cache,
     state::AppState,
 };
 
@@ -45,12 +47,14 @@ pub async fn commit(
 ) -> ApiResult<Json<ImportView>> {
     let (filename, bytes) = read_workbook(multipart, state.config.max_upload_bytes).await?;
     let view = service::commit(&state.db, &state.config, &user.id, &filename, bytes).await?;
+    cache::invalidate();
     if !view.id.is_empty() {
         evidence::spawn_import_downloads(
             state.db.clone(),
             state.config.clone(),
             state.evidence_downloads.clone(),
             view.id.clone(),
+            state.shutdown.clone(),
         );
     }
     Ok(Json(view))
@@ -66,6 +70,7 @@ pub async fn retry_evidence(
         state.config.clone(),
         state.evidence_downloads.clone(),
         &import_id,
+        state.shutdown.clone(),
     )
     .await?;
     Ok(Json(serde_json::json!({ "queued": queued })))
@@ -156,8 +161,21 @@ pub async fn coverage(
     Path(period_id): Path<String>,
     Query(query): Query<CoverageQuery>,
 ) -> ApiResult<Json<CoverageResponse>> {
+    let polres = query
+        .polres
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if polres.is_none() {
+        // Cakupan tanpa filter sudah ikut dihitung bersama metrik periode,
+        // sehingga permintaan dari panel desain tidak perlu memindai ulang.
+        let metrics = reports::service::metrics_for(&state.db, &state.config, &period_id).await?;
+        if let Some(coverage) = metrics.coverage {
+            return Ok(Json(coverage));
+        }
+    }
     Ok(Json(
-        service::coverage_for_period(&state.db, &period_id, query.polres.as_deref()).await?,
+        service::coverage_for_period(&state.db, &period_id, polres).await?,
     ))
 }
 

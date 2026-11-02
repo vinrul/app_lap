@@ -733,6 +733,7 @@ export interface Dashboard {
   latest_period: Period | null
   latest_import: ImportView | null
   metrics: ReportMetrics | null
+  coverage: CoverageResponse | null
   recent_periods: Period[]
   recent_reports: ReportView[]
 }

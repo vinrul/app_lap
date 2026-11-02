@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use tokio::sync::Mutex;
 use tracing::info;
@@ -7,8 +7,8 @@ use crate::{
     app,
     config::Config,
     db,
-    modules::{auth::service as auth_service, imports::evidence},
-    state::{AppState, EvidenceDownloadLocks},
+    modules::{auth::service as auth_service, imports::evidence, reports},
+    state::{AppState, EvidenceDownloadLocks, ShutdownSignal},
 };
 
 pub async fn run() -> anyhow::Result<()> {
@@ -41,6 +41,7 @@ pub async fn run() -> anyhow::Result<()> {
         config: Arc::new(config.clone()),
         pdf_lock: Arc::new(Mutex::new(())),
         evidence_downloads: Arc::new(EvidenceDownloadLocks::default()),
+        shutdown: ShutdownSignal::new(),
         http,
     };
 
@@ -48,6 +49,7 @@ pub async fn run() -> anyhow::Result<()> {
         &state.db,
         state.config.clone(),
         state.evidence_downloads.clone(),
+        state.shutdown.clone(),
     )
     .await
     {
@@ -60,7 +62,11 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
 
-    let router = app::build_router(state);
+    let router = app::build_router(state.clone());
+
+    // Permintaan pertama setelah server hidup tidak perlu menanggung
+    // pembacaan disk dari nol untuk periode yang paling sering dibuka.
+    tokio::spawn(warm_latest_period(state.clone()));
 
     let listener = tokio::net::TcpListener::bind((config.bind_addr, config.port)).await?;
     info!(
@@ -80,6 +86,94 @@ pub async fn run() -> anyhow::Result<()> {
             );
         }
     }
-    axum::serve(listener, router).await?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal(state.shutdown.clone()))
+        .await?;
+
+    info!("server berhenti menerima permintaan; menyelesaikan pekerjaan latar belakang");
+    state.shutdown.trigger();
+
+    if !wait_for_evidence(&state.evidence_downloads, Duration::from_secs(15)).await {
+        tracing::warn!("worker bukti dukung belum selesai dalam batas waktu; keluar");
+    }
+
+    match tokio::time::timeout(Duration::from_secs(5), state.db.close()).await {
+        Ok(()) => info!("database ditutup dengan rapi"),
+        Err(_) => tracing::warn!("penutupan database melewati batas waktu"),
+    }
+
+    info!("server berhenti");
     Ok(())
+}
+
+/// Menunggu Ctrl+C atau SIGTERM (dikirim systemd saat stop/restart).
+async fn shutdown_signal(shutdown: ShutdownSignal) {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(%error, "gagal mendengarkan sinyal Ctrl+C");
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                tracing::error!(%error, "gagal mendengarkan sinyal SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+
+    info!("sinyal berhenti diterima; menutup server dengan rapi");
+    shutdown.trigger();
+}
+
+async fn wait_for_evidence(locks: &EvidenceDownloadLocks, timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if locks.is_idle() {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn warm_latest_period(state: AppState) {
+    let period_id = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM report_periods
+         WHERE archived_at IS NULL
+         ORDER BY start_date DESC, created_at DESC
+         LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await;
+
+    let Ok(Some(period_id)) = period_id else {
+        return;
+    };
+
+    let started = std::time::Instant::now();
+    match reports::service::metrics_for(&state.db, &state.config, &period_id).await {
+        Ok(metrics) => info!(
+            period_id = %period_id,
+            rows = metrics.total_rows,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "cache periode terbaru siap"
+        ),
+        Err(error) => tracing::warn!(%error, "gagal memanaskan cache periode terbaru"),
+    }
 }

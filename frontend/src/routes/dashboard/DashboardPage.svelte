@@ -8,22 +8,23 @@
     ClipboardList,
     CloudUpload,
     FileText,
+    Layers,
     Plus,
     Rows3,
+    ShieldCheck,
     Sparkles,
+    Users,
   } from 'lucide-svelte'
   import { dashboardApi } from '../../lib/api'
   import { errorMessage } from '../../lib/api/client'
   import type { Dashboard, User } from '../../lib/types'
   import { formatDateTime, formatNumber, formatRange, statusOfPeriod } from '../../lib/utils/format'
-  import { quickWinsLabels } from '../../lib/utils/constants'
   import { navigate } from '../../lib/stores/router.svelte'
   import PageHeader from '../../lib/components/ui/PageHeader.svelte'
   import StatCard from '../../lib/components/ui/StatCard.svelte'
   import Badge from '../../lib/components/ui/Badge.svelte'
   import Button from '../../lib/components/ui/Button.svelte'
   import EmptyState from '../../lib/components/ui/EmptyState.svelte'
-  import BarList from '../../lib/components/charts/BarList.svelte'
   import DailyBars from '../../lib/components/charts/DailyBars.svelte'
 
   type Props = { user: User }
@@ -51,6 +52,25 @@
   const latest = $derived(data?.latest_period ?? null)
   const metrics = $derived(data?.metrics ?? null)
   const status = $derived(latest ? statusOfPeriod(latest) : null)
+
+  // Ringkasan mengikuti halaman Cakupan periode terbaru agar angkanya sama.
+  const coverage = $derived(data?.coverage ?? null)
+  const coverageGroups = $derived(coverage?.groups ?? [])
+  const groupsPerformed = $derived(coverageGroups.filter((group) => group.rows > 0).length)
+  const totalCodes = $derived(
+    coverageGroups.reduce((total, group) => total + group.codes.length, 0),
+  )
+  const codesPerformed = $derived(
+    coverageGroups.reduce(
+      (total, group) => total + group.codes.filter((code) => code.rows > 0).length,
+      0,
+    ),
+  )
+
+  function percent(value: number, total: number): number {
+    if (total <= 0) return 0
+    return Math.max(0, Math.min(100, Math.round((value / total) * 100)))
+  }
 </script>
 
 <svelte:head><title>Ringkasan · Laporan Mingguan PBM</title></svelte:head>
@@ -65,6 +85,18 @@
   {/snippet}
 </PageHeader>
 
+{#snippet coverageStat(label: string, value: number, total: number)}
+  <div>
+    <div class="flex items-baseline justify-between gap-2">
+      <span class="text-[10px] font-semibold tracking-wide text-ink-muted uppercase">{label}</span>
+      <span class="text-[11px] font-semibold text-ink">{value}<span class="text-ink-muted">/{total}</span></span>
+    </div>
+    <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-stone-200">
+      <div class="h-full rounded-full bg-forest-600" style={`width:${percent(value, total)}%`}></div>
+    </div>
+  </div>
+{/snippet}
+
 {#if error}
   <div class="mb-5 flex items-center gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
     <AlertCircle size={17} /> {error}
@@ -72,8 +104,8 @@
 {/if}
 
 {#if loading}
-  <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-    {#each Array(4) as _}
+  <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+    {#each Array(5) as _}
       <div class="card h-32 p-5"><div class="skeleton h-3 w-24"></div><div class="skeleton mt-6 h-8 w-32"></div></div>
     {/each}
   </div>
@@ -116,90 +148,95 @@
     </div>
   </section>
 
-  <section class="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-    <StatCard label="Periode tersimpan" value={data.counts.periods} unit="periode" detail="Arsip laporan mingguan" tone="forest">
-      {#snippet icon()}<CalendarDays size={17} />{/snippet}
-    </StatCard>
-    <StatCard label="Versi impor" value={data.counts.imports} unit="unggahan" detail="Workbook tersimpan aman" tone="gold">
-      {#snippet icon()}<CloudUpload size={17} />{/snippet}
-    </StatCard>
-    <StatCard label="PDF dihasilkan" value={data.counts.reports} unit="dokumen" detail="Siap ditinjau atau diunduh" tone="forest">
-      {#snippet icon()}<FileText size={17} />{/snippet}
-    </StatCard>
-    <StatCard label="Baris sumber" value={data.counts.rows} unit="baris" detail="Tersimpan pada basis data" tone="slate">
-      {#snippet icon()}<Rows3 size={17} />{/snippet}
-    </StatCard>
-  </section>
+  {#if coverage}
+    <section class="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      {#each [
+        { label: 'Kelompok QW', value: `${groupsPerformed}/${coverage.groups.length}`, hint: 'kelompok dengan kegiatan', icon: Layers },
+        { label: 'Sub-kode', value: `${codesPerformed}/${totalCodes}`, hint: 'sub-kode dengan kegiatan', icon: CheckCircle2 },
+        { label: 'Polres aktif', value: `${coverage.active_polres}/${coverage.known_polres.length}`, hint: 'melapor pada periode', icon: Users },
+        { label: 'Satker aktif', value: `${coverage.active_satker}/${coverage.known_satker.length}`, hint: 'melapor pada periode', icon: ShieldCheck },
+        { label: 'Baris dianalisis', value: formatNumber(coverage.total_rows), hint: formatRange(coverage.date_start, coverage.date_end), icon: Rows3 },
+      ] as card}
+        <article class="card p-4">
+          <card.icon size={17} class="text-forest-600" />
+          <p class="mt-3 text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{card.label}</p>
+          <strong class="font-display text-2xl text-forest-900">{card.value}</strong>
+          <p class="mt-1 text-[10px] text-ink-muted">{card.hint}</p>
+        </article>
+      {/each}
+    </section>
+    <p class="mb-5 text-[11px] text-ink-muted">
+      Arsip: {formatNumber(data.counts.periods)} periode · {formatNumber(data.counts.imports)} versi impor · {formatNumber(data.counts.reports)} PDF tersimpan.
+    </p>
+  {:else}
+    <section class="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <StatCard label="Periode tersimpan" value={data.counts.periods} unit="periode" detail="Arsip laporan mingguan" tone="forest">
+        {#snippet icon()}<CalendarDays size={17} />{/snippet}
+      </StatCard>
+      <StatCard label="Versi impor" value={data.counts.imports} unit="unggahan" detail="Workbook tersimpan aman" tone="gold">
+        {#snippet icon()}<CloudUpload size={17} />{/snippet}
+      </StatCard>
+      <StatCard label="PDF dihasilkan" value={data.counts.reports} unit="dokumen" detail="Siap ditinjau atau diunduh" tone="forest">
+        {#snippet icon()}<FileText size={17} />{/snippet}
+      </StatCard>
+      <StatCard label="Baris sumber" value={data.counts.rows} unit="baris" detail="Tersimpan pada basis data" tone="slate">
+        {#snippet icon()}<Rows3 size={17} />{/snippet}
+      </StatCard>
+    </section>
+  {/if}
 
-  {#if metrics}
+  {#if coverage && latest}
     <section class="mb-5">
       <div class="mb-3 flex items-end justify-between gap-3">
         <div>
-          <span class="eyebrow">SOROTAN PERIODE</span>
-          <h2 class="mt-1 font-display text-xl font-semibold text-forest-900">Enam metrik utama</h2>
+          <span class="eyebrow">CAKUPAN PER KELOMPOK</span>
+          <h2 class="mt-1 font-display text-xl font-semibold text-forest-900">Quick Wins periode terbaru</h2>
         </div>
-        <span class="text-xs text-ink-muted">{formatNumber(metrics.total_rows)} baris dalam periode</span>
+        <Button variant="ghost" size="sm" onclick={() => navigate(`/periods/${latest?.id}/coverage`)}>
+          Buka cakupan <ArrowRight size={14} />
+        </Button>
       </div>
-      <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {#each metrics.cards as card}
-          <article class="card flex flex-col p-5">
-            <span class="text-xs font-semibold tracking-wide text-ink-muted uppercase">{card.label}</span>
-            <div class="mt-3 flex items-end gap-1.5">
-              <strong class="font-display text-3xl leading-none font-semibold text-forest-900">{formatNumber(card.value)}</strong>
-              <span class="pb-0.5 text-[11px] text-ink-muted">{card.unit}</span>
+      <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {#each coverageGroups as group (group.code)}
+          {@const codesDone = group.codes.filter((code) => code.rows > 0).length}
+          <article class="card p-4">
+            <div class="flex items-center justify-between gap-2">
+              <span class="rounded-md bg-forest-50 px-2 py-0.5 text-[10px] font-bold text-forest-700">{group.code}</span>
+              <span class="text-[10px] text-ink-muted">{formatNumber(group.rows)} laporan</span>
             </div>
-            <p class="mt-2 text-xs leading-relaxed text-ink-muted">{card.detail}</p>
+            <p class="mt-2 min-h-8 text-xs font-semibold text-ink">{group.title}</p>
+            <p class="mt-1 text-[10px] text-ink-muted">{codesDone}/{group.codes.length} sub-kode terisi</p>
+            <div class="mt-3 space-y-2">
+              {@render coverageStat('Polres', group.polres, group.polres_total)}
+              {@render coverageStat('Satker', group.satker, group.satker_total)}
+            </div>
           </article>
         {/each}
-      </div>
-    </section>
-
-    <section class="mb-5 grid gap-4 lg:grid-cols-3">
-      <div class="card p-5 lg:col-span-2">
-        <div class="mb-4 flex items-end justify-between">
-          <div><span class="eyebrow">TREN HARIAN</span><h2 class="mt-1 font-display text-lg font-semibold text-forest-900">Laporan masuk per hari</h2></div>
-          <span class="text-xs text-ink-muted">{metrics.daily.length} hari</span>
-        </div>
-        <DailyBars items={metrics.daily} />
-      </div>
-      <div class="card p-5">
-        <div class="mb-4"><span class="eyebrow">DISTRIBUSI</span><h2 class="mt-1 font-display text-lg font-semibold text-forest-900">Quick Wins</h2></div>
-        <BarList items={metrics.quick_wins} limit={8} formatLabel={(label) => quickWinsLabels[label] ?? label} />
-      </div>
-    </section>
-
-    <section class="mb-5 grid gap-4 lg:grid-cols-2">
-      <div class="card p-5">
-        <div class="mb-4"><span class="eyebrow">SEBARAN WILAYAH</span><h2 class="mt-1 font-display text-lg font-semibold text-forest-900">Laporan per polres</h2></div>
-        <BarList items={metrics.by_polres} limit={10} />
-      </div>
-      <div class="card p-5">
-        <div class="mb-4"><span class="eyebrow">KEGIATAN MENONJOL</span><h2 class="mt-1 font-display text-lg font-semibold text-forest-900">Sorotan satuan</h2></div>
-        <div class="space-y-3">
-          {#each metrics.highlights.slice(0, 4) as item}
-            <div class="flex gap-3 border-b border-stone-100 pb-3 last:border-0 last:pb-0">
-              <span class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-forest-50 text-[10px] font-bold text-forest-700">{item.kode || '—'}</span>
-              <div class="min-w-0">
-                <p class="truncate text-xs font-semibold text-ink">{item.kegiatan || 'Kegiatan tidak disebutkan'}</p>
-                <p class="mt-0.5 truncate text-[11px] text-ink-muted">{item.satuan} · {item.location || 'Lokasi belum diisi'}</p>
-              </div>
-            </div>
-          {:else}
-            <p class="text-sm text-ink-muted">Belum ada kegiatan menonjol.</p>
-          {/each}
-        </div>
       </div>
     </section>
   {:else}
     <section class="card mb-5">
       <EmptyState
-        title="Belum ada data untuk dianalisis"
-        description="Unggah workbook Excel pada periode terbaru agar metrik dan sorotan otomatis muncul di sini."
+        title="Belum ada data cakupan"
+        description="Unggah workbook Excel pada periode terbaru agar ringkasan cakupan muncul di sini."
       >
         <Button onclick={() => navigate(latest ? `/periods/${latest.id}/imports` : '/periods')}>
           <CloudUpload size={15} /> Impor workbook
         </Button>
       </EmptyState>
+    </section>
+  {/if}
+
+  {#if metrics}
+    <section class="card mb-5 p-5">
+      <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <span class="eyebrow">TREN HARIAN</span>
+          <h2 class="mt-1 font-display text-lg font-semibold text-forest-900">Laporan masuk per hari</h2>
+        </div>
+        <span class="text-xs text-ink-muted">{formatRange(metrics.period_start, metrics.period_end)} · {metrics.daily.length} hari</span>
+      </div>
+      <DailyBars items={metrics.daily} />
     </section>
   {/if}
 

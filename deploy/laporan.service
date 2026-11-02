@@ -10,6 +10,9 @@ Group=laporan
 WorkingDirectory=/opt/laporan
 EnvironmentFile=/etc/laporan/laporan.env
 ExecStart=/opt/laporan/laporan_mingguan serve
+# SIGTERM memicu graceful shutdown: server berhenti menerima permintaan,
+# worker unduhan menyelesaikan tugas yang sedang berjalan, lalu database ditutup.
+KillSignal=SIGTERM
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=30

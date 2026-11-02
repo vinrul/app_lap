@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -27,7 +28,7 @@ use crate::{
             render,
         },
     },
-    shared::{audit, truncate},
+    shared::{audit, cache, truncate},
 };
 
 pub async fn list_for_period(db: &SqlitePool, period_id: &str) -> ApiResult<Vec<ReportView>> {
@@ -964,9 +965,32 @@ pub async fn metrics_for(
     config: &Config,
     period_id: &str,
 ) -> ApiResult<ReportMetrics> {
+    if let Some(cached) = cache::metrics(db, period_id) {
+        return Ok((*cached).clone());
+    }
+
+    // Permintaan paralel untuk periode yang sama menunggu satu perhitungan.
+    let _guard = cache::lock_compute().await;
+    if let Some(cached) = cache::metrics(db, period_id) {
+        return Ok((*cached).clone());
+    }
+
+    let generation = cache::generation();
+    let started = std::time::Instant::now();
     let (start, end, label) = periods::service::dates(db, period_id).await?;
     let filename = source_summary(db, &start, &end).await?;
-    metrics::load_period(db, &filename, &label, &start, &end, &config.polda_name).await
+    let metrics =
+        metrics::load_period(db, &filename, &label, &start, &end, &config.polda_name).await?;
+    tracing::debug!(
+        period_id,
+        rows = metrics.total_rows,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "metrik periode dihitung"
+    );
+
+    let metrics = Arc::new(metrics);
+    cache::store_metrics(db, period_id, metrics.clone(), generation);
+    Ok((*metrics).clone())
 }
 
 pub async fn preview_html(

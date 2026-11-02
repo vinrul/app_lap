@@ -13,7 +13,7 @@ use reqwest::{
     header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE},
 };
 use sha2::{Digest, Sha256};
-use sqlx::{Row, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
@@ -21,7 +21,7 @@ use crate::{
     config::Config,
     error::{ApiError, ApiResult},
     modules::imports::drive,
-    state::EvidenceDownloadLocks,
+    state::{EvidenceDownloadLocks, ShutdownSignal},
 };
 
 const MAX_EVIDENCE_BYTES: usize = 8 * 1024 * 1024;
@@ -29,22 +29,33 @@ const MAX_CONCURRENT_DOWNLOADS: usize = 4;
 const REQUEST_TIMEOUT_SECS: u64 = 25;
 const MAX_DRIVE_FILES: usize = 100;
 const MAX_DRIVE_SKIPPED: usize = 100;
+/// Batas id per pernyataan agar tidak melewati batas parameter SQLite.
+const MAX_UPDATE_BATCH: usize = 500;
 
 pub fn spawn_import_downloads(
     db: SqlitePool,
     config: Arc<Config>,
     locks: Arc<EvidenceDownloadLocks>,
     import_id: String,
+    shutdown: ShutdownSignal,
 ) -> bool {
     if !locks.claim(&import_id) {
         return false;
     }
     tokio::spawn(async move {
         loop {
-            if let Err(error) = process_import(&db, &config, &import_id).await {
+            if shutdown.is_shutdown() {
+                locks.release(&import_id);
+                break;
+            }
+            if let Err(error) = process_import(&db, &config, &import_id, &shutdown).await {
                 tracing::warn!(%error, %import_id, "unduhan bukti dukung gagal diproses");
             }
             if !locks.continue_or_finish(&import_id) {
+                break;
+            }
+            if shutdown.is_shutdown() {
+                locks.release(&import_id);
                 break;
             }
         }
@@ -56,6 +67,7 @@ pub async fn resume_pending_downloads(
     db: &SqlitePool,
     config: Arc<Config>,
     locks: Arc<EvidenceDownloadLocks>,
+    shutdown: ShutdownSignal,
 ) -> ApiResult<usize> {
     let import_ids: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT import_id FROM import_evidence
@@ -68,7 +80,16 @@ pub async fn resume_pending_downloads(
 
     let mut started = 0;
     for import_id in import_ids {
-        if spawn_import_downloads(db.clone(), config.clone(), locks.clone(), import_id) {
+        if shutdown.is_shutdown() {
+            break;
+        }
+        if spawn_import_downloads(
+            db.clone(),
+            config.clone(),
+            locks.clone(),
+            import_id,
+            shutdown.clone(),
+        ) {
             started += 1;
         }
     }
@@ -80,6 +101,7 @@ pub async fn retry_import(
     config: Arc<Config>,
     locks: Arc<EvidenceDownloadLocks>,
     import_id: &str,
+    shutdown: ShutdownSignal,
 ) -> ApiResult<u64> {
     ensure_evidence_rows(db, import_id).await?;
 
@@ -102,7 +124,9 @@ pub async fn retry_import(
     .await
     .map_err(ApiError::internal)?;
 
-    if queued > 0 && !spawn_import_downloads(db.clone(), config, locks, import_id.to_string()) {
+    if queued > 0
+        && !spawn_import_downloads(db.clone(), config, locks, import_id.to_string(), shutdown)
+    {
         tracing::debug!(%import_id, "worker unduhan sudah berjalan; permintaan rerun dicatat");
     }
     Ok(queued.max(0) as u64)
@@ -200,7 +224,12 @@ async fn ensure_evidence_rows(db: &SqlitePool, import_id: &str) -> ApiResult<()>
     Ok(())
 }
 
-async fn process_import(db: &SqlitePool, config: &Config, import_id: &str) -> ApiResult<()> {
+async fn process_import(
+    db: &SqlitePool,
+    config: &Config,
+    import_id: &str,
+    shutdown: &ShutdownSignal,
+) -> ApiResult<()> {
     let client = Client::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .user_agent("LaporanMingguanPBM/1.0 (bukti dukung)")
@@ -211,6 +240,9 @@ async fn process_import(db: &SqlitePool, config: &Config, import_id: &str) -> Ap
     // anak yang baru dibuat agar unduhan folder ikut berjalan pada proses yang
     // sama, sementara status pending tetap tersimpan untuk auto-resume.
     for _pass in 0..2 {
+        if shutdown.is_shutdown() {
+            return Ok(());
+        }
         let rows = sqlx::query(
             "SELECT id, row_id, source_url FROM import_evidence
              WHERE import_id = ? AND status = 'pending'
@@ -252,10 +284,10 @@ async fn process_import(db: &SqlitePool, config: &Config, import_id: &str) -> Ap
         }
 
         if !folders.is_empty() {
-            expand_drive_folders(db, config, import_id, &client, folders).await;
+            expand_drive_folders(db, config, import_id, &client, folders, shutdown).await;
         }
 
-        download_groups(db, config, import_id, &client, groups).await;
+        download_groups(db, config, import_id, &client, groups, shutdown).await;
     }
 
     Ok(())
@@ -267,6 +299,7 @@ async fn expand_drive_folders(
     import_id: &str,
     client: &Client,
     folders: HashMap<String, Vec<(String, i64)>>,
+    shutdown: &ShutdownSignal,
 ) {
     let Some(api_key) = config.google_drive_api_key.as_deref() else {
         for (_, parents) in folders {
@@ -283,6 +316,9 @@ async fn expand_drive_folders(
     };
 
     for (folder_id, parents) in folders {
+        if shutdown.is_shutdown() {
+            return;
+        }
         let evidence_ids = parents.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
         let mut row_ids = parents
             .iter()
@@ -436,8 +472,9 @@ async fn download_groups(
     import_id: &str,
     client: &Client,
     groups: HashMap<String, (Url, Vec<String>)>,
+    shutdown: &ShutdownSignal,
 ) {
-    if groups.is_empty() {
+    if groups.is_empty() || shutdown.is_shutdown() {
         return;
     }
 
@@ -461,6 +498,11 @@ async fn download_groups(
     while let Some(result) = tasks.join_next().await {
         if let Err(error) = result {
             tracing::warn!(%error, "tugas unduhan bukti dukung berhenti");
+        }
+        // Saat shutdown, tugas yang sedang berjalan diselesaikan tetapi tidak
+        // ada tugas baru yang dijadwalkan.
+        if shutdown.is_shutdown() {
+            continue;
         }
         let Some((target, ids)) = pending.next() else {
             continue;
@@ -509,28 +551,42 @@ async fn download_group(
                 .await;
                 return;
             }
-            for evidence_id in evidence_ids {
-                let result = sqlx::query(
-                    "UPDATE import_evidence
-                     SET status = 'ready', filename = ?, content_type = ?, size_bytes = ?,
-                         stored_path = ?, error = ''
-                     WHERE id = ?",
-                )
-                .bind(&fetched.filename)
-                .bind(&fetched.content_type)
-                .bind(fetched.bytes.len() as i64)
-                .bind(stored_path.to_string_lossy().to_string())
-                .bind(&evidence_id)
-                .execute(&db)
-                .await;
-                if let Err(error) = result {
-                    tracing::warn!(%error, %evidence_id, "gagal mencatat bukti dukung");
-                }
-            }
+            mark_ready(&db, &evidence_ids, &fetched, &stored_path).await;
         }
         Err(message) => {
             tracing::warn!(%message, "bukti dukung gagal diunduh");
             mark_many(&db, &evidence_ids, "failed", &message).await;
+        }
+    }
+}
+
+/// Satu tautan bisa dipakai banyak baris, jadi seluruh baris dicatat dengan
+/// satu pernyataan agar tidak menghasilkan satu commit per baris.
+async fn mark_ready(
+    db: &SqlitePool,
+    evidence_ids: &[String],
+    fetched: &FetchedEvidence,
+    stored_path: &Path,
+) {
+    let stored_path = stored_path.to_string_lossy().to_string();
+    for chunk in evidence_ids.chunks(MAX_UPDATE_BATCH) {
+        let mut qb =
+            QueryBuilder::<Sqlite>::new("UPDATE import_evidence SET status = 'ready', filename = ");
+        qb.push_bind(&fetched.filename)
+            .push(", content_type = ")
+            .push_bind(&fetched.content_type)
+            .push(", size_bytes = ")
+            .push_bind(fetched.bytes.len() as i64)
+            .push(", stored_path = ")
+            .push_bind(&stored_path)
+            .push(", error = '' WHERE id IN (");
+        let mut separated = qb.separated(", ");
+        for evidence_id in chunk {
+            separated.push_bind(evidence_id);
+        }
+        separated.push_unseparated(")");
+        if let Err(error) = qb.build().execute(db).await {
+            tracing::warn!(%error, "gagal mencatat bukti dukung");
         }
     }
 }
@@ -819,16 +875,19 @@ fn is_blocked_host(host: &str) -> bool {
 
 async fn mark_many(db: &SqlitePool, evidence_ids: &[String], status: &str, message: &str) {
     let message: String = message.chars().take(300).collect();
-    for evidence_id in evidence_ids {
-        if let Err(error) =
-            sqlx::query("UPDATE import_evidence SET status = ?, error = ? WHERE id = ?")
-                .bind(status)
-                .bind(&message)
-                .bind(evidence_id)
-                .execute(db)
-                .await
-        {
-            tracing::warn!(%error, %evidence_id, "gagal menandai bukti dukung");
+    for chunk in evidence_ids.chunks(MAX_UPDATE_BATCH) {
+        let mut qb = QueryBuilder::<Sqlite>::new("UPDATE import_evidence SET status = ");
+        qb.push_bind(status)
+            .push(", error = ")
+            .push_bind(&message)
+            .push(" WHERE id IN (");
+        let mut separated = qb.separated(", ");
+        for evidence_id in chunk {
+            separated.push_bind(evidence_id);
+        }
+        separated.push_unseparated(")");
+        if let Err(error) = qb.build().execute(db).await {
+            tracing::warn!(%error, "gagal menandai bukti dukung");
         }
     }
 }
@@ -950,5 +1009,82 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(inserted_again, 0);
+    }
+
+    #[tokio::test]
+    async fn marks_evidence_rows_in_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::test_config();
+        config.data_dir = dir.path().to_path_buf();
+        let db = crate::db::connect(&config).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO users(id,username,password_hash,role) VALUES('u1','tester','x','admin')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO imports(
+                id,filename,file_hash,stored_path,parser_version,row_count,skipped_rows,
+                duplicate_rows,date_start,date_end,warnings_json,imported_by
+             ) VALUES('imp1','x.xlsx','hash','path','4',1,0,0,'2026-10-25','2026-10-25','[]','u1')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let row_id = sqlx::query(
+            "INSERT INTO import_rows(import_id,source_row,raw_json) VALUES('imp1',2,'{}')",
+        )
+        .execute(&db)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+
+        // Melebihi MAX_UPDATE_BATCH agar pemecahan pernyataan ikut teruji.
+        let total = MAX_UPDATE_BATCH + 1;
+        let mut tx = db.begin().await.unwrap();
+        let mut ids = Vec::with_capacity(total);
+        for index in 0..total {
+            let id = format!("ev-{index}");
+            sqlx::query(
+                "INSERT INTO import_evidence(id, import_id, row_id, source_url)
+                 VALUES(?, 'imp1', ?, 'https://contoh.go.id/bukti.jpg')",
+            )
+            .bind(&id)
+            .bind(row_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+            ids.push(id);
+        }
+        tx.commit().await.unwrap();
+
+        mark_many(&db, &ids, "skipped", "tidak didukung").await;
+        let marked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM import_evidence
+             WHERE status = 'skipped' AND error = 'tidak didukung'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(marked, total as i64);
+
+        let fetched = FetchedEvidence {
+            bytes: vec![0_u8; 8],
+            filename: "foto.jpg".to_string(),
+            content_type: "image/jpeg".to_string(),
+            extension: "jpg",
+        };
+        mark_ready(&db, &ids, &fetched, Path::new("evidence/imp1/foto.jpg")).await;
+        let ready: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM import_evidence
+             WHERE status = 'ready' AND filename = 'foto.jpg' AND size_bytes = 8
+               AND stored_path = 'evidence/imp1/foto.jpg' AND error = ''",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(ready, total as i64);
     }
 }

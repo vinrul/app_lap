@@ -225,6 +225,11 @@ sudo systemctl start laporan
 sudo systemctl restart laporan
 ```
 
+`systemctl stop` dan `systemctl restart` mengirim SIGTERM. Aplikasi berhenti dengan rapi:
+permintaan HTTP yang sedang berjalan diselesaikan, worker unduhan bukti dukung berhenti
+mengambil tugas baru, lalu koneksi SQLite ditutup. Unduhan yang belum selesai tetap
+berstatus `pending` dan dilanjutkan otomatis saat service hidup lagi.
+
 Migrasi baru dijalankan otomatis saat startup. Cek `journalctl -u laporan -n 50` bila gagal.
 
 ## 12. Memindahkan data lama dari Windows

@@ -13,7 +13,7 @@ use crate::{
         periods::models::{CreatePeriodRequest, PeriodDetail, PeriodView, UpdatePeriodRequest},
         reports,
     },
-    shared::audit,
+    shared::{audit, cache},
     state::AppState,
 };
 
@@ -62,6 +62,7 @@ pub async fn update(
     Json(input): Json<UpdatePeriodRequest>,
 ) -> ApiResult<Json<PeriodView>> {
     let period = periods::service::update(&state.db, &period_id, &input).await?;
+    cache::invalidate();
     audit::record(
         &state.db,
         Some(&user.id),

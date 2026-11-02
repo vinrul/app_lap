@@ -5,7 +5,10 @@ use crate::{
     config::Config,
     error::{ApiError, ApiResult},
     modules::{
-        imports::{self, models::ImportView},
+        imports::{
+            self,
+            models::{CoverageResponse, ImportView},
+        },
         periods::{self, models::PeriodView},
         reports::{self, models::ReportMetrics, models::ReportView},
     },
@@ -27,6 +30,9 @@ pub struct DashboardResponse {
     pub latest_period: Option<PeriodView>,
     pub latest_import: Option<ImportView>,
     pub metrics: Option<ReportMetrics>,
+    /// Cakupan periode terbaru, dipakai agar ringkasan dashboard sama dengan
+    /// halaman Cakupan periode tersebut.
+    pub coverage: Option<CoverageResponse>,
     pub recent_periods: Vec<PeriodView>,
     pub recent_reports: Vec<ReportView>,
 }
@@ -57,6 +63,9 @@ pub async fn load(db: &SqlitePool, config: &Config) -> ApiResult<DashboardRespon
         Some(period) => Some(reports::service::metrics_for(db, config, &period.id).await?),
         None => None,
     };
+    let coverage = metrics
+        .as_ref()
+        .and_then(|metrics| metrics.coverage.clone());
 
     let recent_periods = periods.into_iter().take(6).collect();
     let recent_reports = recent_reports(db).await?;
@@ -68,6 +77,7 @@ pub async fn load(db: &SqlitePool, config: &Config) -> ApiResult<DashboardRespon
         latest_period,
         latest_import,
         metrics,
+        coverage,
         recent_periods,
         recent_reports,
     })
@@ -110,4 +120,60 @@ async fn recent_reports(db: &SqlitePool) -> ApiResult<Vec<ReportView>> {
             }
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    #[tokio::test]
+    async fn exposes_coverage_for_latest_period() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::test_config();
+        config.data_dir = dir.path().to_path_buf();
+        let db = crate::db::connect(&config).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO users(id,username,password_hash,role) VALUES('u1','tester','x','admin')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO report_periods(id,start_date,end_date,label,created_by)
+             VALUES('p1','2026-10-26','2026-11-01','Laporan Uji','u1')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO imports(
+                id,filename,file_hash,stored_path,parser_version,row_count,skipped_rows,
+                duplicate_rows,date_start,date_end,warnings_json,imported_by
+             ) VALUES('imp1','x.xlsx','hash','path','4',1,0,0,'2026-10-26','2026-11-01','[]','u1')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO import_rows(import_id,source_row,tanggal,dedupe_key,raw_json)
+             VALUES('imp1',1,'2026-10-26','kunci-1','{}')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let dashboard = load(&db, &config).await.unwrap();
+        let coverage = dashboard
+            .coverage
+            .expect("cakupan periode terbaru tersedia");
+        assert_eq!(coverage.total_rows, 1);
+        assert_eq!(coverage.date_start, "2026-10-26");
+        assert_eq!(coverage.date_end, "2026-11-01");
+        assert_eq!(
+            dashboard.metrics.as_ref().map(|metrics| metrics.total_rows),
+            Some(1)
+        );
+    }
 }

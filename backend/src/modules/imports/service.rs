@@ -4,7 +4,7 @@ use std::{
 };
 
 use sha2::{Digest, Sha256};
-use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, Sqlite, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, sqlite::SqliteRow};
 use uuid::Uuid;
 
 use crate::{
@@ -24,7 +24,7 @@ use crate::{
         periods, reports,
     },
     shared::{
-        audit, extract_links, is_noise, parse_fields, satker_label, unit_breakdown, LabeledCount,
+        LabeledCount, audit, extract_links, is_noise, parse_fields, satker_label, unit_breakdown,
     },
 };
 
@@ -149,6 +149,11 @@ pub async fn commit(
         let _ = tokio::fs::remove_file(&stored_path).await;
     }
     result?;
+
+    // Statistik planner ikut diperbarui setelah tabel terisi banyak baris baru.
+    if let Err(error) = sqlx::query("PRAGMA optimize").execute(db).await {
+        tracing::warn!(%error, "gagal memperbarui statistik database setelah impor");
+    }
 
     get(db, &import_id).await
 }
@@ -305,22 +310,29 @@ pub async fn load_period_rows(
     qb.push_bind(start_date);
     qb.push(" AND ");
     qb.push_bind(end_date);
-    qb.push(") SELECT * FROM ranked ORDER BY tanggal ASC, level ASC, unit ASC, source_row ASC");
+    qb.push(
+        ") SELECT * FROM ranked WHERE rn = 1 ORDER BY tanggal ASC, level ASC, unit ASC, source_row ASC",
+    );
 
     let rows = qb.build().fetch_all(db).await.map_err(ApiError::internal)?;
 
     let mut result = Vec::with_capacity(rows.len());
-    let mut duplicate_rows = 0_i64;
     let mut imports = std::collections::HashSet::new();
     for row in &rows {
-        let rank: i64 = row.get("rn");
-        if rank > 1 {
-            duplicate_rows += 1;
-            continue;
-        }
         imports.insert(row.get::<String, _>("import_id"));
         result.push(record_from_row(row, &HashMap::new()));
     }
+
+    // Baris duplikat disaring di SQL agar tidak ikut dipindahkan dan di-parse.
+    // Jumlahnya dihitung dari selisih total baris rentang dengan baris unik.
+    let total_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM import_rows WHERE tanggal BETWEEN ? AND ?")
+            .bind(start_date)
+            .bind(end_date)
+            .fetch_one(db)
+            .await
+            .map_err(ApiError::internal)?;
+    let duplicate_rows = (total_rows - result.len() as i64).max(0);
 
     Ok((result, duplicate_rows, imports.len() as i64))
 }
@@ -1289,10 +1301,12 @@ mod tests {
                 .sum::<i64>()
                 > 0
         );
-        assert!(analysis
-            .by_polres_breakdown
-            .iter()
-            .any(|item| item.polsek > 0));
+        assert!(
+            analysis
+                .by_polres_breakdown
+                .iter()
+                .any(|item| item.polsek > 0)
+        );
 
         let polres = analysis.by_polres_breakdown.first().unwrap();
         let polres_detail =
@@ -1339,10 +1353,12 @@ mod tests {
         .await
         .unwrap();
         assert!(!scoped.activities.is_empty());
-        assert!(scoped
-            .activities
-            .iter()
-            .all(|activity| activity.polres.eq_ignore_ascii_case(target.as_str())));
+        assert!(
+            scoped
+                .activities
+                .iter()
+                .all(|activity| activity.polres.eq_ignore_ascii_case(target.as_str()))
+        );
         assert!(scoped.activities_total <= group.activities_total);
         if group.by_polres.len() > 1 {
             assert!(scoped.activities_total < group.activities_total);
@@ -1354,20 +1370,24 @@ mod tests {
                 .await
                 .unwrap();
         assert!(polres_scoped.total_rows <= group.total_rows);
-        assert!(polres_scoped
-            .by_polres
-            .iter()
-            .all(|item| !item.label.is_empty()));
+        assert!(
+            polres_scoped
+                .by_polres
+                .iter()
+                .all(|item| !item.label.is_empty())
+        );
 
-        assert!(super::quick_win_detail_for_period(
-            &db,
-            "p1",
-            "QW1",
-            Some(("polda", target.as_str())),
-            None
-        )
-        .await
-        .is_err());
+        assert!(
+            super::quick_win_detail_for_period(
+                &db,
+                "p1",
+                "QW1",
+                Some(("polda", target.as_str())),
+                None
+            )
+            .await
+            .is_err()
+        );
 
         let (rows, _, _) = super::load_period_rows(&db, "2026-10-15", "2026-10-19")
             .await
@@ -1377,8 +1397,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(detail.id, first.id);
-        assert!(super::record_detail_for_period(&db, "p1", -1)
-            .await
-            .is_err());
+        assert!(
+            super::record_detail_for_period(&db, "p1", -1)
+                .await
+                .is_err()
+        );
     }
 }

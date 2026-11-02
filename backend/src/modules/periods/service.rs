@@ -15,7 +15,7 @@ pub async fn list(db: &SqlitePool, include_archived: bool) -> ApiResult<Vec<Peri
                 COALESCE(u.username, 'Sistem') AS created_by,
                 (SELECT COUNT(*) FROM imports i
                  WHERE i.date_start <= p.end_date AND i.date_end >= p.start_date) AS imports,
-                (SELECT COUNT(DISTINCT lower(trim(r.dedupe_key))) FROM import_rows r
+                (SELECT COUNT(DISTINCT r.dedupe_key) FROM import_rows r
                  WHERE r.tanggal BETWEEN p.start_date AND p.end_date) AS rows,
                 (SELECT COUNT(*) FROM report_runs r WHERE r.period_id = p.id) AS reports
          FROM report_periods p
@@ -40,7 +40,7 @@ pub async fn get(db: &SqlitePool, period_id: &str) -> ApiResult<PeriodView> {
                 COALESCE(u.username, 'Sistem') AS created_by,
                 (SELECT COUNT(*) FROM imports i
                  WHERE i.date_start <= p.end_date AND i.date_end >= p.start_date) AS imports,
-                (SELECT COUNT(DISTINCT lower(trim(r.dedupe_key))) FROM import_rows r
+                (SELECT COUNT(DISTINCT r.dedupe_key) FROM import_rows r
                  WHERE r.tanggal BETWEEN p.start_date AND p.end_date) AS rows,
                 (SELECT COUNT(*) FROM report_runs r WHERE r.period_id = p.id) AS reports
          FROM report_periods p
