@@ -22,8 +22,16 @@ async fn main() -> anyhow::Result<()> {
             let db = db::connect(&config).await?;
             modules::auth::service::bootstrap_admin(&db).await
         }
+        "evidence-maintenance" => {
+            let config = config::Config::from_env()?;
+            let db = db::connect(&config).await?;
+            let dry_run = env::args().any(|argument| argument == "--dry-run");
+            let report = modules::imports::evidence_maintenance::run(&db, &config, dry_run).await?;
+            println!("{report}");
+            Ok(())
+        }
         other => anyhow::bail!(
-            "Perintah tidak dikenal: {other}. Gunakan 'serve' atau 'bootstrap-admin'."
+            "Perintah tidak dikenal: {other}. Gunakan 'serve', 'bootstrap-admin', atau 'evidence-maintenance [--dry-run]'."
         ),
     }
 }

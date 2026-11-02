@@ -16,6 +16,7 @@
   import type { PeriodDetail, ReportMetrics } from '../../lib/types'
   import { formatRange, statusOfPeriod } from '../../lib/utils/format'
   import { navigate } from '../../lib/stores/router.svelte'
+  import { auth } from '../../lib/stores/auth.svelte'
   import { dialog } from '../../lib/stores/dialog.svelte'
   import { toast } from '../../lib/stores/toast.svelte'
   import Badge from '../../lib/components/ui/Badge.svelte'
@@ -43,10 +44,12 @@
 
   // Tab yang disembunyikan sementara. Hapus id dari daftar ini untuk menampilkan lagi.
   const hiddenTabs = new Set(['overview', 'analysis'])
+  const reader = $derived(auth.user?.role === 'polres' || auth.user?.role === 'polda')
 
   const activeTab = $derived(
     ['overview', 'analysis', 'coverage', 'records', 'design', 'documents'].includes(tab) &&
-      !hiddenTabs.has(tab)
+      !hiddenTabs.has(tab) &&
+      !(reader && tab === 'design')
       ? tab
       : 'coverage',
   )
@@ -137,7 +140,7 @@
     { id: 'records', label: 'Data sumber' },
     { id: 'design', label: 'Desain' },
     { id: 'documents', label: 'Dokumen', count: detail?.reports.length ?? 0 },
-  ].filter((item) => !hiddenTabs.has(item.id)))
+  ].filter((item) => !hiddenTabs.has(item.id) && !(reader && item.id === 'design')))
 </script>
 
 <svelte:head><title>{detail?.period.label ?? 'Periode'} · Laporan Mingguan PBM</title></svelte:head>
@@ -171,32 +174,36 @@
       </div>
       <div class="flex flex-wrap items-center gap-2">
         {#if status}<Badge tone={status.tone}>{status.label}</Badge>{/if}
-        <Button variant="secondary" size="sm" onclick={() => (editOpen = true)}>
-          <Pencil size={14} /> Edit
-        </Button>
-        {#if detail.period.archived_at}
-          <Button variant="secondary" size="sm" loading={busy} onclick={restorePeriod}>
-            <ArchiveRestore size={14} /> Pulihkan
+        {#if !reader}
+          <Button variant="secondary" size="sm" onclick={() => (editOpen = true)}>
+            <Pencil size={14} /> Edit
           </Button>
-        {:else}
-          <Button variant="ghost" size="sm" loading={busy} onclick={archivePeriod}>
-            <Archive size={14} /> Arsipkan
+          {#if detail.period.archived_at}
+            <Button variant="secondary" size="sm" loading={busy} onclick={restorePeriod}>
+              <ArchiveRestore size={14} /> Pulihkan
+            </Button>
+          {:else}
+            <Button variant="ghost" size="sm" loading={busy} onclick={archivePeriod}>
+              <Archive size={14} /> Arsipkan
+            </Button>
+          {/if}
+          <Button variant="secondary" size="sm" onclick={() => navigate('/imports')}>
+            <CloudUpload size={14} /> Import data
+          </Button>
+          <Button size="sm" onclick={() => navigate(`/periods/${periodId}/design`)}>
+            <PenLine size={14} /> Susun desain
           </Button>
         {/if}
-        <Button variant="secondary" size="sm" onclick={() => navigate('/imports')}>
-          <CloudUpload size={14} /> Import data
-        </Button>
-        <Button size="sm" onclick={() => navigate(`/periods/${periodId}/design`)}>
-          <PenLine size={14} /> Susun desain
-        </Button>
       </div>
     </div>
 
     <div class="flex flex-wrap items-center gap-3 bg-stone-50/60 px-6 py-3">
       <span class="text-[10px] font-bold tracking-[0.14em] text-ink-muted uppercase">Sumber data</span>
-      {#if detail.imports.length}
-        <span class="text-[11px] font-medium text-ink-soft">{detail.imports.length} berkas · {metrics?.total_rows ?? detail.period.rows} baris unik dalam rentang</span>
-        {#if detail.imports.length > 1}
+      {#if metrics || detail.imports.length}
+        <span class="text-[11px] font-medium text-ink-soft">{reader
+            ? (metrics?.source_count ?? 0)
+            : detail.imports.length} berkas · {metrics?.total_rows ?? detail.period.rows} baris unik dalam rentang</span>
+        {#if !reader && detail.imports.length > 1}
           <span class="text-[10px] text-ink-muted">termasuk {detail.imports.slice(0, 2).map((item) => item.filename).join(', ')} dan lainnya</span>
         {/if}
       {:else}

@@ -8,7 +8,9 @@ use crate::{
 
 pub async fn dashboard(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
 ) -> ApiResult<Json<service::DashboardResponse>> {
-    Ok(Json(service::load(&state.db, &state.config).await?))
+    Ok(Json(
+        service::load(&state.db, &state.config, &user.data_scope()).await?,
+    ))
 }

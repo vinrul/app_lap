@@ -28,19 +28,21 @@ use crate::{
 
 pub async fn metrics(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<ReportMetrics>> {
     Ok(Json(
-        service::metrics_for(&state.db, &state.config, &period_id).await?,
+        service::metrics_for_scope(&state.db, &state.config, &period_id, &user.data_scope())
+            .await?,
     ))
 }
 
 pub async fn get_draft(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<DraftView>> {
+    user.require_writer()?;
     Ok(Json(service::get_draft(&state.db, &period_id).await?))
 }
 
@@ -50,6 +52,7 @@ pub async fn save_draft(
     Path(period_id): Path<String>,
     Json(content): Json<ReportContent>,
 ) -> ApiResult<Json<DraftView>> {
+    user.require_writer()?;
     Ok(Json(
         service::save_draft(&state.db, &user.id, &period_id, &content).await?,
     ))
@@ -65,9 +68,10 @@ pub async fn list(
 
 pub async fn get_layout(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<LayoutView>> {
+    user.require_writer()?;
     Ok(Json(service::get_layout(&state.db, &period_id).await?))
 }
 
@@ -77,6 +81,7 @@ pub async fn save_layout(
     Path(period_id): Path<String>,
     Json(input): Json<SaveLayoutRequest>,
 ) -> ApiResult<Json<LayoutView>> {
+    user.require_writer()?;
     Ok(Json(
         service::save_layout(&state.db, &user.id, &period_id, input.layout).await?,
     ))
@@ -84,17 +89,19 @@ pub async fn save_layout(
 
 pub async fn design_sources(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<Vec<DesignSource>>> {
+    user.require_writer()?;
     let metrics = service::metrics_for(&state.db, &state.config, &period_id).await?;
     Ok(Json(sources::design_sources(&metrics)))
 }
 
 pub async fn list_templates(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
 ) -> ApiResult<Json<Vec<DesignTemplateView>>> {
+    user.require_writer()?;
     Ok(Json(service::list_templates(&state.db).await?))
 }
 
@@ -103,6 +110,7 @@ pub async fn save_template(
     user: AuthUser,
     Json(input): Json<SaveTemplateRequest>,
 ) -> ApiResult<Json<DesignTemplateView>> {
+    user.require_writer()?;
     Ok(Json(
         service::save_template(&state.db, &user.id, &input.name, input.layout).await?,
     ))
@@ -113,6 +121,7 @@ pub async fn delete_template(
     user: AuthUser,
     Path(template_id): Path<String>,
 ) -> ApiResult<StatusCode> {
+    user.require_writer()?;
     service::delete_template(&state.db, &user.id, &template_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -122,6 +131,7 @@ pub async fn apply_template(
     user: AuthUser,
     Path((period_id, template_id)): Path<(String, String)>,
 ) -> ApiResult<Json<LayoutView>> {
+    user.require_writer()?;
     Ok(Json(
         service::apply_template(&state.db, &state.config, &user.id, &period_id, &template_id)
             .await?,
@@ -134,6 +144,7 @@ pub async fn upload_layout_image(
     Path(period_id): Path<String>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<UploadedImage>> {
+    user.require_writer()?;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -165,9 +176,10 @@ pub async fn upload_layout_image(
 
 pub async fn layout_image(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path((period_id, image_id)): Path<(String, String)>,
 ) -> ApiResult<Response> {
+    user.require_writer()?;
     let (path, content_type, _filename) =
         service::layout_image(&state.db, &period_id, &image_id).await?;
     let bytes = tokio::fs::read(path).await.map_err(ApiError::internal)?;
@@ -186,10 +198,11 @@ pub async fn layout_image(
 
 pub async fn design_media(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(period_id): Path<String>,
     Query(query): Query<MediaQuery>,
 ) -> ApiResult<Json<Vec<MediaItem>>> {
+    user.require_writer()?;
     Ok(Json(
         service::list_media(
             &state.db,
@@ -211,9 +224,10 @@ pub struct MediaQuery {
 
 pub async fn design_media_filters(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<MediaFilters>> {
+    user.require_writer()?;
     Ok(Json(
         service::list_media_filters(&state.db, &period_id).await?,
     ))
@@ -225,6 +239,7 @@ pub async fn import_media(
     Path(period_id): Path<String>,
     Json(input): Json<ImportMediaRequest>,
 ) -> ApiResult<Json<UploadedImage>> {
+    user.require_writer()?;
     Ok(Json(
         service::import_media_image(
             &state.db,
@@ -244,6 +259,7 @@ pub async fn generate(
     Path(period_id): Path<String>,
     Json(input): Json<GenerateReportRequest>,
 ) -> ApiResult<Json<ReportView>> {
+    user.require_writer()?;
     if let Some(content) = input.content.as_ref() {
         service::save_draft(&state.db, &user.id, &period_id, content).await?;
     }
@@ -262,10 +278,11 @@ pub async fn generate(
 
 pub async fn preview_render(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(period_id): Path<String>,
     Json(input): Json<PreviewReportRequest>,
 ) -> ApiResult<Json<PreviewResponse>> {
+    user.require_writer()?;
     let html = service::preview_html(
         &state.db,
         &state.config,
@@ -301,9 +318,7 @@ pub async fn delete_report(
     user: AuthUser,
     Path(report_id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    if user.role != "admin" && user.role != "operator" {
-        return Err(ApiError::forbidden());
-    }
+    user.require_writer()?;
     service::delete_report(&state.db, &state.config, &user.id, &report_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -313,6 +328,7 @@ pub async fn create_share(
     user: AuthUser,
     Path(report_id): Path<String>,
 ) -> ApiResult<Json<ReportShareView>> {
+    user.require_writer()?;
     Ok(Json(
         service::create_share(&state.db, &user.id, &report_id).await?,
     ))

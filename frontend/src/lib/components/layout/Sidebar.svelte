@@ -38,9 +38,24 @@
     users: Users,
   }
 
+  const reader = $derived(user.role === 'polres' || user.role === 'polda')
+  const roleLabel = $derived(
+    user.role === 'admin'
+      ? 'Administrator'
+      : user.role === 'operator'
+        ? 'Operator'
+        : user.role === 'polres'
+          ? user.polres
+            ? `Polres ${user.polres}`
+            : 'Polres'
+          : user.satker
+            ? `Polda · ${user.satker}`
+            : 'Polda',
+  )
+
   const items = $derived([
     { id: 'dashboard', label: 'Ringkasan', path: '/dashboard' },
-    { id: 'imports', label: 'Import data', path: '/imports' },
+    ...(reader ? [] : [{ id: 'imports', label: 'Import data', path: '/imports' }]),
     { id: 'periods', label: 'Periode laporan', path: '/periods' },
     ...(user.role === 'admin' ? [{ id: 'users', label: 'Pengguna & akses', path: '/users' }] : []),
   ])
@@ -109,7 +124,7 @@
     </span>
     <span class="min-w-0 flex-1">
       <strong class="block truncate text-xs font-semibold">{user.username}</strong>
-      <small class="block text-[10px] text-forest-200/65">{user.role === 'admin' ? 'Administrator' : 'Operator'}</small>
+      <small class="block text-[10px] text-forest-200/65">{roleLabel}</small>
     </span>
     <button class="btn-icon text-forest-100 hover:bg-white/10" aria-label="Ganti kata sandi" title="Ganti kata sandi" onclick={() => (passwordOpen = true)}>
       <KeyRound size={16} />

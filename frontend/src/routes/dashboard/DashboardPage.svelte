@@ -52,6 +52,7 @@
   const latest = $derived(data?.latest_period ?? null)
   const metrics = $derived(data?.metrics ?? null)
   const status = $derived(latest ? statusOfPeriod(latest) : null)
+  const reader = $derived(user.role === 'polres' || user.role === 'polda')
 
   // Ringkasan mengikuti halaman Cakupan periode terbaru agar angkanya sama.
   const coverage = $derived(data?.coverage ?? null)
@@ -138,10 +139,12 @@
           <Button variant="secondary" onclick={() => navigate(`/periods/${latest.id}/overview`)}>
             Buka periode <ArrowRight size={15} />
           </Button>
-          <Button onclick={() => navigate(`/periods/${latest.id}/imports`)}>
-            <CloudUpload size={15} /> Impor data
-          </Button>
-        {:else}
+          {#if !reader}
+            <Button onclick={() => navigate(`/periods/${latest.id}/imports`)}>
+              <CloudUpload size={15} /> Impor data
+            </Button>
+          {/if}
+        {:else if !reader}
           <Button onclick={() => navigate('/periods')}><Plus size={15} /> Buat periode</Button>
         {/if}
       </div>

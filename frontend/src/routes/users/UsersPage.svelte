@@ -3,7 +3,7 @@
   import { AlertCircle, Check, Plus, ShieldCheck, UserPlus, X } from 'lucide-svelte'
   import { usersApi } from '../../lib/api'
   import { errorMessage } from '../../lib/api/client'
-  import type { AdminUser, User } from '../../lib/types'
+  import type { AdminUser, User, UserOptions } from '../../lib/types'
   import { formatDateTime } from '../../lib/utils/format'
   import { auth } from '../../lib/stores/auth.svelte'
   import { toast } from '../../lib/stores/toast.svelte'
@@ -18,14 +18,41 @@
   let { user }: Props = $props()
 
   let users = $state<AdminUser[]>([])
+  let options = $state<UserOptions>({ polres: [], satker: [] })
   let loading = $state(true)
   let error = $state('')
   let showForm = $state(false)
   let busyId = $state('')
 
-  let form = $state({ username: '', password: '', role: 'operator' })
+  let form = $state({ username: '', password: '', role: 'operator', polres: '', satker: '' })
   let formLoading = $state(false)
   let formError = $state('')
+
+  let editing = $state<AdminUser | null>(null)
+  let editForm = $state({ role: 'operator', polres: '', satker: '' })
+  let editLoading = $state(false)
+  let editError = $state('')
+
+  function roleLabel(role: string): string {
+    switch (role) {
+      case 'admin':
+        return 'Administrator'
+      case 'operator':
+        return 'Operator'
+      case 'polres':
+        return 'Polres'
+      case 'polda':
+        return 'Polda'
+      default:
+        return role
+    }
+  }
+
+  function openEdit(account: AdminUser) {
+    editing = account
+    editError = ''
+    editForm = { role: account.role, polres: account.polres, satker: account.satker }
+  }
 
   onMount(load)
 
@@ -33,7 +60,9 @@
     loading = true
     error = ''
     try {
-      users = await usersApi.list()
+      const [accounts, unitOptions] = await Promise.all([usersApi.list(), usersApi.options()])
+      users = accounts
+      options = unitOptions
     } catch (caught) {
       error = errorMessage(caught)
     } finally {
@@ -52,11 +81,15 @@
       formError = 'Kata sandi minimal 12 karakter.'
       return
     }
+    if (form.role === 'polres' && !form.polres.trim()) {
+      formError = 'Peran polres wajib memiliki nama polres.'
+      return
+    }
     formLoading = true
     try {
       await usersApi.create({ ...form, username: form.username.trim() })
       toast.success('Akun baru berhasil ditambahkan.')
-      form = { username: '', password: '', role: 'operator' }
+      form = { username: '', password: '', role: 'operator', polres: '', satker: '' }
       showForm = false
       await load()
     } catch (caught) {
@@ -66,20 +99,51 @@
     }
   }
 
-  async function update(account: AdminUser, changes: { role?: string; active?: boolean }) {
+  async function update(
+    account: AdminUser,
+    changes: { role?: string; active?: boolean; polres?: string; satker?: string },
+  ): Promise<boolean> {
     busyId = account.id
     error = ''
     try {
       const updated = await usersApi.update(account.id, changes)
       users = users.map((item) => (item.id === updated.id ? updated : item))
       if (updated.id === user.id) {
-        auth.user = { ...user, role: updated.role as User['role'] }
+        auth.user = {
+          ...user,
+          role: updated.role as User['role'],
+          polres: updated.polres,
+          satker: updated.satker,
+        }
       }
       toast.success(`Akses ${account.username} diperbarui.`)
+      return true
     } catch (caught) {
       error = errorMessage(caught)
+      return false
     } finally {
       busyId = ''
+    }
+  }
+
+  async function saveEdit(event: SubmitEvent) {
+    event.preventDefault()
+    if (!editing) return
+    editError = ''
+    if (editForm.role === 'polres' && !editForm.polres.trim()) {
+      editError = 'Peran polres wajib memiliki nama polres.'
+      return
+    }
+    editLoading = true
+    try {
+      const ok = await update(editing, {
+        role: editForm.role,
+        polres: editForm.polres,
+        satker: editForm.satker,
+      })
+      if (ok) editing = null
+    } finally {
+      editLoading = false
     }
   }
 </script>
@@ -113,7 +177,7 @@
   {:else if users.length}
     <div class="overflow-x-auto">
       <table class="table">
-        <thead><tr><th>Pengguna</th><th>Peran</th><th>Status</th><th>Terdaftar</th><th class="text-right">Akses</th></tr></thead>
+        <thead><tr><th>Pengguna</th><th>Peran & unit</th><th>Status</th><th>Terdaftar</th><th class="text-right">Akses</th></tr></thead>
         <tbody>
           {#each users as account}
             <tr>
@@ -129,26 +193,34 @@
                 </div>
               </td>
               <td>
-                <select
-                  class="input w-auto py-1.5 text-xs"
-                  value={account.role}
-                  disabled={account.id === user.id || busyId === account.id}
-                  onchange={(event) => update(account, { role: (event.currentTarget as HTMLSelectElement).value })}
-                >
-                  <option value="admin">Administrator</option>
-                  <option value="operator">Operator</option>
-                </select>
+                <div class="space-y-1">
+                  <Badge tone={account.role === 'admin' ? 'success' : 'neutral'}>{roleLabel(account.role)}</Badge>
+                  {#if account.role === 'polres'}
+                    <small class="block text-[10px] text-ink-muted">{account.polres}</small>
+                  {:else if account.role === 'polda'}
+                    <small class="block text-[10px] text-ink-muted">{account.satker || 'Semua satker Polda'}</small>
+                  {/if}
+                </div>
               </td>
               <td><Badge tone={account.active ? 'success' : 'danger'}>{account.active ? 'Aktif' : 'Nonaktif'}</Badge></td>
               <td class="text-xs whitespace-nowrap text-ink-muted">{formatDateTime(account.created_at)}</td>
               <td class="text-right">
-                <button
-                  class="btn btn-ghost btn-sm"
-                  disabled={account.id === user.id || busyId === account.id}
-                  onclick={() => update(account, { active: !account.active })}
-                >
-                  {#if account.active}<X size={13} /> Nonaktifkan{:else}<Check size={13} /> Aktifkan{/if}
-                </button>
+                <div class="flex justify-end gap-1">
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    disabled={busyId === account.id}
+                    onclick={() => openEdit(account)}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    disabled={account.id === user.id || busyId === account.id}
+                    onclick={() => update(account, { active: !account.active })}
+                  >
+                    {#if account.active}<X size={13} /> Nonaktifkan{:else}<Check size={13} /> Aktifkan{/if}
+                  </button>
+                </div>
               </td>
             </tr>
           {/each}
@@ -166,6 +238,13 @@
     Kata sandi di-hash sebelum disimpan. Minimal satu administrator aktif harus selalu tersedia.
   </div>
 </section>
+
+<datalist id="polres-options">
+  {#each options.polres as option (option)}<option value={option}></option>{/each}
+</datalist>
+<datalist id="satker-options">
+  {#each options.satker as option (option)}<option value={option}></option>{/each}
+</datalist>
 
 <Modal
   open={showForm}
@@ -189,8 +268,23 @@
       <select id="new-role" class="input" bind:value={form.role}>
         <option value="operator">Operator</option>
         <option value="admin">Administrator</option>
+        <option value="polres">Polres (baca-saja)</option>
+        <option value="polda">Polda (baca-saja)</option>
       </select>
     </div>
+    {#if form.role === 'polres'}
+      <div>
+        <label class="label" for="new-polres">Polres</label>
+        <input id="new-polres" class="input" bind:value={form.polres} list="polres-options" placeholder="Pilih atau ketik nama polres" required />
+        <p class="hint mt-1.5">Saran diambil dari data import; Anda tetap bisa mengetik nama lain.</p>
+      </div>
+    {:else if form.role === 'polda'}
+      <div>
+        <label class="label" for="new-satker">Satker Polda</label>
+        <input id="new-satker" class="input" bind:value={form.satker} list="satker-options" placeholder="Pilih atau ketik satker Polda" />
+        <p class="hint mt-1.5">Kosongkan untuk melihat seluruh satker Polda.</p>
+      </div>
+    {/if}
 
     {#if formError}
       <div class="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
@@ -201,6 +295,50 @@
     <div class="flex justify-end gap-2 border-t border-line pt-4">
       <Button variant="ghost" onclick={() => (showForm = false)}>Batal</Button>
       <Button type="submit" loading={formLoading}><UserPlus size={15} /> Buat akun</Button>
+    </div>
+  </form>
+</Modal>
+
+<Modal
+  open={editing !== null}
+  onclose={() => (editing = null)}
+  title="Ubah akses"
+  description="Perbarui peran dan unit pengguna."
+  width="max-w-lg"
+>
+  <form class="space-y-4" onsubmit={saveEdit}>
+    <div>
+      <label class="label" for="edit-role">Peran</label>
+      <select id="edit-role" class="input" bind:value={editForm.role}>
+        <option value="operator">Operator</option>
+        <option value="admin">Administrator</option>
+        <option value="polres">Polres (baca-saja)</option>
+        <option value="polda">Polda (baca-saja)</option>
+      </select>
+    </div>
+    {#if editForm.role === 'polres'}
+      <div>
+        <label class="label" for="edit-polres">Polres</label>
+        <input id="edit-polres" class="input" bind:value={editForm.polres} list="polres-options" placeholder="Pilih atau ketik nama polres" required />
+        <p class="hint mt-1.5">Saran diambil dari data import; Anda tetap bisa mengetik nama lain.</p>
+      </div>
+    {:else if editForm.role === 'polda'}
+      <div>
+        <label class="label" for="edit-satker">Satker Polda</label>
+        <input id="edit-satker" class="input" bind:value={editForm.satker} list="satker-options" placeholder="Pilih atau ketik satker Polda" />
+        <p class="hint mt-1.5">Kosongkan untuk melihat seluruh satker Polda.</p>
+      </div>
+    {/if}
+
+    {#if editError}
+      <div class="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+        <AlertCircle size={17} class="mt-0.5 shrink-0" /> {editError}
+      </div>
+    {/if}
+
+    <div class="flex justify-end gap-2 border-t border-line pt-4">
+      <Button variant="ghost" onclick={() => (editing = null)}>Batal</Button>
+      <Button type="submit" loading={editLoading}>Simpan perubahan</Button>
     </div>
   </form>
 </Modal>

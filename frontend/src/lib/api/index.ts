@@ -26,6 +26,7 @@ import type {
   UnitDetail,
   UploadedDesignImage,
   User,
+  UserOptions,
 } from '../types'
 import { queryString, request } from './client'
 
@@ -98,6 +99,7 @@ export const importsApi = {
     form.append('file', file)
     return request<ImportView>('/imports', { method: 'POST', body: form })
   },
+  remove: (importId: string) => request<void>(`/imports/${importId}`, { method: 'DELETE' }),
   records: (importId: string, filters: RecordFilters = {}) =>
     request<RecordsResponse>(
       `/imports/${importId}/records${queryString({
@@ -254,9 +256,18 @@ export const designApi = {
 
 export const usersApi = {
   list: () => request<AdminUser[]>('/admin/users'),
-  create: (input: { username: string; password: string; role: string }) =>
-    request<AdminUser>('/admin/users', { method: 'POST', body: JSON.stringify(input) }),
-  update: (userId: string, input: { role?: string; active?: boolean }) =>
+  options: () => request<UserOptions>('/admin/users/options'),
+  create: (input: {
+    username: string
+    password: string
+    role: string
+    polres?: string
+    satker?: string
+  }) => request<AdminUser>('/admin/users', { method: 'POST', body: JSON.stringify(input) }),
+  update: (
+    userId: string,
+    input: { role?: string; active?: boolean; polres?: string; satker?: string },
+  ) =>
     request<AdminUser>(`/admin/users/${userId}`, {
       method: 'PATCH',
       body: JSON.stringify(input),

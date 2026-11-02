@@ -21,6 +21,11 @@ pub struct Config {
     pub session_hours: i64,
     pub timezone_label: String,
     pub google_drive_api_key: Option<String>,
+    /// Lama (hari) bukti dukung milik baris tersisih dipertahankan sebelum
+    /// dibersihkan. Nilai 0 berarti langsung dibersihkan.
+    pub evidence_retention_days: i64,
+    /// Membersihkan bukti dukung baris yang kalah deduplikasi setelah impor.
+    pub evidence_purge_superseded: bool,
 }
 
 impl std::fmt::Debug for Config {
@@ -42,6 +47,8 @@ impl std::fmt::Debug for Config {
                 "google_drive_api_key",
                 &self.google_drive_api_key.as_ref().map(|_| "<redacted>"),
             )
+            .field("evidence_retention_days", &self.evidence_retention_days)
+            .field("evidence_purge_superseded", &self.evidence_purge_superseded)
             .finish()
     }
 }
@@ -63,6 +70,8 @@ impl Config {
             session_hours: 12,
             timezone_label: "WITA".into(),
             google_drive_api_key: None,
+            evidence_retention_days: 0,
+            evidence_purge_superseded: true,
         }
     }
 
@@ -111,6 +120,20 @@ impl Config {
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
+        let evidence_retention_days = env::var("LAPORAN_EVIDENCE_RETENTION_DAYS")
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0)
+            .clamp(0, 3650);
+        let evidence_purge_superseded = env::var("LAPORAN_EVIDENCE_PURGE_SUPERSEDED")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(true);
 
         Ok(Self {
             data_dir,
@@ -131,6 +154,8 @@ impl Config {
             timezone_label: env::var("LAPORAN_TIMEZONE_LABEL")
                 .unwrap_or_else(|_| "WITA".to_string()),
             google_drive_api_key,
+            evidence_retention_days,
+            evidence_purge_superseded,
         })
     }
 }

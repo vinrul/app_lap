@@ -4571,6 +4571,11 @@ mod tests {
             polsek: String::new(),
             level: level.into(),
             unit: String::new(),
+            satker: if level == "Polda" {
+                "Propam".into()
+            } else {
+                String::new()
+            },
             kode: kode.into(),
             qw_title: qw::title(kode).into(),
             kegiatan: String::new(),

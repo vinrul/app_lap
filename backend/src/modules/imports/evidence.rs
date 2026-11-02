@@ -12,7 +12,6 @@ use reqwest::{
     Client, Url,
     header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE},
 };
-use sha2::{Digest, Sha256};
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use tokio::task::JoinSet;
 use uuid::Uuid;
@@ -20,7 +19,7 @@ use uuid::Uuid;
 use crate::{
     config::Config,
     error::{ApiError, ApiResult},
-    modules::imports::drive,
+    modules::imports::{drive, evidence_store},
     state::{EvidenceDownloadLocks, ShutdownSignal},
 };
 
@@ -50,6 +49,9 @@ pub fn spawn_import_downloads(
             }
             if let Err(error) = process_import(&db, &config, &import_id, &shutdown).await {
                 tracing::warn!(%error, %import_id, "unduhan bukti dukung gagal diproses");
+            }
+            if config.evidence_purge_superseded {
+                purge_after_import(&db, &config, &import_id).await;
             }
             if !locks.continue_or_finish(&import_id) {
                 break;
@@ -108,7 +110,7 @@ pub async fn retry_import(
     sqlx::query(
         "UPDATE import_evidence
          SET status = 'pending', error = ''
-         WHERE import_id = ? AND status IN ('failed', 'skipped')
+         WHERE import_id = ? AND status IN ('failed', 'skipped', 'purged')
            AND error NOT LIKE 'Jenis berkas % tidak didukung%'",
     )
     .bind(import_id)
@@ -132,9 +134,13 @@ pub async fn retry_import(
     Ok(queued.max(0) as u64)
 }
 
-pub async fn open(db: &SqlitePool, evidence_id: &str) -> ApiResult<(Vec<u8>, String, String)> {
+pub async fn open(
+    db: &SqlitePool,
+    config: &Config,
+    evidence_id: &str,
+) -> ApiResult<(Vec<u8>, String, String)> {
     let row = sqlx::query(
-        "SELECT stored_path, filename, content_type, status
+        "SELECT import_id, stored_path, filename, content_type, status
          FROM import_evidence WHERE id = ?",
     )
     .bind(evidence_id)
@@ -153,7 +159,13 @@ pub async fn open(db: &SqlitePool, evidence_id: &str) -> ApiResult<(Vec<u8>, Str
     if stored_path.is_empty() {
         return Err(ApiError::not_found("Berkas bukti dukung tidak tersedia."));
     }
-    let bytes = tokio::fs::read(&stored_path)
+    let import_id: String = row.get("import_id");
+    let path = evidence_store::resolve_path(&config.data_dir, &stored_path, &import_id)
+        .await
+        .ok_or_else(|| {
+            ApiError::not_found("Berkas bukti dukung tidak ditemukan di penyimpanan.")
+        })?;
+    let bytes = tokio::fs::read(&path)
         .await
         .map_err(|_| ApiError::not_found("Berkas bukti dukung tidak ditemukan di penyimpanan."))?;
 
@@ -287,7 +299,7 @@ async fn process_import(
             expand_drive_folders(db, config, import_id, &client, folders, shutdown).await;
         }
 
-        download_groups(db, config, import_id, &client, groups, shutdown).await;
+        download_groups(db, config, &client, groups, shutdown).await;
     }
 
     Ok(())
@@ -469,7 +481,6 @@ async fn insert_drive_children(
 async fn download_groups(
     db: &SqlitePool,
     config: &Config,
-    import_id: &str,
     client: &Client,
     groups: HashMap<String, (Url, Vec<String>)>,
     shutdown: &ShutdownSignal,
@@ -488,7 +499,6 @@ async fn download_groups(
         tasks.spawn(download_group(
             db.clone(),
             config.data_dir.clone(),
-            import_id.to_string(),
             ids,
             target,
             client.clone(),
@@ -510,7 +520,6 @@ async fn download_groups(
         tasks.spawn(download_group(
             db.clone(),
             config.data_dir.clone(),
-            import_id.to_string(),
             ids,
             target,
             client.clone(),
@@ -521,37 +530,35 @@ async fn download_groups(
 async fn download_group(
     db: SqlitePool,
     data_dir: std::path::PathBuf,
-    import_id: String,
     evidence_ids: Vec<String>,
     target: Url,
     client: Client,
 ) {
     match fetch_evidence(&client, &target).await {
         Ok(fetched) => {
-            let directory = data_dir.join("evidence").join(&import_id);
-            if let Err(error) = tokio::fs::create_dir_all(&directory).await {
-                mark_many(
-                    &db,
-                    &evidence_ids,
-                    "failed",
-                    &format!("Gagal menyiapkan folder: {error}"),
-                )
-                .await;
-                return;
+            let digest = evidence_store::digest_hex(&fetched.bytes);
+            let stored_relative = evidence_store::content_relative_path(&digest, fetched.extension);
+            match evidence_store::store_content(
+                &data_dir,
+                &digest,
+                fetched.extension,
+                &fetched.bytes,
+            )
+            .await
+            {
+                Ok(_) => {
+                    mark_ready(&db, &data_dir, &evidence_ids, &fetched, &stored_relative).await;
+                }
+                Err(error) => {
+                    mark_many(
+                        &db,
+                        &evidence_ids,
+                        "failed",
+                        &format!("Gagal menyimpan berkas: {error}"),
+                    )
+                    .await;
+                }
             }
-            let digest = hex::encode(Sha256::digest(target.as_str()));
-            let stored_path = directory.join(format!("{}.{}", &digest[..16], fetched.extension));
-            if let Err(error) = tokio::fs::write(&stored_path, &fetched.bytes).await {
-                mark_many(
-                    &db,
-                    &evidence_ids,
-                    "failed",
-                    &format!("Gagal menyimpan berkas: {error}"),
-                )
-                .await;
-                return;
-            }
-            mark_ready(&db, &evidence_ids, &fetched, &stored_path).await;
         }
         Err(message) => {
             tracing::warn!(%message, "bukti dukung gagal diunduh");
@@ -564,11 +571,12 @@ async fn download_group(
 /// satu pernyataan agar tidak menghasilkan satu commit per baris.
 async fn mark_ready(
     db: &SqlitePool,
+    data_dir: &Path,
     evidence_ids: &[String],
     fetched: &FetchedEvidence,
-    stored_path: &Path,
+    stored_path: &str,
 ) {
-    let stored_path = stored_path.to_string_lossy().to_string();
+    let mut updated = 0_u64;
     for chunk in evidence_ids.chunks(MAX_UPDATE_BATCH) {
         let mut qb =
             QueryBuilder::<Sqlite>::new("UPDATE import_evidence SET status = 'ready', filename = ");
@@ -578,15 +586,26 @@ async fn mark_ready(
             .push(", size_bytes = ")
             .push_bind(fetched.bytes.len() as i64)
             .push(", stored_path = ")
-            .push_bind(&stored_path)
+            .push_bind(stored_path)
             .push(", error = '' WHERE id IN (");
         let mut separated = qb.separated(", ");
         for evidence_id in chunk {
             separated.push_bind(evidence_id);
         }
         separated.push_unseparated(")");
-        if let Err(error) = qb.build().execute(db).await {
-            tracing::warn!(%error, "gagal mencatat bukti dukung");
+        match qb.build().execute(db).await {
+            Ok(outcome) => updated += outcome.rows_affected(),
+            Err(error) => tracing::warn!(%error, "gagal mencatat bukti dukung"),
+        }
+    }
+
+    // Import dihapus saat unduhan selesai: berkas ini menjadi yatim. Berkas
+    // bersama (isi sama) tidak ikut terhapus karena masih dirujuk baris lain.
+    if updated == 0 {
+        if let Err(error) =
+            evidence_store::release_unreferenced(db, data_dir, &[stored_path.to_string()]).await
+        {
+            tracing::warn!(%error, "gagal menghapus berkas bukti dukung tanpa baris");
         }
     }
 }
@@ -638,30 +657,31 @@ async fn fetch_evidence(client: &Client, target: &Url) -> Result<FetchedEvidence
         .get(CONTENT_DISPOSITION)
         .and_then(|value| value.to_str().ok())
         .and_then(filename_from_headers);
-    let extension = match extension_for(&mime) {
-        Some(extension) => Some(extension),
-        None if mime == "application/octet-stream" => hinted_filename
-            .as_deref()
-            .and_then(extension_of)
-            .or_else(|| extension_of(target.path())),
-        None => None,
-    };
-    let Some(extension) = extension else {
-        return Err(if mime.is_empty() {
-            "Tautan tidak mengirim jenis berkas yang dikenali.".to_string()
-        } else {
-            format!("Jenis berkas {mime} tidak didukung (hanya gambar/PDF).")
+    // Jenis dari header dipakai sebagai petunjuk awal. Sebagian server membalas
+    // `application/octet-stream`, sehingga isi berkas tetap diperiksa setelah
+    // diunduh sebelum jenis akhir ditentukan.
+    let hinted = evidence_store::extension_for_mime(&mime)
+        .map(|extension| (mime.clone(), extension))
+        .or_else(|| {
+            hinted_filename
+                .as_deref()
+                .and_then(evidence_store::extension_from_name)
+                .or_else(|| evidence_store::extension_from_name(target.path()))
+                .map(|extension| {
+                    (
+                        evidence_store::mime_for_extension(extension)
+                            .unwrap_or("application/octet-stream")
+                            .to_string(),
+                        extension,
+                    )
+                })
         });
-    };
+    if hinted.is_none() && !mime.is_empty() && mime != "application/octet-stream" {
+        return Err(format!(
+            "Jenis berkas {mime} tidak didukung (hanya gambar/PDF)."
+        ));
+    }
 
-    let filename = hinted_filename.unwrap_or_else(|| {
-        target
-            .path_segments()
-            .and_then(|segments| segments.last())
-            .and_then(sanitize_filename)
-            .filter(|name| Path::new(name).extension().is_some())
-            .unwrap_or_else(|| format!("bukti-{}.{extension}", &Uuid::new_v4().to_string()[..8]))
-    });
     let mut bytes = Vec::new();
     let mut response = response;
     while let Some(chunk) = response
@@ -681,10 +701,29 @@ async fn fetch_evidence(client: &Client, target: &Url) -> Result<FetchedEvidence
         return Err("Tautan mengirim berkas kosong.".to_string());
     }
 
+    let (content_type, extension) = match evidence_store::sniff_content(&bytes) {
+        Some(kind) => (kind.content_type.to_string(), kind.extension),
+        None => hinted.ok_or_else(|| {
+            if mime.is_empty() {
+                "Tautan tidak mengirim jenis berkas yang dikenali.".to_string()
+            } else {
+                format!("Jenis berkas {mime} tidak didukung (hanya gambar/PDF).")
+            }
+        })?,
+    };
+    let filename = hinted_filename.unwrap_or_else(|| {
+        target
+            .path_segments()
+            .and_then(|segments| segments.last())
+            .and_then(sanitize_filename)
+            .filter(|name| Path::new(name).extension().is_some())
+            .unwrap_or_else(|| format!("bukti-{}.{extension}", &Uuid::new_v4().to_string()[..8]))
+    });
+
     Ok(FetchedEvidence {
         bytes,
         filename,
-        content_type: mime,
+        content_type,
         extension,
     })
 }
@@ -782,33 +821,6 @@ fn is_unsupported_host(host: &str, path: &str) -> bool {
     ) || (host.ends_with("google.com") && path.starts_with("/maps"))
 }
 
-fn extension_for(mime: &str) -> Option<&'static str> {
-    match mime {
-        "image/jpeg" => Some("jpg"),
-        "image/png" => Some("png"),
-        "image/webp" => Some("webp"),
-        "image/gif" => Some("gif"),
-        "application/pdf" => Some("pdf"),
-        _ => None,
-    }
-}
-
-fn extension_of(value: &str) -> Option<&'static str> {
-    let extension = Path::new(value)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    match extension.as_str() {
-        "jpg" | "jpeg" => Some("jpg"),
-        "png" => Some("png"),
-        "webp" => Some("webp"),
-        "gif" => Some("gif"),
-        "pdf" => Some("pdf"),
-        _ => None,
-    }
-}
-
 fn filename_from_headers(value: &str) -> Option<String> {
     let lower = value.to_ascii_lowercase();
     if let Some(index) = lower.find("filename*=") {
@@ -890,6 +902,175 @@ async fn mark_many(db: &SqlitePool, evidence_ids: &[String], status: &str, messa
             tracing::warn!(%error, "gagal menandai bukti dukung");
         }
     }
+}
+
+/// Statistik pembersihan bukti dukung baris tersisih.
+#[derive(Debug, Default, Clone)]
+pub struct PurgeSummary {
+    pub rows: u64,
+    pub files: u64,
+    pub bytes: u64,
+}
+
+/// Batas baris per putaran agar query tetap ramah memori.
+const MAX_PURGE_BATCH: usize = 20_000;
+
+async fn purge_after_import(db: &SqlitePool, config: &Config, import_id: &str) {
+    match purge_superseded(
+        db,
+        &config.data_dir,
+        Some(import_id),
+        config.evidence_retention_days,
+        false,
+    )
+    .await
+    {
+        Ok(summary) if summary.rows > 0 => {
+            tracing::info!(
+                %import_id,
+                rows = summary.rows,
+                files = summary.files,
+                bytes = summary.bytes,
+                "bukti dukung baris tersisih dibersihkan"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(%error, %import_id, "gagal membersihkan bukti dukung baris tersisih")
+        }
+    }
+}
+
+/// Membersihkan bukti dukung milik baris yang kalah dalam deduplikasi.
+///
+/// Berkas hanya dihapus bila baris pemenang sudah memiliki bukti dukung
+/// `ready`, sehingga tautan cadangan tidak hilang ketika unduhan import
+/// terbaru gagal. `retention_days` menunda penghapusan selama jumlah hari
+/// tersebut; nilai 0 berarti langsung dibersihkan.
+pub async fn purge_superseded(
+    db: &SqlitePool,
+    data_dir: &Path,
+    keys_from_import: Option<&str>,
+    retention_days: i64,
+    dry_run: bool,
+) -> ApiResult<PurgeSummary> {
+    let cutoff = (retention_days > 0).then(|| {
+        (chrono::Utc::now() - chrono::Duration::days(retention_days))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    });
+
+    let mut summary = PurgeSummary::default();
+    loop {
+        let candidates = purge_candidates(
+            db,
+            keys_from_import,
+            cutoff.as_deref(),
+            if dry_run { None } else { Some(MAX_PURGE_BATCH) },
+        )
+        .await?;
+        if candidates.is_empty() {
+            break;
+        }
+        let processed = candidates.len();
+        summary.rows += processed as u64;
+
+        if dry_run {
+            let mut seen = std::collections::HashSet::new();
+            for (_, stored_path) in &candidates {
+                if !seen.insert(stored_path.clone()) {
+                    continue;
+                }
+                let path = if Path::new(stored_path).is_absolute() {
+                    std::path::PathBuf::from(stored_path)
+                } else {
+                    data_dir.join(stored_path)
+                };
+                if let Ok(metadata) = tokio::fs::metadata(&path).await {
+                    summary.files += 1;
+                    summary.bytes += metadata.len();
+                }
+            }
+            break;
+        }
+
+        for chunk in candidates.chunks(MAX_UPDATE_BATCH) {
+            let mut qb = QueryBuilder::<Sqlite>::new(
+                "UPDATE import_evidence SET status = 'purged', stored_path = '', \
+                 size_bytes = 0, error = ",
+            );
+            qb.push_bind(
+                "Bukti dukung tidak dipakai lagi karena data yang sama sudah diimpor lebih baru.",
+            )
+            .push(" WHERE id IN (");
+            let mut separated = qb.separated(", ");
+            for (id, _) in chunk {
+                separated.push_bind(id);
+            }
+            separated.push_unseparated(")");
+            qb.build().execute(db).await.map_err(ApiError::internal)?;
+        }
+
+        let paths: Vec<String> = candidates.into_iter().map(|(_, path)| path).collect();
+        let released = evidence_store::release_unreferenced(db, data_dir, &paths).await?;
+        summary.files += released.files;
+        summary.bytes += released.bytes;
+
+        if processed < MAX_PURGE_BATCH {
+            break;
+        }
+    }
+    Ok(summary)
+}
+
+async fn purge_candidates(
+    db: &SqlitePool,
+    keys_from_import: Option<&str>,
+    cutoff: Option<&str>,
+    limit: Option<usize>,
+) -> ApiResult<Vec<(String, String)>> {
+    let mut qb = QueryBuilder::<Sqlite>::new(
+        "WITH ranked AS (
+            SELECT r.id AS id, lower(trim(r.dedupe_key)) AS dedupe,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY lower(trim(r.dedupe_key))
+                       ORDER BY i.created_at DESC, i.id DESC, r.source_row DESC
+                   ) AS rn
+            FROM import_rows r
+            JOIN imports i ON i.id = r.import_id",
+    );
+    if let Some(import_id) = keys_from_import {
+        qb.push(" WHERE r.dedupe_key IN (SELECT dedupe_key FROM import_rows WHERE import_id = ")
+            .push_bind(import_id)
+            .push(")");
+    }
+    qb.push(
+        "), winners AS (
+            SELECT DISTINCT ranked.dedupe AS dedupe
+            FROM ranked
+            JOIN import_evidence ready_evidence
+              ON ready_evidence.row_id = ranked.id
+             AND ready_evidence.status = 'ready'
+             AND ready_evidence.stored_path <> ''
+            WHERE ranked.rn = 1
+        )
+        SELECT e.id, e.stored_path
+        FROM import_evidence e
+        JOIN ranked loser ON loser.id = e.row_id AND loser.rn > 1
+        JOIN winners ON winners.dedupe = loser.dedupe
+        WHERE e.stored_path <> ''
+          AND e.status <> 'purged'",
+    );
+    if let Some(cutoff) = cutoff {
+        qb.push(" AND e.created_at <= ").push_bind(cutoff);
+    }
+    qb.push(" LIMIT ")
+        .push_bind(limit.map(|value| value as i64).unwrap_or(-1));
+    let rows = qb.build().fetch_all(db).await.map_err(ApiError::internal)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.get("id"), row.get("stored_path")))
+        .collect())
 }
 
 #[cfg(test)]
@@ -1076,7 +1257,7 @@ mod tests {
             content_type: "image/jpeg".to_string(),
             extension: "jpg",
         };
-        mark_ready(&db, &ids, &fetched, Path::new("evidence/imp1/foto.jpg")).await;
+        mark_ready(&db, dir.path(), &ids, &fetched, "evidence/imp1/foto.jpg").await;
         let ready: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM import_evidence
              WHERE status = 'ready' AND filename = 'foto.jpg' AND size_bytes = 8
@@ -1086,5 +1267,98 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(ready, total as i64);
+    }
+
+    #[tokio::test]
+    async fn purges_evidence_from_superseded_rows_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::test_config();
+        config.data_dir = dir.path().to_path_buf();
+        let db = crate::db::connect(&config).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO users(id,username,password_hash,role) VALUES('u1','tester','x','admin')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        for (import_id, created_at) in [
+            ("imp-old", "2026-10-01 00:00:00"),
+            ("imp-new", "2026-10-02 00:00:00"),
+        ] {
+            sqlx::query(
+                "INSERT INTO imports(id,filename,file_hash,stored_path,parser_version,row_count,
+                    skipped_rows,duplicate_rows,date_start,date_end,warnings_json,imported_by,created_at)
+                 VALUES(?, 'x.xlsx', ?, 'path', '4', 1, 0, 0, '2026-10-20', '2026-10-20', '[]', 'u1', ?)",
+            )
+            .bind(import_id)
+            .bind(format!("hash-{import_id}"))
+            .bind(created_at)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        let mut row_ids = Vec::new();
+        for import_id in ["imp-old", "imp-new"] {
+            let row_id = sqlx::query(
+                "INSERT INTO import_rows(import_id, source_row, tanggal, dedupe_key, raw_json)
+                 VALUES(?, 2, '2026-10-20', 'kunci-sama', '{}')",
+            )
+            .bind(import_id)
+            .execute(&db)
+            .await
+            .unwrap()
+            .last_insert_rowid();
+            row_ids.push(row_id);
+        }
+
+        let evidence_dir = dir.path().join("evidence");
+        tokio::fs::create_dir_all(&evidence_dir).await.unwrap();
+        let old_path = evidence_dir.join("old.jpg");
+        let new_path = evidence_dir.join("new.jpg");
+        tokio::fs::write(&old_path, b"lama").await.unwrap();
+        tokio::fs::write(&new_path, b"baru").await.unwrap();
+
+        for (evidence_id, import_id, row_id, path) in [
+            ("ev-old", "imp-old", row_ids[0], &old_path),
+            ("ev-new", "imp-new", row_ids[1], &new_path),
+        ] {
+            sqlx::query(
+                "INSERT INTO import_evidence(id,import_id,row_id,source_url,filename,content_type,
+                    stored_path,size_bytes,status)
+                 VALUES(?,?,?,'https://contoh/foto.jpg','foto.jpg','image/jpeg',?,?,'ready')",
+            )
+            .bind(evidence_id)
+            .bind(import_id)
+            .bind(row_id)
+            .bind(path.to_string_lossy().to_string())
+            .bind(4_i64)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        let summary = purge_superseded(&db, dir.path(), None, 0, false)
+            .await
+            .unwrap();
+        assert_eq!(summary.rows, 1);
+        assert_eq!(summary.files, 1);
+
+        let loser_status: String =
+            sqlx::query_scalar("SELECT status FROM import_evidence WHERE id = 'ev-old'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(loser_status, "purged");
+        assert!(!tokio::fs::try_exists(&old_path).await.unwrap());
+
+        let winner_status: String =
+            sqlx::query_scalar("SELECT status FROM import_evidence WHERE id = 'ev-new'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(winner_status, "ready");
+        assert!(tokio::fs::try_exists(&new_path).await.unwrap());
     }
 }

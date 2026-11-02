@@ -1,14 +1,21 @@
-export type Role = 'admin' | 'operator'
+export type Role = 'admin' | 'operator' | 'polres' | 'polda'
 
 export interface User {
   id: string
   username: string
   role: Role
+  polres: string
+  satker: string
 }
 
 export interface AdminUser extends User {
   active: boolean
   created_at: string
+}
+
+export interface UserOptions {
+  polres: string[]
+  satker: string[]
 }
 
 export interface Meta {

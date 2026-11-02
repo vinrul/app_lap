@@ -12,7 +12,7 @@ Aplikasi lokal untuk mengubah export Excel **Quick Wins / Qins Polri** menjadi l
 - Analisis otomatis dari `Isian laporan`: jumlah personel, bibit, luas area, jemaah, titik koordinat, dan tautan peta; tersedia sebagai kartu ringkas, tren harian, dan sebaran kelompok/kode/tingkat/unit.
 - Drill-down pelaksana: klik satker Polda atau polres pada tabel breakdown untuk melihat ringkasan metrik, sebaran Quick Wins dan sub-kode, rincian polsek, serta kegiatan. Kode sub-kegiatan ditampilkan bersama deskripsinya. Klik QW1/QW1.2 untuk melihat cakupan polres/satker dan kegiatan sampai tingkat unit.
 - Tab **Cakupan**: ringkasan pelaksanaan 8 kelompok Quick Wins dan seluruh sub-kode dengan jumlah satker Polda/polres pelaksana serta daftar unit yang belum melaksanakan. Klik kelompok QW untuk melihat jumlah kegiatan per polres dan satker Polda; klik sub-kode untuk membuka rincian berisi jumlah kegiatan per polres/satker, total personel, unit yang belum melaksanakan, serta daftar kegiatan beserta tautan peta. Menampilkan kelengkapan data per program (Green Policing, Jumat Keliling, Subuh Keliling, Minggu Kasih, Berantas Narkoba, Amplifikasi Media) per satker/polres: total metrik, jumlah baris/unit yang mengisi, dan daftar unit yang belum mengisi luas, bibit, personel, kerja bakti, jemaah, lokasi/masjid, narkoba, atau tautan media.
-- Bukti dukung diunduh best-effort dari tautan gambar/PDF langsung, berkas Google Drive, ekspor Google Docs, dan folder Google Drive publik. Folder dibaca pada akar dan satu tingkat subfolder, maksimal 100 gambar/PDF per folder; berkas lain ditandai `skipped`. Media sosial dan tautan peta ditandai tidak dapat diunduh; pengguna dapat menjalankan ulang unduhan dari halaman Import data. Bukti yang sudah terunduh dapat dipratinjau langsung di aplikasi, termasuk galeri beberapa gambar/PDF dari folder Drive, tanpa harus mengunduh berkasnya terlebih dahulu. Antrean `pending` dilanjutkan otomatis saat backend start, dengan lock per import agar tidak ada worker ganda; permintaan baru saat worker berjalan dijadwalkan sebagai putaran ulang.
+- Bukti dukung diunduh best-effort dari tautan gambar/PDF langsung, berkas Google Drive, ekspor Google Docs, dan folder Google Drive publik. Folder dibaca pada akar dan satu tingkat subfolder, maksimal 100 gambar/PDF per folder; berkas lain ditandai `skipped`. Media sosial dan tautan peta ditandai tidak dapat diunduh; pengguna dapat menjalankan ulang unduhan dari halaman Import data. Bukti yang sudah terunduh dapat dipratinjau langsung di aplikasi, termasuk galeri beberapa gambar/PDF dari folder Drive, tanpa harus mengunduh berkasnya terlebih dahulu. Antrean `pending` dilanjutkan otomatis saat backend start, dengan lock per import agar tidak ada worker ganda; permintaan baru saat worker berjalan dijadwalkan sebagai putaran ulang. Berkas disimpan sekali berdasarkan hash isinya sehingga tautan yang sama pada beberapa import tidak memakai ruang tambahan; jenis berkas dideteksi dari magic bytes (PDF yang dikirim sebagai `application/octet-stream` tetap terbaca), dan bukti dukung baris yang kalah deduplikasi dibersihkan otomatis setelah import baru selesai.
 - Peta lokasi kegiatan dari koordinat baris sumber memakai Leaflet + OpenStreetMap, dimuat hanya saat detail dibuka. Tersedia marker, popup, tombol **Google Maps**, dan **Rute** ke tab baru. Tile peta diambil melalui backend dengan User-Agent aplikasi dan cache di `data/map-tiles/`; koneksi internet tetap diperlukan.
 - Perhitungan metrik otomatis dari kolom `Isian laporan`:
   - Berantas narkoba (orang ditangkap, kawasan, rehabilitasi, penyuluhan)
@@ -69,7 +69,7 @@ Secara default aplikasi hanya mendengarkan koneksi loopback. Frontend dibangun o
 ## Alur laporan
 
 1. Masuk dengan akun admin/operator.
-2. Buka menu **Import data**, unggah workbook `.xlsx`, periksa pratinjau (baris valid, duplikat, tautan bukti, analisis), lalu simpan.
+2. Buka menu **Import data**, unggah workbook `.xlsx`, periksa pratinjau (baris valid, duplikat, tautan bukti, analisis), lalu simpan. File dengan isi identik (hash SHA-256 sama) ditolak agar tidak terjadi import ganda; admin dapat menghapus import lama dari daftar **Berkas tersimpan**.
 3. Buat periode pada menu **Periode** dan pilih jenisnya: harian, mingguan/rentang, atau bulanan. Periode otomatis mengambil baris dari seluruh import yang mencakup rentang tanggalnya. Nama dan tanggal periode dapat diubah lewat tombol **Edit**, sedangkan periode lama dapat diarsipkan dan dipulihkan dari tab **Arsip**.
 4. Buka tab **Ringkasan** untuk memeriksa metrik, berkas impor, duplikat, dan sebaran wilayah.
 5. Buka tab **Analisis** untuk personel, bibit, luas, jemaah, koordinat, tren harian, serta sebaran kode/unit. Tab **Data** memuat daftar baris beserta bukti dukung.
@@ -78,6 +78,17 @@ Secara default aplikasi hanya mendengarkan koneksi loopback. Frontend dibangun o
 8. Buka tautan presentasi tanpa login. Gunakan tombol navigasi, panah/spasi, geser layar, layar penuh, dan pilihan transisi halaman.
 
 Metrik dihitung dari baris sumber dan isian terstruktur. Angka yang tidak tersedia di workbook (misalnya narasi kebijakan) tetap perlu diisi operator. Tinjau kembali angka agregat dan desain sebelum menerbitkan PDF.
+
+## Peran pengguna
+
+| Peran | Akses |
+|---|---|
+| `admin` | Semua fitur, termasuk pengelolaan pengguna |
+| `operator` | Semua fitur operasional kecuali pengelolaan pengguna |
+| `polres` | Baca-saja, hanya data polres yang ditetapkan pada akun |
+| `polda` | Baca-saja, hanya data satker tingkat Polda (opsional satu satker) |
+
+Peran `polres` dan `polda` hanya melihat periode aktif, cakupan, data sumber, dan dokumen. Import, perubahan periode, desain, dan pembuatan PDF ditolak oleh backend, bukan hanya disembunyikan di antarmuka. Akun `polres` wajib memiliki nama polres; akun `polda` boleh dikosongkan satkernya untuk melihat seluruh satker Polda.
 
 ## Struktur proyek
 
@@ -90,7 +101,13 @@ app_lap/
 │   │   ├── 0003_report_design.sql
 │   │   ├── 0004_design_templates.sql
 │   │   ├── 0005_standalone_imports.sql
-│   │   └── 0006_report_shares.sql
+│   │   ├── 0006_report_shares.sql
+│   │   ├── 0007_period_archive.sql
+│   │   ├── 0008_performance.sql
+│   │   ├── 0009_period_row_counts.sql
+│   │   ├── 0010_scoped_roles.sql
+│   │   ├── 0011_import_row_satker.sql
+│   │   └── 0012_evidence_storage.sql
 │   └── src/
 │       ├── main.rs              # Entry point & CLI
 │       ├── app.rs               # Perakitan router & middleware
@@ -148,7 +165,20 @@ Hentikan server dengan Ctrl+C. Server menyelesaikan permintaan yang sedang berja
 menghentikan pengambilan tugas unduhan bukti dukung baru, lalu menutup database
 dengan rapi. Di Linux, SIGTERM dari `systemctl stop`/`restart` diperlakukan sama.
 
-Pengujian backend mencakup parser workbook contoh (termasuk dedupe dan hierarki unit), analisis isian laporan, normalisasi tautan bukti dukung, klasifikasi folder Google Drive dan batas 100 berkas, normalisasi tanggal/angka, klasifikasi tautan media, render 9 halaman/halaman blank, dan agregasi metrik.
+Perawatan penyimpanan bukti dukung (jalankan sekali setelah upgrade, atau kapan pun
+setelah impor besar):
+
+```powershell
+cd backend
+cargo run --release -- evidence-maintenance --dry-run   # perkiraan tanpa mengubah data
+cargo run --release -- evidence-maintenance             # terapkan
+```
+
+Perintah ini memindahkan berkas lama ke penyimpanan berbasis isi, memperbaiki jenis
+berkas dari magic bytes, dan membersihkan bukti dukung baris yang kalah deduplikasi.
+Aman dijalankan berulang.
+
+Pengujian backend mencakup parser workbook contoh (termasuk dedupe dan hierarki unit), analisis isian laporan, normalisasi tautan bukti dukung, klasifikasi folder Google Drive dan batas 100 berkas, penyimpanan bukti dukung berbasis isi, pembersihan baris tersisih, normalisasi tanggal/angka, klasifikasi tautan media, render 9 halaman/halaman blank, dan agregasi metrik.
 
 ## Data dan cadangan
 
@@ -156,7 +186,7 @@ Default data berada di `data/`:
 
 - `laporan.sqlite3` — akun, sesi, periode, impor, baris data, draft, audit, metadata PDF.
 - `imports/` — salinan workbook sumber per import.
-- `evidence/` — gambar/PDF bukti dukung hasil unduhan, dikelompokkan per import.
+- `evidence/` — gambar/PDF bukti dukung. Berkas baru disimpan sekali per isi di `evidence/content/`; folder `evidence/<import_id>` hanya dipakai data lama dan dipindahkan oleh `evidence-maintenance`.
 - `reports/` — HTML dan PDF yang diarsipkan per versi laporan.
 - `design/` — gambar yang diunggah untuk layout desain laporan.
 
@@ -176,6 +206,8 @@ Tutup aplikasi sebelum membuat cadangan konsisten. Salin seluruh direktori `data
 | `LAPORAN_MAX_UPLOAD_MB` | `32` | Batas ukuran workbook |
 | `LAPORAN_SESSION_HOURS` | `12` | Masa berlaku sesi login |
 | `LAPORAN_GOOGLE_DRIVE_API_KEY` | kosong | API key untuk membaca folder Google Drive publik |
+| `LAPORAN_EVIDENCE_RETENTION_DAYS` | `0` | Jumlah hari bukti dukung baris tersisih dipertahankan sebelum dibersihkan |
+| `LAPORAN_EVIDENCE_PURGE_SUPERSEDED` | `true` | Bersihkan bukti dukung baris yang kalah deduplikasi setelah impor |
 | `LAPORAN_FRONTEND_DIR` | `<root>/frontend/dist` | Lokasi build frontend |
 | `LAPORAN_SECURE_COOKIE` | `false` | Set `true` bila memakai HTTPS |
 

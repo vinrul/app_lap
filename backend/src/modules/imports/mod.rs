@@ -3,6 +3,8 @@ pub mod coverage;
 pub mod drive;
 pub mod duties;
 pub mod evidence;
+pub mod evidence_maintenance;
+pub mod evidence_store;
 mod handlers;
 pub mod models;
 pub mod parser;
@@ -11,7 +13,7 @@ pub mod service;
 
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 
 use crate::state::AppState;
@@ -21,6 +23,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/imports", get(handlers::list).post(handlers::commit))
         .route("/imports/preview", post(handlers::preview))
+        .route("/imports/{import_id}", delete(handlers::delete_import))
         .route("/imports/{import_id}/records", get(handlers::records))
         .route(
             "/imports/{import_id}/evidence/retry",

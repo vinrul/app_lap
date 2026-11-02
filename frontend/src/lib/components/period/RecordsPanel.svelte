@@ -13,6 +13,7 @@
   import { errorMessage } from '../../api/client'
   import type { RecordItem, RecordsResponse } from '../../types'
   import { formatDate, formatNumber } from '../../utils/format'
+  import { auth } from '../../stores/auth.svelte'
   import Button from '../ui/Button.svelte'
   import EvidenceList from '../ui/EvidenceList.svelte'
   import LocationMap from '../ui/LocationMap.svelte'
@@ -23,6 +24,8 @@
   }
 
   let { periodId }: Props = $props()
+
+  const reader = $derived(auth.user?.role === 'polres' || auth.user?.role === 'polda')
 
   let data = $state<RecordsResponse | null>(null)
   let loading = $state(true)
@@ -120,10 +123,12 @@
       <option value="">Semua status</option>
       {#each data?.statuses ?? [] as item}<option value={item.label}>{item.label} · {item.count}</option>{/each}
     </select>
-    <select class="input w-auto py-2 text-xs" bind:value={polres} onchange={applyFilter} aria-label="Filter polres">
-      <option value="">Semua polres</option>
-      {#each data?.polres ?? [] as item}<option value={item.label}>{item.label} · {item.count}</option>{/each}
-    </select>
+    {#if !reader}
+      <select class="input w-auto py-2 text-xs" bind:value={polres} onchange={applyFilter} aria-label="Filter polres">
+        <option value="">Semua polres</option>
+        {#each data?.polres ?? [] as item}<option value={item.label}>{item.label} · {item.count}</option>{/each}
+      </select>
+    {/if}
     <Button type="submit" size="sm" variant="secondary"><Filter size={14} /> Terapkan</Button>
     {#if hasFilters}
       <Button size="sm" variant="ghost" onclick={resetFilters}>Reset</Button>

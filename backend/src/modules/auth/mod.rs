@@ -18,4 +18,4 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/me", get(handlers::me))
 }
 
-pub use models::AuthUser;
+pub use models::{AuthUser, DataScope};

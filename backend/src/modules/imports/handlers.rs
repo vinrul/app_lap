@@ -1,14 +1,14 @@
 use axum::{
     Json,
     extract::{Multipart, Path, Query, State},
-    http::header,
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 
 use crate::{
     error::{ApiError, ApiResult},
     modules::{
-        auth::AuthUser,
+        auth::{AuthUser, DataScope},
         imports::{
             evidence,
             models::{
@@ -26,16 +26,18 @@ use crate::{
 
 pub async fn list(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
 ) -> ApiResult<Json<Vec<ImportView>>> {
+    user.require_writer()?;
     Ok(Json(service::list(&state.db).await?))
 }
 
 pub async fn preview(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     multipart: Multipart,
 ) -> ApiResult<Json<ImportPreview>> {
+    user.require_writer()?;
     let (_, bytes) = read_workbook(multipart, state.config.max_upload_bytes).await?;
     Ok(Json(service::preview(bytes).await?))
 }
@@ -45,6 +47,7 @@ pub async fn commit(
     user: AuthUser,
     multipart: Multipart,
 ) -> ApiResult<Json<ImportView>> {
+    user.require_writer()?;
     let (filename, bytes) = read_workbook(multipart, state.config.max_upload_bytes).await?;
     let view = service::commit(&state.db, &state.config, &user.id, &filename, bytes).await?;
     cache::invalidate();
@@ -60,11 +63,22 @@ pub async fn commit(
     Ok(Json(view))
 }
 
+pub async fn delete_import(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(import_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    user.require_admin()?;
+    service::delete(&state.db, &state.config, &user.id, &import_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn retry_evidence(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(import_id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    user.require_writer()?;
     let queued = evidence::retry_import(
         &state.db,
         state.config.clone(),
@@ -78,10 +92,12 @@ pub async fn retry_evidence(
 
 pub async fn evidence_file(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(evidence_id): Path<String>,
 ) -> ApiResult<Response> {
-    let (bytes, content_type, filename) = evidence::open(&state.db, &evidence_id).await?;
+    user.require_writer()?;
+    let (bytes, content_type, filename) =
+        evidence::open(&state.db, &state.config, &evidence_id).await?;
     let safe_name: String = filename
         .chars()
         .map(|character| {
@@ -110,21 +126,50 @@ pub async fn evidence_file(
 
 pub async fn records(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(import_id): Path<String>,
     Query(query): Query<RecordQuery>,
 ) -> ApiResult<Json<RecordsResponse>> {
+    user.require_writer()?;
     Ok(Json(
         service::records_for_import(&state.db, &import_id, &query).await?,
     ))
 }
 
+/// Membatasi filter klien sesuai peran. Pembaca tidak dapat memperluas
+/// cakupan dengan mengirim parameter polres/level/unit sendiri.
+fn scoped_query(user: &AuthUser, mut query: RecordQuery) -> RecordQuery {
+    match user.data_scope() {
+        DataScope::All => query,
+        DataScope::None => {
+            query.polres = Some("__tidak_ada__".to_string());
+            query.level = None;
+            query.unit = None;
+            query
+        }
+        DataScope::Polres(polres) => {
+            query.polres = Some(polres);
+            query.level = None;
+            query.satker = None;
+            query
+        }
+        DataScope::Polda { satker } => {
+            query.polres = Some("polda".to_string());
+            query.level = Some("Polda".to_string());
+            query.unit = None;
+            query.satker = satker;
+            query
+        }
+    }
+}
+
 pub async fn period_records(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(period_id): Path<String>,
     Query(query): Query<RecordQuery>,
 ) -> ApiResult<Json<RecordsResponse>> {
+    let query = scoped_query(&user, query);
     Ok(Json(
         service::records_for_period(&state.db, &period_id, &query).await?,
     ))
@@ -132,21 +177,22 @@ pub async fn period_records(
 
 pub async fn record_detail(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path((period_id, record_id)): Path<(String, i64)>,
 ) -> ApiResult<Json<RecordView>> {
     Ok(Json(
-        service::record_detail_for_period(&state.db, &period_id, record_id).await?,
+        service::record_detail_for_period(&state.db, &period_id, record_id, &user.data_scope())
+            .await?,
     ))
 }
 
 pub async fn analysis(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<AnalysisResponse>> {
     Ok(Json(
-        service::analysis_for_period(&state.db, &period_id).await?,
+        service::analysis_for_period(&state.db, &period_id, &user.data_scope()).await?,
     ))
 }
 
@@ -157,25 +203,32 @@ pub struct CoverageQuery {
 
 pub async fn coverage(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(period_id): Path<String>,
     Query(query): Query<CoverageQuery>,
 ) -> ApiResult<Json<CoverageResponse>> {
-    let polres = query
-        .polres
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+    let scope = user.data_scope();
+    let polres = if scope.is_all() {
+        query
+            .polres
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    } else {
+        None
+    };
     if polres.is_none() {
         // Cakupan tanpa filter sudah ikut dihitung bersama metrik periode,
         // sehingga permintaan dari panel desain tidak perlu memindai ulang.
-        let metrics = reports::service::metrics_for(&state.db, &state.config, &period_id).await?;
+        let metrics =
+            reports::service::metrics_for_scope(&state.db, &state.config, &period_id, &scope)
+                .await?;
         if let Some(coverage) = metrics.coverage {
             return Ok(Json(coverage));
         }
     }
     Ok(Json(
-        service::coverage_for_period(&state.db, &period_id, polres).await?,
+        service::coverage_for_period(&state.db, &period_id, polres, &scope).await?,
     ))
 }
 
@@ -187,7 +240,7 @@ pub struct UnitDetailQuery {
 
 pub async fn unit_detail(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(period_id): Path<String>,
     Query(query): Query<UnitDetailQuery>,
 ) -> ApiResult<Json<UnitDetailResponse>> {
@@ -196,6 +249,7 @@ pub async fn unit_detail(
             &state.db,
             &state.config,
             &period_id,
+            &user.data_scope(),
             &query.scope,
             &query.label,
         )
@@ -212,7 +266,7 @@ pub struct QuickWinActivityQuery {
 
 pub async fn quick_win_detail(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path((period_id, code)): Path<(String, String)>,
     Query(query): Query<QuickWinActivityQuery>,
 ) -> ApiResult<Json<QuickWinDetailResponse>> {
@@ -222,13 +276,21 @@ pub async fn quick_win_detail(
         }
         _ => None,
     };
+    let data_scope = user.data_scope();
+    // Pembaca tidak boleh mempersempit ke polres lain lewat parameter klien.
+    let polres = if data_scope.is_all() {
+        query.polres.as_deref()
+    } else {
+        None
+    };
     Ok(Json(
         service::quick_win_detail_for_period(
             &state.db,
             &period_id,
             &code,
             unit,
-            query.polres.as_deref(),
+            polres,
+            &data_scope,
         )
         .await?,
     ))

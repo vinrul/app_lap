@@ -11,6 +11,7 @@
     MapPin,
     Rows3,
     Search,
+    Trash2,
     Upload,
     X,
   } from 'lucide-svelte'
@@ -19,6 +20,8 @@
   import type { ImportPreview, ImportView, RecordItem, RecordsResponse } from '../../lib/types'
   import { formatBytes, formatDate, formatDateTime, formatNumber } from '../../lib/utils/format'
   import { meta } from '../../lib/stores/meta.svelte'
+  import { auth } from '../../lib/stores/auth.svelte'
+  import { dialog } from '../../lib/stores/dialog.svelte'
   import { toast } from '../../lib/stores/toast.svelte'
   import PageHeader from '../../lib/components/ui/PageHeader.svelte'
   import Button from '../../lib/components/ui/Button.svelte'
@@ -44,6 +47,7 @@
   let selectedRecord = $state<RecordItem | null>(null)
   let recordsError = $state('')
   let retrying = $state<string | null>(null)
+  let removing = $state<string | null>(null)
 
   const maxBytes = $derived(meta.data?.max_upload_bytes ?? 32 * 1024 * 1024)
   const totalRows = $derived(imports.reduce((total, item) => total + item.row_count, 0))
@@ -160,6 +164,26 @@
       toast.error(errorMessage(caught))
     } finally {
       retrying = null
+    }
+  }
+
+  async function removeImport(item: ImportView) {
+    const confirmed = await dialog.confirm({
+      title: 'Hapus import?',
+      message: `Import "${item.filename}" beserta ${formatNumber(item.row_count)} baris dan seluruh bukti dukungnya akan dihapus permanen. Periode yang memakai import ini otomatis kembali memakai versi import lain yang tersedia.`,
+      confirmLabel: 'Hapus',
+      cancelLabel: 'Batal',
+    })
+    if (!confirmed) return
+    removing = item.id
+    try {
+      await importsApi.remove(item.id)
+      toast.success('Import dihapus.')
+      await load()
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    } finally {
+      removing = ''
     }
   }
 </script>
@@ -373,6 +397,15 @@
                   <button class="btn btn-ghost btn-sm" disabled={retrying === item.id} onclick={() => retryEvidence(item)}>
                     {retrying === item.id ? 'Menjadwalkan…' : 'Unduh bukti'}
                   </button>
+                  {#if auth.user?.role === 'admin'}
+                    <button
+                      class="btn btn-ghost btn-sm text-red-700"
+                      disabled={removing === item.id}
+                      onclick={() => removeImport(item)}
+                    >
+                      <Trash2 size={13} /> {removing === item.id ? 'Menghapus…' : 'Hapus'}
+                    </button>
+                  {/if}
                 </div>
               </td>
             </tr>

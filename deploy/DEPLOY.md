@@ -96,6 +96,8 @@ Nilai penting:
 - `LAPORAN_CHROME=/usr/bin/google-chrome-stable` — sesuaikan hasil `command -v`.
 - `LAPORAN_DATA_DIR` dan `LAPORAN_FRONTEND_DIR` harus persis seperti pada contoh.
 - `LAPORAN_GOOGLE_DRIVE_API_KEY` — opsional, wajib jika workbook memakai tautan folder Google Drive publik. Isi API key asli di `/etc/laporan/laporan.env`; jangan menyimpannya di file contoh atau repository.
+- `LAPORAN_EVIDENCE_RETENTION_DAYS` — default `0`, bukti dukung baris yang kalah deduplikasi langsung dibersihkan. Isi jumlah hari bila ingin menyimpannya lebih lama.
+- `LAPORAN_EVIDENCE_PURGE_SUPERSEDED` — default `true`. Set `false` bila ingin mematikan pembersihan otomatis.
 
 Migrasi database berjalan otomatis saat server mulai (`sqlx::migrate!()` di `db.rs`). Tidak ada langkah migrasi manual.
 
@@ -232,11 +234,38 @@ berstatus `pending` dan dilanjutkan otomatis saat service hidup lagi.
 
 Migrasi baru dijalankan otomatis saat startup. Cek `journalctl -u laporan -n 50` bila gagal.
 
+### Perawatan bukti dukung
+
+Versi ini menyimpan bukti dukung berdasarkan hash isi dan membersihkan bukti
+dukung baris yang kalah deduplikasi. Setelah binary baru terpasang, jalankan
+perawatan sekali (dry run dulu) untuk memindahkan berkas lama dan membebaskan
+ruang. Hentikan service selama proses agar tidak berbenturan dengan unduhan baru:
+
+```bash
+sudo systemctl stop laporan
+
+sudo -u laporan env \
+  LAPORAN_DATA_DIR=/var/lib/laporan \
+  /opt/laporan/laporan_mingguan evidence-maintenance --dry-run
+
+sudo -u laporan env \
+  LAPORAN_DATA_DIR=/var/lib/laporan \
+  /opt/laporan/laporan_mingguan evidence-maintenance
+
+sudo systemctl start laporan
+```
+
+Perintah ini dapat diulang kapan saja; berkas yang sudah rapi dilewati. Output
+menampilkan jumlah berkas dipindai, baris tersisih dibersihkan, dan ruang yang
+dibebaskan. Sesuaikan `LAPORAN_DATA_DIR` bila data tidak berada di `/var/lib/laporan`.
+
 ## 12. Memindahkan data lama dari Windows
 
 Menyalin `data/` dari Windows bisa dilakukan, tetapi `report_runs.pdf_path`/`html_path` dan
 `imports.stored_path` menyimpan path absolut Windows. Akibatnya PDF lama tidak dapat diunduh di
-Linux dan path arsip menjadi tidak valid sampai diperbaiki. Untuk deploy baru, mulai dengan data
+Linux dan path arsip menjadi tidak valid sampai diperbaiki. Path bukti dukung diperbaiki otomatis
+oleh `evidence-maintenance`, yang menulis ulang `import_evidence.stored_path` menjadi path relatif
+terhadap `LAPORAN_DATA_DIR`. Untuk deploy baru, mulai dengan data
 kosong; bila data lama diperlukan, perbaiki path di SQLite atau buat ulang laporan.
 Jangan menyalin `target/`, `node_modules/`, `.tmp-*`, atau `data/` kecuali memang ingin
 memindahkan data.

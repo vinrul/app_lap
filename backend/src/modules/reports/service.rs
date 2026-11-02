@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -14,6 +14,7 @@ use crate::{
     config::Config,
     error::{ApiError, ApiResult},
     modules::{
+        auth::DataScope,
         imports, periods,
         reports::{
             layout::{
@@ -572,7 +573,25 @@ macro_rules! media_satker_sql {
     };
 }
 
+/// Menyaring baris yang kalah deduplikasi agar media library tidak menampilkan
+/// gambar dari data yang sudah digantikan import lebih baru.
+macro_rules! media_ranked_sql {
+    () => {
+        "WITH ranked AS (
+            SELECT r.id AS id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY lower(trim(r.dedupe_key))
+                       ORDER BY i.created_at DESC, i.id DESC, r.source_row DESC
+                   ) AS rn
+            FROM import_rows r
+            JOIN imports i ON i.id = r.import_id
+            WHERE r.tanggal BETWEEN ? AND ?
+        ) "
+    };
+}
+
 const MEDIA_EVIDENCE_SQL: &str = concat!(
+    media_ranked_sql!(),
     "SELECT e.id, e.filename, e.content_type, e.size_bytes, e.created_at,
             e.stored_path, i.filename AS import_filename, r.unit, r.polres, r.kegiatan, ",
     media_kode_sql!(),
@@ -580,8 +599,10 @@ const MEDIA_EVIDENCE_SQL: &str = concat!(
      FROM import_evidence e
      JOIN import_rows r ON r.id = e.row_id
      JOIN imports i ON i.id = e.import_id
+     JOIN ranked w ON w.id = r.id AND w.rn = 1
      WHERE e.status = 'ready'
        AND e.content_type IN ('image/png', 'image/jpeg')
+       AND e.stored_path <> ''
        AND r.tanggal BETWEEN ? AND ?
        AND (? = '' OR ",
     media_kode_sql!(),
@@ -599,35 +620,45 @@ const MEDIA_EVIDENCE_SQL: &str = concat!(
 );
 
 const MEDIA_CODE_SQL: &str = concat!(
+    media_ranked_sql!(),
     "SELECT ",
     media_kode_sql!(),
     " AS label, COUNT(DISTINCT e.stored_path) AS total
      FROM import_evidence e
      JOIN import_rows r ON r.id = e.row_id
+     JOIN ranked w ON w.id = r.id AND w.rn = 1
      WHERE e.status = 'ready'
        AND e.content_type IN ('image/png', 'image/jpeg')
+       AND e.stored_path <> ''
        AND r.tanggal BETWEEN ? AND ?
      GROUP BY label",
 );
 
-const MEDIA_POLRES_SQL: &str =
+const MEDIA_POLRES_SQL: &str = concat!(
+    media_ranked_sql!(),
     "SELECT TRIM(r.polres) AS label, COUNT(DISTINCT e.stored_path) AS total
      FROM import_evidence e
      JOIN import_rows r ON r.id = e.row_id
+     JOIN ranked w ON w.id = r.id AND w.rn = 1
      WHERE e.status = 'ready'
        AND e.content_type IN ('image/png', 'image/jpeg')
+       AND e.stored_path <> ''
        AND r.tanggal BETWEEN ? AND ?
        AND TRIM(r.polres) <> ''
-     GROUP BY label";
+     GROUP BY label",
+);
 
 const MEDIA_SATKER_SQL: &str = concat!(
+    media_ranked_sql!(),
     "SELECT ",
     media_satker_sql!(),
     " AS label, COUNT(DISTINCT e.stored_path) AS total
      FROM import_evidence e
      JOIN import_rows r ON r.id = e.row_id
+     JOIN ranked w ON w.id = r.id AND w.rn = 1
      WHERE e.status = 'ready'
        AND e.content_type IN ('image/png', 'image/jpeg')
+       AND e.stored_path <> ''
        AND r.tanggal BETWEEN ? AND ?
        AND ",
     media_level_sql!(),
@@ -695,6 +726,8 @@ pub async fn list_media(
     let evidence_rows = sqlx::query(MEDIA_EVIDENCE_SQL)
         .bind(&start)
         .bind(&end)
+        .bind(&start)
+        .bind(&end)
         .bind(&kode)
         .bind(&kode)
         .bind(&kode)
@@ -754,6 +787,8 @@ pub async fn list_media_filters(db: &SqlitePool, period_id: &str) -> ApiResult<M
     let code_rows = sqlx::query(MEDIA_CODE_SQL)
         .bind(&start)
         .bind(&end)
+        .bind(&start)
+        .bind(&end)
         .fetch_all(db)
         .await
         .map_err(ApiError::internal)?;
@@ -784,6 +819,8 @@ async fn media_options(
     end: &str,
 ) -> ApiResult<Vec<MediaOption>> {
     let rows = sqlx::query(sql)
+        .bind(start)
+        .bind(end)
         .bind(start)
         .bind(end)
         .fetch_all(db)
@@ -854,7 +891,7 @@ pub async fn import_media_image(
         "evidence" => {
             let (start, end, _) = periods::service::dates(db, period_id).await?;
             let row = sqlx::query(
-                "SELECT e.filename, e.stored_path, e.content_type, e.status
+                "SELECT e.import_id, e.filename, e.stored_path, e.content_type, e.status
                  FROM import_evidence e
                  JOIN import_rows r ON r.id = e.row_id
                  WHERE e.id = ? AND r.tanggal BETWEEN ? AND ?",
@@ -880,7 +917,12 @@ pub async fn import_media_image(
             }
             let filename: String = row.get("filename");
             let stored_path: String = row.get("stored_path");
-            let bytes = tokio::fs::read(&stored_path)
+            let import_id: String = row.get("import_id");
+            let path =
+                imports::evidence_store::resolve_path(&config.data_dir, &stored_path, &import_id)
+                    .await
+                    .ok_or_else(|| ApiError::not_found("Berkas bukti dukung tidak ditemukan."))?;
+            let bytes = tokio::fs::read(&path)
                 .await
                 .map_err(|_| ApiError::not_found("Berkas bukti dukung tidak ditemukan."))?;
             save_layout_image(db, config, user_id, period_id, &filename, &bytes).await
@@ -965,31 +1007,77 @@ pub async fn metrics_for(
     config: &Config,
     period_id: &str,
 ) -> ApiResult<ReportMetrics> {
-    if let Some(cached) = cache::metrics(db, period_id) {
+    metrics_for_scope(db, config, period_id, &DataScope::All).await
+}
+
+/// Metrik yang dibatasi ke unit tertentu untuk peran baca-saja. Baris disaring
+/// sebelum agregasi sehingga cakupan dan kartu ikut ter-scope.
+pub async fn metrics_for_scope(
+    db: &SqlitePool,
+    config: &Config,
+    period_id: &str,
+    scope: &DataScope,
+) -> ApiResult<ReportMetrics> {
+    let scope_key = scope.key();
+    if let Some(cached) = cache::metrics(db, period_id, &scope_key) {
         return Ok((*cached).clone());
     }
 
     // Permintaan paralel untuk periode yang sama menunggu satu perhitungan.
     let _guard = cache::lock_compute().await;
-    if let Some(cached) = cache::metrics(db, period_id) {
+    if let Some(cached) = cache::metrics(db, period_id, &scope_key) {
         return Ok((*cached).clone());
     }
 
     let generation = cache::generation();
     let started = std::time::Instant::now();
     let (start, end, label) = periods::service::dates(db, period_id).await?;
-    let filename = source_summary(db, &start, &end).await?;
-    let metrics =
-        metrics::load_period(db, &filename, &label, &start, &end, &config.polda_name).await?;
+    let metrics = if scope.is_all() {
+        let filename = source_summary(db, &start, &end).await?;
+        metrics::load_period(db, &filename, &label, &start, &end, &config.polda_name).await?
+    } else {
+        let (rows, _, _) = imports::service::load_period_rows(db, &start, &end).await?;
+        let rows: Vec<_> = rows.into_iter().filter(|row| scope.matches(row)).collect();
+        let source_count = rows
+            .iter()
+            .map(|row| row.import_id.as_str())
+            .collect::<HashSet<_>>()
+            .len() as i64;
+        // Hanya berkas yang benar-benar memuat data unit ini yang disebutkan.
+        let filenames = rows
+            .iter()
+            .map(|row| row.import_filename.as_str())
+            .collect::<BTreeSet<_>>();
+        let filename = match filenames.len() {
+            0 => "Tidak ada impor".to_string(),
+            1 => filenames.iter().next().unwrap().to_string(),
+            count => format!(
+                "{} + {} berkas lainnya",
+                filenames.iter().next().unwrap(),
+                count - 1
+            ),
+        };
+        metrics::metrics_from_rows(
+            rows,
+            0,
+            source_count,
+            &filename,
+            &label,
+            &start,
+            &end,
+            &config.polda_name,
+        )
+    };
     tracing::debug!(
         period_id,
+        scope = %scope_key,
         rows = metrics.total_rows,
         elapsed_ms = started.elapsed().as_millis() as u64,
         "metrik periode dihitung"
     );
 
     let metrics = Arc::new(metrics);
-    cache::store_metrics(db, period_id, metrics.clone(), generation);
+    cache::store_metrics(db, period_id, &scope_key, metrics.clone(), generation);
     Ok((*metrics).clone())
 }
 
@@ -1460,8 +1548,8 @@ mod tests {
         .await
         .unwrap();
         let row_id = sqlx::query(
-            "INSERT INTO import_rows(import_id,source_row,tanggal,unit,polres,kegiatan,kode,raw_json)
-             VALUES('imp1',2,'2026-10-20','Polsek Kuta','Polresta Denpasar','Patroli','QW1.1','{}')",
+            "INSERT INTO import_rows(import_id,source_row,tanggal,unit,polres,kegiatan,kode,dedupe_key,raw_json)
+             VALUES('imp1',2,'2026-10-20','Polsek Kuta','Polresta Denpasar','Patroli','QW1.1','uji-1','{}')",
         )
         .execute(&db)
         .await
@@ -1480,8 +1568,8 @@ mod tests {
         .unwrap();
 
         let polda_row = sqlx::query(
-            "INSERT INTO import_rows(import_id,source_row,tanggal,unit,polres,level,tingkat,pelaksana,kegiatan,kode,raw_json)
-             VALUES('imp1',3,'2026-10-21','Polda Bali','','Polda','Polda','Ka SPKT','Sidak','QW1.2','{}')",
+            "INSERT INTO import_rows(import_id,source_row,tanggal,unit,polres,level,tingkat,pelaksana,kegiatan,kode,dedupe_key,raw_json)
+             VALUES('imp1',3,'2026-10-21','Polda Bali','','Polda','Polda','Ka SPKT','Sidak','QW1.2','uji-2','{}')",
         )
         .execute(&db)
         .await

@@ -1271,6 +1271,7 @@ mod tests {
             polsek: String::new(),
             level: "Polres".into(),
             unit: String::new(),
+            satker: String::new(),
             kode: kode.into(),
             qw_title: qw::title(kode).into(),
             kegiatan: String::new(),

@@ -5,6 +5,7 @@ use crate::{
     config::Config,
     error::{ApiError, ApiResult},
     modules::{
+        auth::DataScope,
         imports::{
             self,
             models::{CoverageResponse, ImportView},
@@ -37,7 +38,11 @@ pub struct DashboardResponse {
     pub recent_reports: Vec<ReportView>,
 }
 
-pub async fn load(db: &SqlitePool, config: &Config) -> ApiResult<DashboardResponse> {
+pub async fn load(
+    db: &SqlitePool,
+    config: &Config,
+    scope: &DataScope,
+) -> ApiResult<DashboardResponse> {
     let counts = DashboardCounts {
         periods: scalar(
             db,
@@ -60,7 +65,9 @@ pub async fn load(db: &SqlitePool, config: &Config) -> ApiResult<DashboardRespon
     let latest_import = imports::service::list(db).await?.into_iter().next();
 
     let metrics = match latest_period.as_ref() {
-        Some(period) => Some(reports::service::metrics_for(db, config, &period.id).await?),
+        Some(period) => {
+            Some(reports::service::metrics_for_scope(db, config, &period.id, scope).await?)
+        }
         None => None,
     };
     let coverage = metrics
@@ -164,7 +171,7 @@ mod tests {
         .await
         .unwrap();
 
-        let dashboard = load(&db, &config).await.unwrap();
+        let dashboard = load(&db, &config, &DataScope::All).await.unwrap();
         let coverage = dashboard
             .coverage
             .expect("cakupan periode terbaru tersedia");

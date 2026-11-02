@@ -24,6 +24,7 @@
   import { formatDate, formatNumber } from '../../utils/format'
   import { qwGroupTitles } from '../../utils/constants'
   import { evidencePreview } from '../../stores/evidencePreview.svelte'
+  import { auth } from '../../stores/auth.svelte'
   import Button from '../ui/Button.svelte'
   import EvidenceList from '../ui/EvidenceList.svelte'
   import LocationMap from '../ui/LocationMap.svelte'
@@ -31,6 +32,8 @@
 
   type Props = { periodId: string }
   let { periodId }: Props = $props()
+
+  const reader = $derived(auth.user?.role === 'polres' || auth.user?.role === 'polda')
 
   type ActivityScope = 'polres' | 'satker' | 'masyarakat'
 
@@ -475,25 +478,29 @@
       <div>
         <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Filter cakupan</p>
         <p class="mt-0.5 text-[11px] text-ink-muted">
-          {polresFilter
-            ? `Menampilkan ${polresFilter} saja: rincian per ${primaryLower} dan ${secondaryLower}.`
-            : 'Menampilkan seluruh Polda. Pilih polres untuk melihat rincian polsek dan satker polres.'}
+          {reader
+            ? 'Cakupan dibatasi otomatis sesuai unit akun Anda.'
+            : polresFilter
+              ? `Menampilkan ${polresFilter} saja: rincian per ${primaryLower} dan ${secondaryLower}.`
+              : 'Menampilkan seluruh Polda. Pilih polres untuk melihat rincian polsek dan satker polres.'}
         </p>
       </div>
-      <label class="flex items-center gap-2 text-[10px] font-bold tracking-[0.1em] text-ink-muted uppercase">
-        Polres
-        <select
-          class="input w-60 py-1.5 text-xs font-normal tracking-normal normal-case"
-          value={polresFilter}
-          disabled={polresLoading}
-          onchange={(event) => changePolres(event.currentTarget.value)}
-        >
-          <option value="">Semua polres</option>
-          {#each polresOptions as option (option)}
-            <option value={option}>{option}</option>
-          {/each}
-        </select>
-      </label>
+      {#if !reader}
+        <label class="flex items-center gap-2 text-[10px] font-bold tracking-[0.1em] text-ink-muted uppercase">
+          Polres
+          <select
+            class="input w-60 py-1.5 text-xs font-normal tracking-normal normal-case"
+            value={polresFilter}
+            disabled={polresLoading}
+            onchange={(event) => changePolres(event.currentTarget.value)}
+          >
+            <option value="">Semua polres</option>
+            {#each polresOptions as option (option)}
+              <option value={option}>{option}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
     </div>
 
     {#if polresError}

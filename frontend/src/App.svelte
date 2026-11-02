@@ -56,6 +56,8 @@
               ? 'Presentasi laporan'
               : 'Pengguna & akses',
   )
+
+  const reader = $derived(auth.user?.role === 'polres' || auth.user?.role === 'polda')
 </script>
 
 <svelte:head>
@@ -95,6 +97,15 @@
     <AppShell user={auth.user} routeName={router.route.name} {title}>
       {#if router.route.name === 'dashboard'}
         <DashboardPage user={auth.user} />
+      {:else if router.route.name === 'imports' && reader}
+        <div class="card">
+          <EmptyState
+            title="Akses baca-saja"
+            description="Peran polres dan polda hanya dapat melihat periode, cakupan, dan dokumen."
+          >
+            <Button onclick={() => navigate('/dashboard')}>Kembali ke ringkasan</Button>
+          </EmptyState>
+        </div>
       {:else if router.route.name === 'periods'}
         <PeriodsPage />
       {:else if router.route.name === 'imports'}

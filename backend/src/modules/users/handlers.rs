@@ -8,7 +8,7 @@ use crate::{
     modules::{
         auth::AuthUser,
         users::{
-            models::{AdminUserView, CreateUserRequest, UpdateUserRequest},
+            models::{AdminUserView, CreateUserRequest, UpdateUserRequest, UserOptions},
             service,
         },
     },
@@ -24,6 +24,16 @@ pub async fn list(
     Ok(Json(service::list(&state.db).await?))
 }
 
+pub async fn options(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<UserOptions>> {
+    user.require_admin()?;
+    Ok(Json(
+        service::options(&state.db, &state.config.polda_name).await?,
+    ))
+}
+
 pub async fn create(
     State(state): State<AppState>,
     user: AuthUser,
@@ -37,7 +47,7 @@ pub async fn create(
         "user.create",
         "user",
         &created.id,
-        serde_json::json!({ "role": created.role }),
+        serde_json::json!({ "role": created.role, "polres": created.polres, "satker": created.satker }),
     )
     .await?;
     Ok(Json(created))
@@ -57,7 +67,7 @@ pub async fn update(
         "user.update",
         "user",
         &updated.id,
-        serde_json::json!({ "role": updated.role, "active": updated.active }),
+        serde_json::json!({ "role": updated.role, "polres": updated.polres, "satker": updated.satker, "active": updated.active }),
     )
     .await?;
     Ok(Json(updated))

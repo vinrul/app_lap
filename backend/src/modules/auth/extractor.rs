@@ -22,7 +22,7 @@ impl FromRequestParts<AppState> for AuthUser {
             .to_string();
 
         let row = sqlx::query(
-            "SELECT users.id, users.username, users.role
+            "SELECT users.id, users.username, users.role, users.polres, users.satker
              FROM sessions
              JOIN users ON users.id = sessions.user_id
              WHERE sessions.token = ?
@@ -41,6 +41,8 @@ impl FromRequestParts<AppState> for AuthUser {
             id: row.get("id"),
             username: row.get("username"),
             role: row.get("role"),
+            polres: row.get("polres"),
+            satker: row.get("satker"),
         })
     }
 }

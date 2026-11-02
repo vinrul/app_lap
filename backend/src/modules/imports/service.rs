@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::Path,
 };
 
@@ -11,11 +11,13 @@ use crate::{
     config::Config,
     error::{ApiError, ApiResult},
     modules::{
+        auth::DataScope,
         imports::{
             analysis,
             coverage::{self, Scope, UnitMode},
+            evidence_store,
             models::{
-                CoverageResponse, EvidenceView, ImportPreview, ImportView, ParsedRow,
+                CoverageResponse, EvidenceView, ImportPreview, ImportView, ImportedRow, ParsedRow,
                 QuickWinActivity, QuickWinCodeCoverage, QuickWinDetailResponse, RecordQuery,
                 RecordView, RecordsResponse, UnitDetailResponse,
             },
@@ -24,7 +26,8 @@ use crate::{
         periods, reports,
     },
     shared::{
-        LabeledCount, audit, extract_links, is_noise, parse_fields, satker_label, unit_breakdown,
+        LabeledCount, audit, cache, extract_links, is_noise, parse_fields, satker_label,
+        unit_breakdown,
     },
 };
 
@@ -113,6 +116,24 @@ pub async fn commit(
         ));
     }
 
+    let digest = hex::encode(Sha256::digest(&bytes));
+    let existing = sqlx::query(
+        "SELECT filename, created_at FROM imports
+         WHERE file_hash = ? ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&digest)
+    .fetch_optional(db)
+    .await
+    .map_err(ApiError::internal)?;
+    if let Some(row) = existing {
+        let existing_filename: String = row.get("filename");
+        let existing_created: String = row.get("created_at");
+        return Err(ApiError::conflict(format!(
+            "File ini sudah pernah diimpor sebagai \"{existing_filename}\" pada {existing_created}. \
+             Hapus import tersebut lebih dahulu jika ingin mengimpor ulang."
+        )));
+    }
+
     let preview = preview(bytes.clone()).await?;
     if !preview.errors.is_empty() {
         return Err(ApiError::bad_request(preview.errors.join(" ")));
@@ -123,7 +144,6 @@ pub async fn commit(
         ));
     }
 
-    let digest = hex::encode(Sha256::digest(&bytes));
     let import_id = Uuid::new_v4().to_string();
     let archive_dir = config.data_dir.join("imports");
     tokio::fs::create_dir_all(&archive_dir)
@@ -156,6 +176,79 @@ pub async fn commit(
     }
 
     get(db, &import_id).await
+}
+
+/// Menghapus import beserta baris, bukti dukung, dan berkasnya.
+pub async fn delete(
+    db: &SqlitePool,
+    config: &Config,
+    actor_id: &str,
+    import_id: &str,
+) -> ApiResult<()> {
+    let row = sqlx::query("SELECT filename, row_count FROM imports WHERE id = ?")
+        .bind(import_id)
+        .fetch_optional(db)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("Import tidak ditemukan."))?;
+    let filename: String = row.get("filename");
+    let row_count: i64 = row.get("row_count");
+    let evidence_paths: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT stored_path FROM import_evidence
+         WHERE import_id = ? AND stored_path <> ''",
+    )
+    .bind(import_id)
+    .fetch_all(db)
+    .await
+    .map_err(ApiError::internal)?;
+
+    let mut tx = db.begin().await.map_err(ApiError::internal)?;
+    sqlx::query("DELETE FROM imports WHERE id = ?")
+        .bind(import_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::internal)?;
+    audit::record_tx(
+        &mut tx,
+        Some(actor_id),
+        "import.delete",
+        "import",
+        import_id,
+        serde_json::json!({ "filename": filename, "rows": row_count }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::internal)?;
+
+    cache::invalidate();
+
+    match evidence_store::release_unreferenced(db, &config.data_dir, &evidence_paths).await {
+        Ok(released) if released.files > 0 => tracing::info!(
+            %import_id,
+            files = released.files,
+            bytes = released.bytes,
+            "berkas bukti dukung yang tidak lagi dipakai dihapus"
+        ),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, %import_id, "gagal menghapus berkas bukti dukung"),
+    }
+
+    let workbook = config
+        .data_dir
+        .join("imports")
+        .join(format!("{import_id}.xlsx"));
+    if let Err(error) = tokio::fs::remove_file(&workbook).await {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(%error, path = %workbook.display(), "gagal menghapus workbook impor");
+        }
+    }
+    let evidence_dir = config.data_dir.join("evidence").join(import_id);
+    if let Err(error) = tokio::fs::remove_dir_all(&evidence_dir).await {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(%error, path = %evidence_dir.display(), "gagal menghapus folder bukti dukung");
+        }
+    }
+
+    Ok(())
 }
 
 async fn persist_import(
@@ -216,12 +309,12 @@ async fn persist_import(
         let inserted = sqlx::query(
             "INSERT INTO import_rows(
                 import_id, source_row, tanggal, waktu_kirim_wib, satuan, tingkat, polda,
-                polres, polsek, level, unit, kode, qw_title, kegiatan, quick_wins,
+                polres, polsek, level, unit, satker, kode, qw_title, kegiatan, quick_wins,
                 pejabat_pelaksana, jabatan, pelaksana, pelapor, status_penerimaan,
                 bukti_dukung, keluhan_personel_polri, isian_laporan,
                 personel_count, bibit_count, area_m2, jamaah_count, latitude, longitude,
                 map_url, raw_json, parsed_json, dedupe_key
-             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(import_id)
         .bind(row.source_row as i64)
@@ -234,6 +327,7 @@ async fn persist_import(
         .bind(&row.polsek)
         .bind(&row.level)
         .bind(&row.unit)
+        .bind(parsed_satker(row))
         .bind(&row.kode)
         .bind(&row.qw_title)
         .bind(&row.kegiatan)
@@ -407,7 +501,7 @@ fn ranked_cte() -> &'static str {
     "WITH ranked AS (
         SELECT r.id, r.import_id, i.filename AS import_filename, r.source_row, r.tanggal,
                r.waktu_kirim_wib, r.satuan, r.tingkat, r.polda, r.polres, r.polsek,
-               r.level, r.unit, r.kode, r.qw_title, r.kegiatan, r.quick_wins,
+               r.level, r.unit, r.satker, r.kode, r.qw_title, r.kegiatan, r.quick_wins,
                r.pejabat_pelaksana, r.jabatan, r.pelaksana, r.pelapor, r.status_penerimaan,
                r.bukti_dukung, r.keluhan_personel_polri, r.isian_laporan,
                r.personel_count, r.bibit_count, r.area_m2, r.jamaah_count,
@@ -443,6 +537,20 @@ fn push_filters(qb: &mut QueryBuilder<Sqlite>, query: &RecordQuery) {
         .filter(|value| !value.trim().is_empty())
     {
         qb.push(" AND level = ").push_bind(level.to_string());
+    }
+    if let Some(unit) = query
+        .unit
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        qb.push(" AND unit = ").push_bind(unit.to_string());
+    }
+    if let Some(satker) = query
+        .satker
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        qb.push(" AND satker = ").push_bind(satker.to_string());
     }
     if let Some(polres) = query
         .polres
@@ -577,11 +685,12 @@ async fn range_summary(
     db: &SqlitePool,
     start_date: &str,
     end_date: &str,
-    _query: &RecordQuery,
+    query: &RecordQuery,
 ) -> ApiResult<(i64, i64)> {
     let mut qb = QueryBuilder::<Sqlite>::new(ranked_cte());
     apply_range(&mut qb, start_date, end_date);
     qb.push(" SELECT COUNT(*) AS duplicates FROM ranked WHERE rn > 1");
+    push_filters(&mut qb, query);
     let duplicates: i64 = qb
         .build_query_scalar()
         .fetch_one(db)
@@ -591,12 +700,37 @@ async fn range_summary(
     let mut qb = QueryBuilder::<Sqlite>::new(ranked_cte());
     apply_range(&mut qb, start_date, end_date);
     qb.push(" SELECT COUNT(DISTINCT import_id) FROM ranked WHERE rn = 1");
+    push_filters(&mut qb, query);
     let sources: i64 = qb
         .build_query_scalar()
         .fetch_one(db)
         .await
         .map_err(ApiError::internal)?;
     Ok((duplicates, sources))
+}
+
+/// Satker Polda dihitung saat impor agar filter SQL dan dropdown memakai nilai
+/// yang sama dengan `RecordView::satker_label`.
+fn parsed_satker(row: &ImportedRow) -> String {
+    if !row.level.trim().eq_ignore_ascii_case("polda") {
+        return String::new();
+    }
+    [
+        row.pejabat_pelaksana.as_str(),
+        row.pelaksana.as_str(),
+        row.unit.as_str(),
+        row.satuan.as_str(),
+    ]
+    .into_iter()
+    .find_map(|value| {
+        if is_noise(value) {
+            None
+        } else {
+            let label = satker_label(value);
+            (!label.is_empty()).then_some(label)
+        }
+    })
+    .unwrap_or_default()
 }
 
 fn record_from_row(row: &SqliteRow, evidence: &HashMap<i64, Vec<EvidenceView>>) -> RecordView {
@@ -648,6 +782,7 @@ fn record_from_row(row: &SqliteRow, evidence: &HashMap<i64, Vec<EvidenceView>>) 
         polsek: row.get("polsek"),
         level: row.get("level"),
         unit: row.get("unit"),
+        satker: row.get("satker"),
         kode: kode.clone(),
         qw_title: if qw_title.is_empty() {
             qw::title(&kode).to_string()
@@ -729,9 +864,25 @@ fn import_from_row(row: &SqliteRow) -> ImportView {
 pub async fn analysis_for_period(
     db: &SqlitePool,
     period_id: &str,
+    data_scope: &DataScope,
 ) -> ApiResult<crate::modules::imports::models::AnalysisResponse> {
     let (start, end, _) = periods::service::dates(db, period_id).await?;
     let (rows, duplicate_rows, source_count) = load_period_rows(db, &start, &end).await?;
+    let rows: Vec<RecordView> = rows
+        .into_iter()
+        .filter(|row| data_scope.matches(row))
+        .collect();
+    let (duplicate_rows, source_count) = if data_scope.is_all() {
+        (duplicate_rows, source_count)
+    } else {
+        (
+            0,
+            rows.iter()
+                .map(|row| row.import_id.as_str())
+                .collect::<HashSet<_>>()
+                .len() as i64,
+        )
+    };
     Ok(build_analysis(
         &start,
         &end,
@@ -745,10 +896,21 @@ pub async fn coverage_for_period(
     db: &SqlitePool,
     period_id: &str,
     polres: Option<&str>,
+    data_scope: &DataScope,
 ) -> ApiResult<CoverageResponse> {
     let (start, end, _) = periods::service::dates(db, period_id).await?;
     let (rows, _, _) = load_period_rows(db, &start, &end).await?;
-    let polres = polres.map(str::trim).filter(|value| !value.is_empty());
+    let rows: Vec<RecordView> = rows
+        .into_iter()
+        .filter(|row| data_scope.matches(row))
+        .collect();
+    // Cakupan sudah dibatasi oleh scope; filter polres dari klien diabaikan
+    // agar pembaca tidak dapat memperluas cakupan.
+    let polres = if data_scope.is_all() {
+        polres.map(str::trim).filter(|value| !value.is_empty())
+    } else {
+        None
+    };
     Ok(coverage::build_coverage_scoped(&start, &end, &rows, polres))
 }
 
@@ -756,6 +918,7 @@ pub async fn record_detail_for_period(
     db: &SqlitePool,
     period_id: &str,
     record_id: i64,
+    data_scope: &DataScope,
 ) -> ApiResult<RecordView> {
     let (start, end, _) = periods::service::dates(db, period_id).await?;
     let mut qb = QueryBuilder::<Sqlite>::new(ranked_cte());
@@ -775,13 +938,20 @@ pub async fn record_detail_for_period(
     };
     let id: i64 = row.get("id");
     let evidence = load_evidence_for_rows(db, &[id]).await?;
-    Ok(record_from_row(&row, &evidence))
+    let view = record_from_row(&row, &evidence);
+    if !data_scope.matches(&view) {
+        return Err(ApiError::not_found(
+            "Data kegiatan tidak ditemukan pada periode ini.",
+        ));
+    }
+    Ok(view)
 }
 
 pub async fn unit_detail_for_period(
     db: &SqlitePool,
     config: &Config,
     period_id: &str,
+    data_scope: &DataScope,
     scope: &str,
     label: &str,
 ) -> ApiResult<UnitDetailResponse> {
@@ -800,6 +970,7 @@ pub async fn unit_detail_for_period(
     let (rows, _, _) = load_period_rows(db, &start, &end).await?;
     let filtered: Vec<RecordView> = rows
         .into_iter()
+        .filter(|row| data_scope.matches(row))
         .filter(|row| {
             if scope == "polres" {
                 row.polres.trim().eq_ignore_ascii_case(label)
@@ -871,6 +1042,7 @@ pub async fn quick_win_detail_for_period(
     code: &str,
     unit: Option<(&str, &str)>,
     polres: Option<&str>,
+    data_scope: &DataScope,
 ) -> ApiResult<QuickWinDetailResponse> {
     let unit = resolve_unit_filter(unit)?;
     let polres = polres.map(str::trim).filter(|value| !value.is_empty());
@@ -891,6 +1063,10 @@ pub async fn quick_win_detail_for_period(
     let prefix = format!("{group_code}.");
     let (start, end, _) = periods::service::dates(db, period_id).await?;
     let (rows, _, _) = load_period_rows(db, &start, &end).await?;
+    let rows: Vec<RecordView> = rows
+        .into_iter()
+        .filter(|row| data_scope.matches(row))
+        .collect();
     let group_rows: Vec<&RecordView> = rows
         .iter()
         .filter(|row| {
@@ -1262,6 +1438,8 @@ fn top_counts(map: BTreeMap<String, i64>, limit: usize) -> Vec<LabeledCount> {
 
 #[cfg(test)]
 mod tests {
+    use crate::modules::auth::DataScope;
+
     #[tokio::test]
     async fn analysis_breaks_down_satker_and_polres() {
         let dir = tempfile::tempdir().unwrap();
@@ -1288,7 +1466,9 @@ mod tests {
             .await
             .unwrap();
 
-        let analysis = super::analysis_for_period(&db, "p1").await.unwrap();
+        let analysis = super::analysis_for_period(&db, "p1", &DataScope::All)
+            .await
+            .unwrap();
         assert_eq!(analysis.total_rows, 4554);
         assert!(analysis.by_satker.len() > 1);
         assert!(!analysis.by_polres_breakdown.is_empty());
@@ -1309,34 +1489,71 @@ mod tests {
         );
 
         let polres = analysis.by_polres_breakdown.first().unwrap();
-        let polres_detail =
-            super::unit_detail_for_period(&db, &config, "p1", "polres", &polres.label)
-                .await
-                .unwrap();
+        let polres_detail = super::unit_detail_for_period(
+            &db,
+            &config,
+            "p1",
+            &DataScope::All,
+            "polres",
+            &polres.label,
+        )
+        .await
+        .unwrap();
         assert_eq!(polres_detail.metrics.total_rows, polres.rows);
         assert_eq!(polres_detail.metrics.cards.len(), 6);
         assert!(polres_detail.polsek_count > 0);
         assert!(!polres_detail.by_polsek.is_empty());
 
+        // Metrik untuk peran polres hanya memuat baris polres tersebut.
+        let scoped_metrics = crate::modules::reports::service::metrics_for_scope(
+            &db,
+            &config,
+            "p1",
+            &DataScope::Polres(polres.label.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(scoped_metrics.total_rows, polres.rows);
+
+        // Peran polda hanya memuat baris tingkat Polda.
+        let polda_metrics = crate::modules::reports::service::metrics_for_scope(
+            &db,
+            &config,
+            "p1",
+            &DataScope::Polda { satker: None },
+        )
+        .await
+        .unwrap();
+        assert!(polda_metrics.total_rows > 0);
+        assert!(polda_metrics.total_rows <= analysis.total_rows);
+
         let satker = analysis.by_satker.first().unwrap();
-        let satker_detail =
-            super::unit_detail_for_period(&db, &config, "p1", "satker", &satker.label)
-                .await
-                .unwrap();
+        let satker_detail = super::unit_detail_for_period(
+            &db,
+            &config,
+            "p1",
+            &DataScope::All,
+            "satker",
+            &satker.label,
+        )
+        .await
+        .unwrap();
         assert_eq!(satker_detail.metrics.total_rows, satker.rows);
 
-        let group = super::quick_win_detail_for_period(&db, "p1", "QW1", None, None)
-            .await
-            .unwrap();
+        let group =
+            super::quick_win_detail_for_period(&db, "p1", "QW1", None, None, &DataScope::All)
+                .await
+                .unwrap();
         assert_eq!(group.group, "QW1");
         assert_eq!(group.codes.len(), 14);
         assert!(group.total_rows > 0);
         assert!(group.polres_count > 0);
         assert!(!group.activities.is_empty());
 
-        let code = super::quick_win_detail_for_period(&db, "p1", "QW1.2", None, None)
-            .await
-            .unwrap();
+        let code =
+            super::quick_win_detail_for_period(&db, "p1", "QW1.2", None, None, &DataScope::All)
+                .await
+                .unwrap();
         assert_eq!(code.code, "QW1.2");
         assert!(code.total_rows <= group.total_rows);
         assert_eq!(code.codes.len(), 14);
@@ -1349,6 +1566,7 @@ mod tests {
             "QW1",
             Some(("polres", target.as_str())),
             None,
+            &DataScope::All,
         )
         .await
         .unwrap();
@@ -1365,10 +1583,16 @@ mod tests {
         }
         assert_eq!(scoped.total_rows, group.total_rows);
 
-        let polres_scoped =
-            super::quick_win_detail_for_period(&db, "p1", "QW1", None, Some(target.as_str()))
-                .await
-                .unwrap();
+        let polres_scoped = super::quick_win_detail_for_period(
+            &db,
+            "p1",
+            "QW1",
+            None,
+            Some(target.as_str()),
+            &DataScope::All,
+        )
+        .await
+        .unwrap();
         assert!(polres_scoped.total_rows <= group.total_rows);
         assert!(
             polres_scoped
@@ -1383,7 +1607,8 @@ mod tests {
                 "p1",
                 "QW1",
                 Some(("polda", target.as_str())),
-                None
+                None,
+                &DataScope::All,
             )
             .await
             .is_err()
@@ -1393,14 +1618,50 @@ mod tests {
             .await
             .unwrap();
         let first = rows.first().unwrap();
-        let detail = super::record_detail_for_period(&db, "p1", first.id)
+        let detail = super::record_detail_for_period(&db, "p1", first.id, &DataScope::All)
             .await
             .unwrap();
         assert_eq!(detail.id, first.id);
         assert!(
-            super::record_detail_for_period(&db, "p1", -1)
+            super::record_detail_for_period(&db, "p1", -1, &DataScope::All)
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_duplicate_file_and_deletes_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::test_config();
+        config.data_dir = dir.path().to_path_buf();
+        let db = crate::db::connect(&config).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO users(id,username,password_hash,role) VALUES('u1','tester','x','admin')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let bytes = std::fs::read("../report-2026-10-19 (1).xlsx").unwrap();
+        let first = super::commit(&db, &config, "u1", "a.xlsx", bytes.clone())
+            .await
+            .unwrap();
+
+        let duplicate = super::commit(&db, &config, "u1", "b.xlsx", bytes)
+            .await
+            .unwrap_err();
+        assert!(duplicate.to_string().contains("sudah pernah diimpor"));
+        assert_eq!(super::list(&db).await.unwrap().len(), 1);
+
+        super::delete(&db, &config, "u1", &first.id).await.unwrap();
+        assert!(super::list(&db).await.unwrap().is_empty());
+        assert!(
+            !config
+                .data_dir
+                .join("imports")
+                .join(format!("{}.xlsx", first.id))
+                .exists()
         );
     }
 }

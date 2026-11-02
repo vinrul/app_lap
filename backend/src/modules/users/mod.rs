@@ -12,5 +12,6 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/admin/users", get(handlers::list).post(handlers::create))
+        .route("/admin/users/options", get(handlers::options))
         .route("/admin/users/{user_id}", patch(handlers::update))
 }

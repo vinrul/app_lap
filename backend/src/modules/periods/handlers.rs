@@ -25,11 +25,13 @@ pub struct ListPeriodsQuery {
 
 pub async fn list(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Query(query): Query<ListPeriodsQuery>,
 ) -> ApiResult<Json<Vec<PeriodView>>> {
+    // Peran baca-saja hanya melihat periode aktif.
+    let include_archived = query.include_archived && !user.is_reader();
     Ok(Json(
-        periods::service::list(&state.db, query.include_archived).await?,
+        periods::service::list(&state.db, include_archived).await?,
     ))
 }
 
@@ -38,6 +40,7 @@ pub async fn create(
     user: AuthUser,
     Json(input): Json<CreatePeriodRequest>,
 ) -> ApiResult<Json<PeriodView>> {
+    user.require_writer()?;
     let period = periods::service::create(&state.db, &user.id, &input).await?;
     audit::record(
         &state.db,
@@ -61,6 +64,7 @@ pub async fn update(
     Path(period_id): Path<String>,
     Json(input): Json<UpdatePeriodRequest>,
 ) -> ApiResult<Json<PeriodView>> {
+    user.require_writer()?;
     let period = periods::service::update(&state.db, &period_id, &input).await?;
     cache::invalidate();
     audit::record(
@@ -102,6 +106,7 @@ async fn set_archived(
     period_id: String,
     archived: bool,
 ) -> ApiResult<Json<PeriodView>> {
+    user.require_writer()?;
     let period = periods::service::set_archived(&state.db, &period_id, archived).await?;
     audit::record(
         &state.db,
@@ -121,14 +126,19 @@ async fn set_archived(
 
 pub async fn detail(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<PeriodDetail>> {
     let period = periods::service::get(&state.db, &period_id).await?;
     let imports =
         imports::service::list_for_range(&state.db, &period.start_date, &period.end_date).await?;
     let reports = reports::service::list_for_period(&state.db, &period_id).await?;
-    let draft = Some(reports::service::get_draft(&state.db, &period_id).await?);
+    // Draft adalah konten editorial Polda; peran baca-saja tidak memerlukannya.
+    let draft = if user.is_reader() {
+        None
+    } else {
+        Some(reports::service::get_draft(&state.db, &period_id).await?)
+    };
 
     Ok(Json(PeriodDetail {
         period,

@@ -161,6 +161,8 @@ pub struct RecordQuery {
     pub status: Option<String>,
     pub polres: Option<String>,
     pub level: Option<String>,
+    pub unit: Option<String>,
+    pub satker: Option<String>,
     pub page: Option<i64>,
     pub page_size: Option<i64>,
 }
@@ -180,6 +182,7 @@ pub struct RecordView {
     pub polsek: String,
     pub level: String,
     pub unit: String,
+    pub satker: String,
     pub kode: String,
     pub qw_title: String,
     pub kegiatan: String,

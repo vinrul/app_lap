@@ -40,7 +40,7 @@ pub fn verify_password(password: &str, stored_hash: &str) -> bool {
 
 pub async fn authenticate(db: &SqlitePool, username: &str, password: &str) -> ApiResult<AuthUser> {
     let row = sqlx::query(
-        "SELECT id, username, role, password_hash
+        "SELECT id, username, role, polres, satker, password_hash
          FROM users WHERE username = ? AND active = 1",
     )
     .bind(username.trim())
@@ -58,6 +58,8 @@ pub async fn authenticate(db: &SqlitePool, username: &str, password: &str) -> Ap
         id: row.get("id"),
         username: row.get("username"),
         role: row.get("role"),
+        polres: row.get("polres"),
+        satker: row.get("satker"),
     })
 }
 

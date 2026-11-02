@@ -15,7 +15,7 @@ use crate::modules::reports::models::ReportMetrics;
 /// masih murah dibandingkan menghitung ulang dari 50 ribu baris.
 const MAX_ENTRIES: usize = 8;
 
-type Key = (String, String);
+type Key = (String, String, String);
 
 struct Entry {
     value: Arc<ReportMetrics>,
@@ -40,16 +40,16 @@ fn database_key(db: &SqlitePool) -> String {
         .into_owned()
 }
 
-fn key(db: &SqlitePool, period_id: &str) -> Key {
-    (database_key(db), period_id.to_string())
+fn key(db: &SqlitePool, period_id: &str, scope: &str) -> Key {
+    (database_key(db), period_id.to_string(), scope.to_string())
 }
 
-pub fn metrics(db: &SqlitePool, period_id: &str) -> Option<Arc<ReportMetrics>> {
+pub fn metrics(db: &SqlitePool, period_id: &str, scope: &str) -> Option<Arc<ReportMetrics>> {
     let entries = ENTRIES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     entries
-        .get(&key(db, period_id))
+        .get(&key(db, period_id, scope))
         .map(|entry| entry.value.clone())
 }
 
@@ -57,14 +57,20 @@ pub fn generation() -> u64 {
     GENERATION.load(Ordering::SeqCst)
 }
 
-pub fn store_metrics(db: &SqlitePool, period_id: &str, value: Arc<ReportMetrics>, generation: u64) {
+pub fn store_metrics(
+    db: &SqlitePool,
+    period_id: &str,
+    scope: &str,
+    value: Arc<ReportMetrics>,
+    generation: u64,
+) {
     if GENERATION.load(Ordering::SeqCst) != generation {
         return;
     }
     let mut entries = ENTRIES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let key = key(db, period_id);
+    let key = key(db, period_id, scope);
     if entries.len() >= MAX_ENTRIES && !entries.contains_key(&key) {
         if let Some(oldest) = entries
             .iter()
@@ -110,14 +116,14 @@ mod tests {
 
         let value = Arc::new(ReportMetrics::default());
         let generation = generation();
-        store_metrics(&pool, "p1", value.clone(), generation);
-        assert!(metrics(&pool, "p1").is_some());
+        store_metrics(&pool, "p1", "all", value.clone(), generation);
+        assert!(metrics(&pool, "p1", "all").is_some());
 
         invalidate();
-        assert!(metrics(&pool, "p1").is_none());
+        assert!(metrics(&pool, "p1", "all").is_none());
 
         // Perhitungan yang dimulai sebelum invalidasi tidak boleh masuk cache.
-        store_metrics(&pool, "p1", value, generation);
-        assert!(metrics(&pool, "p1").is_none());
+        store_metrics(&pool, "p1", "all", value, generation);
+        assert!(metrics(&pool, "p1", "all").is_none());
     }
 }
