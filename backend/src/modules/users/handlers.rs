@@ -60,6 +60,10 @@ pub async fn update(
     Json(input): Json<UpdateUserRequest>,
 ) -> ApiResult<Json<AdminUserView>> {
     user.require_admin()?;
+    let password_reset = input
+        .password
+        .as_deref()
+        .is_some_and(|value| !value.is_empty());
     let updated = service::update(&state.db, &user.id, &user_id, &input).await?;
     audit::record(
         &state.db,
@@ -67,7 +71,13 @@ pub async fn update(
         "user.update",
         "user",
         &updated.id,
-        serde_json::json!({ "role": updated.role, "polres": updated.polres, "satker": updated.satker, "active": updated.active }),
+        serde_json::json!({
+            "role": updated.role,
+            "polres": updated.polres,
+            "satker": updated.satker,
+            "active": updated.active,
+            "password_reset": password_reset
+        }),
     )
     .await?;
     Ok(Json(updated))

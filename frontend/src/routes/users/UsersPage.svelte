@@ -12,6 +12,7 @@
   import Badge from '../../lib/components/ui/Badge.svelte'
   import Modal from '../../lib/components/ui/Modal.svelte'
   import EmptyState from '../../lib/components/ui/EmptyState.svelte'
+  import PasswordInput from '../../lib/components/ui/PasswordInput.svelte'
 
   type Props = { user: User }
 
@@ -29,7 +30,7 @@
   let formError = $state('')
 
   let editing = $state<AdminUser | null>(null)
-  let editForm = $state({ role: 'operator', polres: '', satker: '' })
+  let editForm = $state({ role: 'operator', polres: '', satker: '', password: '' })
   let editLoading = $state(false)
   let editError = $state('')
 
@@ -51,7 +52,7 @@
   function openEdit(account: AdminUser) {
     editing = account
     editError = ''
-    editForm = { role: account.role, polres: account.polres, satker: account.satker }
+    editForm = { role: account.role, polres: account.polres, satker: account.satker, password: '' }
   }
 
   onMount(load)
@@ -101,7 +102,13 @@
 
   async function update(
     account: AdminUser,
-    changes: { role?: string; active?: boolean; polres?: string; satker?: string },
+    changes: {
+      role?: string
+      active?: boolean
+      polres?: string
+      satker?: string
+      password?: string
+    },
   ): Promise<boolean> {
     busyId = account.id
     error = ''
@@ -116,7 +123,11 @@
           satker: updated.satker,
         }
       }
-      toast.success(`Akses ${account.username} diperbarui.`)
+      toast.success(
+        changes.password
+          ? `Kata sandi ${account.username} diperbarui.`
+          : `Akses ${account.username} diperbarui.`,
+      )
       return true
     } catch (caught) {
       error = errorMessage(caught)
@@ -134,12 +145,18 @@
       editError = 'Peran polres wajib memiliki nama polres.'
       return
     }
+    const canResetPassword = editing.role !== 'admin' && editForm.role !== 'admin'
+    if (canResetPassword && editForm.password && editForm.password.length < 12) {
+      editError = 'Kata sandi baru minimal 12 karakter.'
+      return
+    }
     editLoading = true
     try {
       const ok = await update(editing, {
         role: editForm.role,
         polres: editForm.polres,
         satker: editForm.satker,
+        ...(canResetPassword && editForm.password ? { password: editForm.password } : {}),
       })
       if (ok) editing = null
     } finally {
@@ -153,7 +170,7 @@
 <PageHeader
   eyebrow="ADMINISTRASI"
   title="Pengguna & akses"
-  description="Kelola akun lokal, peran, dan status aktif ruang kerja laporan."
+  description="Kelola akun lokal, peran, kata sandi, dan status aktif ruang kerja laporan."
 >
   {#snippet actions()}
     <Button onclick={() => (showForm = true)}><UserPlus size={16} /> Tambah pengguna</Button>
@@ -235,7 +252,7 @@
 
   <div class="flex items-start gap-2 border-t border-line bg-stone-50/60 px-5 py-3 text-[11px] text-ink-muted">
     <ShieldCheck size={14} class="mt-0.5 shrink-0 text-forest-600" />
-    Kata sandi di-hash sebelum disimpan. Minimal satu administrator aktif harus selalu tersedia.
+    Kata sandi di-hash sebelum disimpan. Administrator dapat mereset sandi akun operator, polres, dan polda; sandi administrator hanya diubah pemiliknya. Minimal satu administrator aktif harus selalu tersedia.
   </div>
 </section>
 
@@ -260,7 +277,14 @@
     </div>
     <div>
       <label class="label" for="new-password">Kata sandi sementara</label>
-      <input id="new-password" class="input" type="password" bind:value={form.password} minlength="12" autocomplete="new-password" required />
+      <PasswordInput
+        id="new-password"
+        bind:value={form.password}
+        autocomplete="new-password"
+        placeholder="Minimal 12 karakter"
+        maxlength={120}
+        required
+      />
       <p class="hint mt-1.5">Minimal 12 karakter. Minta pengguna menggantinya setelah masuk.</p>
     </div>
     <div>
@@ -303,7 +327,7 @@
   open={editing !== null}
   onclose={() => (editing = null)}
   title="Ubah akses"
-  description="Perbarui peran dan unit pengguna."
+  description="Perbarui peran, unit, dan kata sandi pengguna."
   width="max-w-lg"
 >
   <form class="space-y-4" onsubmit={saveEdit}>
@@ -328,6 +352,24 @@
         <input id="edit-satker" class="input" bind:value={editForm.satker} list="satker-options" placeholder="Pilih atau ketik satker Polda" />
         <p class="hint mt-1.5">Kosongkan untuk melihat seluruh satker Polda.</p>
       </div>
+    {/if}
+
+    {#if editing && editing.role !== 'admin' && editForm.role !== 'admin'}
+      <div>
+        <label class="label" for="edit-password">Kata sandi baru (opsional)</label>
+        <PasswordInput
+          id="edit-password"
+          bind:value={editForm.password}
+          autocomplete="new-password"
+          placeholder="Kosongkan jika tidak diganti"
+          maxlength={120}
+        />
+        <p class="hint mt-1.5">Minimal 12 karakter. Sesi pengguna ini akan dikeluarkan setelah kata sandi diganti.</p>
+      </div>
+    {:else if editing && (editing.role === 'admin' || editForm.role === 'admin')}
+      <p class="rounded-xl border border-line bg-stone-50 px-4 py-3 text-[11px] text-ink-muted">
+        Kata sandi akun administrator hanya dapat diubah pemiliknya melalui menu Ganti kata sandi.
+      </p>
     {/if}
 
     {#if editError}

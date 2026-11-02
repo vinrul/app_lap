@@ -37,6 +37,7 @@ Aplikasi lokal untuk mengubah export Excel **Quick Wins / Qins Polri** menjadi l
 - Pratinjau HTML sebelum penerbitan.
 - Autentikasi sesi, peran `admin`/`operator`, audit event, dan pembatasan koneksi loopback.
 - Pengguna dapat mengganti kata sandi sendiri lewat tombol kunci di sidebar: kata sandi lama diverifikasi, kata sandi baru minimal 12 karakter, dan sesi di perangkat lain otomatis dikeluarkan. Field kata sandi di halaman login, form ganti kata sandi, dan dialog terkait memiliki tombol tampil/sembunyi kata sandi.
+- Administrator dapat mengganti kata sandi akun `operator`, `polres`, dan `polda` dari menu **Pengguna & akses** tanpa mengetahui sandi lama; semua sesi akun tersebut langsung dikeluarkan. Kata sandi akun `admin` hanya dapat diubah pemiliknya lewat menu Ganti kata sandi.
 - Antarmuka Svelte 5 responsif, modular, dan menggunakan Tailwind CSS v4.
 
 ## Kebutuhan

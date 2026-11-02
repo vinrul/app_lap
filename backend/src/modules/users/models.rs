@@ -30,6 +30,10 @@ pub struct UpdateUserRequest {
     pub polres: Option<String>,
     #[serde(default)]
     pub satker: Option<String>,
+    /// Kata sandi baru dari administrator. `None` atau string kosong berarti
+    /// kata sandi tidak diubah.
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 /// Pilihan unit untuk formulir pengguna, diambil dari data yang sudah diimpor.

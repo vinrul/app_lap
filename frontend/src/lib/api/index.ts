@@ -266,7 +266,13 @@ export const usersApi = {
   }) => request<AdminUser>('/admin/users', { method: 'POST', body: JSON.stringify(input) }),
   update: (
     userId: string,
-    input: { role?: string; active?: boolean; polres?: string; satker?: string },
+    input: {
+      role?: string
+      active?: boolean
+      polres?: string
+      satker?: string
+      password?: string
+    },
   ) =>
     request<AdminUser>(`/admin/users/${userId}`, {
       method: 'PATCH',

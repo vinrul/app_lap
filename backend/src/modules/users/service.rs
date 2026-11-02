@@ -150,6 +150,21 @@ pub async fn update(
         input.satker.as_deref().unwrap_or(&current_satker),
     )?;
 
+    let new_password = input.password.as_deref().filter(|value| !value.is_empty());
+    if let Some(password) = new_password {
+        if password.chars().count() < 12 {
+            return Err(ApiError::bad_request("Kata sandi minimal 12 karakter."));
+        }
+        // Reset oleh administrator hanya untuk akun operasional. Kata sandi
+        // administrator tetap diubah pemiliknya lewat menu Ganti kata sandi.
+        if current_role == "admin" || role == "admin" {
+            return Err(ApiError::bad_request(
+                "Kata sandi akun administrator hanya dapat diubah oleh pemiliknya.",
+            ));
+        }
+    }
+    let password_hash = new_password.map(hash_password).transpose()?;
+
     if actor_id == user_id && (!active || role != "admin") {
         return Err(ApiError::bad_request(
             "Anda tidak dapat menonaktifkan atau menurunkan peran akun sendiri.",
@@ -169,15 +184,32 @@ pub async fn update(
         }
     }
 
-    sqlx::query("UPDATE users SET role = ?, polres = ?, satker = ?, active = ? WHERE id = ?")
-        .bind(&role)
-        .bind(&polres)
-        .bind(&satker)
-        .bind(i64::from(active))
-        .bind(user_id)
-        .execute(db)
-        .await
-        .map_err(ApiError::internal)?;
+    let mut transaction = db.begin().await.map_err(ApiError::internal)?;
+    sqlx::query(
+        "UPDATE users
+         SET role = ?, polres = ?, satker = ?, active = ?,
+             password_hash = COALESCE(?, password_hash)
+         WHERE id = ?",
+    )
+    .bind(&role)
+    .bind(&polres)
+    .bind(&satker)
+    .bind(i64::from(active))
+    .bind(password_hash.as_deref())
+    .bind(user_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+
+    // Reset kata sandi mengeluarkan pengguna dari semua perangkat.
+    if password_hash.is_some() {
+        sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(ApiError::internal)?;
+    }
+    transaction.commit().await.map_err(ApiError::internal)?;
 
     Ok(AdminUserView {
         id: user_id.to_string(),
@@ -319,5 +351,77 @@ mod tests {
         let options = options(&db, "POLDA BALI").await.unwrap();
         assert_eq!(options.polres, vec!["Polresta Denpasar"]);
         assert_eq!(options.satker, vec!["Ditintelkam"]);
+    }
+
+    #[tokio::test]
+    async fn resets_non_admin_password_and_revokes_sessions() {
+        let (_dir, db) = setup().await;
+        let created = create(&db, &request("operator1", "operator", None, None))
+            .await
+            .unwrap();
+        let (token, _) = crate::modules::auth::service::create_session(&db, &created.id, 1)
+            .await
+            .unwrap();
+
+        let input = UpdateUserRequest {
+            role: None,
+            active: None,
+            polres: None,
+            satker: None,
+            password: Some("kata-sandi-baru-123".to_string()),
+        };
+        update(&db, "actor", &created.id, &input).await.unwrap();
+
+        let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE user_id = ?")
+            .bind(&created.id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(sessions, 0);
+        let token_exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE token = ?")
+            .bind(&token)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(token_exists, 0);
+
+        assert!(
+            crate::modules::auth::service::authenticate(&db, "operator1", "kata-sandi-baru-123")
+                .await
+                .is_ok()
+        );
+        assert!(
+            crate::modules::auth::service::authenticate(&db, "operator1", "kata-sandi-panjang")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_admin_password_reset_and_short_password() {
+        let (_dir, db) = setup().await;
+        let admin = create(&db, &request("admin2", "admin", None, None))
+            .await
+            .unwrap();
+        let reset_admin = UpdateUserRequest {
+            role: None,
+            active: None,
+            polres: None,
+            satker: None,
+            password: Some("kata-sandi-baru-123".to_string()),
+        };
+        assert!(update(&db, "actor", &admin.id, &reset_admin).await.is_err());
+
+        let operator = create(&db, &request("operator2", "operator", None, None))
+            .await
+            .unwrap();
+        let short = UpdateUserRequest {
+            role: None,
+            active: None,
+            polres: None,
+            satker: None,
+            password: Some("pendek".to_string()),
+        };
+        assert!(update(&db, "actor", &operator.id, &short).await.is_err());
     }
 }
