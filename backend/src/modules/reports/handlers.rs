@@ -1,21 +1,26 @@
 use axum::{
-    Json,
     body::Body,
     extract::{Multipart, Path, Query, State},
-    http::{HeaderValue, StatusCode, header},
+    http::{header, HeaderValue, StatusCode},
+    response::sse::{KeepAlive, Sse},
     response::{Html, IntoResponse, Response},
+    Json,
 };
 use serde_json::json;
+use std::time::Duration;
 
 use crate::{
     error::{ApiError, ApiResult},
     modules::{
         auth::AuthUser,
+        periods,
         reports::{
             layout::{
-                DesignSource, DesignTemplateView, ImportMediaRequest, LayoutView, MediaFilters,
-                MediaItem, SaveLayoutRequest, SaveTemplateRequest, UploadedImage,
+                DesignSource, DesignTemplateView, ImportMediaRequest, LayoutPatch, LayoutView,
+                MediaFilters, MediaItem, PatchLayoutRequest, SaveLayoutRequest,
+                SaveTemplateRequest, UploadedImage,
             },
+            live::{self, DesignEvent, EditorView, LiveQuery, PresenceRequest},
             models::{
                 DraftView, GenerateReportRequest, PreviewReportRequest, PreviewResponse,
                 PublicShareView, ReportContent, ReportMetrics, ReportShareView, ReportView,
@@ -82,9 +87,135 @@ pub async fn save_layout(
     Json(input): Json<SaveLayoutRequest>,
 ) -> ApiResult<Json<LayoutView>> {
     user.require_writer()?;
-    Ok(Json(
-        service::save_layout(&state.db, &user.id, &period_id, input.layout).await?,
-    ))
+    let _guard = state.design_lock.lock().await;
+    let view = service::save_layout(&state.db, &user.id, &period_id, input.layout).await?;
+    state
+        .design_live
+        .publish(
+            &period_id,
+            DesignEvent::patch(
+                &view,
+                String::new(),
+                LayoutPatch {
+                    replace: Some(view.layout.clone()),
+                    ..LayoutPatch::default()
+                },
+            ),
+        )
+        .await;
+    Ok(Json(view))
+}
+
+/// Menyimpan perubahan kecil dari editor desain. Patch diterapkan ke layout
+/// terbaru di server, lalu disiarkan ke semua editor periode tersebut.
+pub async fn patch_layout(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+    Json(input): Json<PatchLayoutRequest>,
+) -> ApiResult<Json<LayoutView>> {
+    user.require_writer()?;
+    let _guard = state.design_lock.lock().await;
+    let view = service::apply_patch(&state.db, &user.id, &period_id, &input.patch).await?;
+    state
+        .design_live
+        .publish(
+            &period_id,
+            DesignEvent::patch(&view, input.client_id, input.patch),
+        )
+        .await;
+    Ok(Json(view))
+}
+
+/// Aliran SSE perubahan desain sekaligus pendaftaran kehadiran editor.
+pub async fn design_live(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+    Query(query): Query<LiveQuery>,
+) -> ApiResult<Response> {
+    user.require_writer()?;
+    let room = state.design_live.room(&period_id).await;
+    let receiver = room.subscribe();
+    let snapshot = service::get_layout(&state.db, &period_id).await?;
+    let client_id = if query.client_id.trim().is_empty() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        query.client_id
+    };
+    let editors = room
+        .join(EditorView {
+            client_id,
+            user_id: user.id,
+            username: user.username,
+            page: query.page.unwrap_or(1).max(1),
+        })
+        .await;
+    let initial = DesignEvent::Hello {
+        revision: snapshot.revision,
+        layout: snapshot.layout,
+        updated_at: snapshot.updated_at,
+        updated_by: snapshot.updated_by,
+        editors,
+    };
+    let stream = live::stream(initial, receiver, state.shutdown.clone());
+    let mut response = Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    response.headers_mut().insert(
+        header::HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    Ok(response)
+}
+
+pub async fn design_presence(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+    Json(input): Json<PresenceRequest>,
+) -> ApiResult<StatusCode> {
+    user.require_writer()?;
+    if input.client_id.trim().is_empty() {
+        return Err(ApiError::bad_request("client_id wajib diisi."));
+    }
+    periods::service::get(&state.db, &period_id).await?;
+    let room = state.design_live.room(&period_id).await;
+    room.heartbeat(EditorView {
+        client_id: input.client_id,
+        user_id: user.id,
+        username: user.username,
+        page: input.page.unwrap_or(1).max(1),
+    })
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn design_presence_leave(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+    Json(input): Json<PresenceRequest>,
+) -> ApiResult<StatusCode> {
+    user.require_writer()?;
+    if input.client_id.trim().is_empty() {
+        return Err(ApiError::bad_request("client_id wajib diisi."));
+    }
+    periods::service::get(&state.db, &period_id).await?;
+    state
+        .design_live
+        .room(&period_id)
+        .await
+        .leave(&input.client_id)
+        .await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn design_sources(
@@ -132,10 +263,25 @@ pub async fn apply_template(
     Path((period_id, template_id)): Path<(String, String)>,
 ) -> ApiResult<Json<LayoutView>> {
     user.require_writer()?;
-    Ok(Json(
+    let _guard = state.design_lock.lock().await;
+    let view =
         service::apply_template(&state.db, &state.config, &user.id, &period_id, &template_id)
-            .await?,
-    ))
+            .await?;
+    state
+        .design_live
+        .publish(
+            &period_id,
+            DesignEvent::patch(
+                &view,
+                String::new(),
+                LayoutPatch {
+                    replace: Some(view.layout.clone()),
+                    ..LayoutPatch::default()
+                },
+            ),
+        )
+        .await;
+    Ok(Json(view))
 }
 
 pub async fn upload_layout_image(

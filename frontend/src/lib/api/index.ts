@@ -9,6 +9,7 @@ import type {
   ImportPreview,
   ImportView,
   LayoutView,
+  LayoutPatch,
   MediaFilters,
   MediaItem,
   Meta,
@@ -209,6 +210,22 @@ export const designApi = {
       body: JSON.stringify({ layout }),
       keepalive,
     }),
+  patchLayout: (periodId: string, clientId: string, patch: LayoutPatch) =>
+    request<LayoutView>(`/periods/${periodId}/layout`, {
+      method: 'PATCH',
+      body: JSON.stringify({ client_id: clientId, patch }),
+    }),
+  presence: (periodId: string, clientId: string, page: number) =>
+    request<void>(`/periods/${periodId}/design/presence`, {
+      method: 'POST',
+      body: JSON.stringify({ client_id: clientId, page }),
+    }),
+  leaveUrl: (periodId: string) => `/api/periods/${periodId}/design/presence/leave`,
+  liveUrl: (periodId: string, clientId: string, page: number) =>
+    `/api/periods/${periodId}/design/live?${new URLSearchParams({
+      client_id: clientId,
+      page: String(page),
+    }).toString()}`,
   uploadImage: async (periodId: string, file: File) => {
     const form = new FormData()
     form.append('file', file)

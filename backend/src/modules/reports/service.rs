@@ -18,8 +18,8 @@ use crate::{
         imports, periods,
         reports::{
             layout::{
-                DesignTemplateView, LayoutView, MediaFilters, MediaItem, MediaOption, ReportLayout,
-                UploadedImage, image_id_from_src,
+                DesignTemplateView, LayoutPatch, LayoutView, MediaFilters, MediaItem, MediaOption,
+                ReportLayout, UploadedImage, image_id_from_src,
             },
             metrics,
             models::{
@@ -129,7 +129,7 @@ pub async fn save_draft(
 pub async fn get_layout(db: &SqlitePool, period_id: &str) -> ApiResult<LayoutView> {
     periods::service::get(db, period_id).await?;
     let row = sqlx::query(
-        "SELECT l.layout_json, l.updated_at, u.username AS updated_by
+        "SELECT l.layout_json, l.updated_at, l.revision, u.username AS updated_by
          FROM report_layouts l
          LEFT JOIN users u ON u.id = l.updated_by
          WHERE l.period_id = ?",
@@ -148,12 +148,14 @@ pub async fn get_layout(db: &SqlitePool, period_id: &str) -> ApiResult<LayoutVie
                 layout,
                 updated_at: Some(row.get("updated_at")),
                 updated_by: row.try_get("updated_by").ok(),
+                revision: row.get::<i64, _>("revision").max(0) as u64,
             }
         }
         None => LayoutView {
             layout: ReportLayout::default().sanitize(),
             updated_at: None,
             updated_by: None,
+            revision: 0,
         },
     })
 }
@@ -174,19 +176,21 @@ pub async fn save_layout(
     }
     let now = chrono::Utc::now().to_rfc3339();
 
-    sqlx::query(
-        "INSERT INTO report_layouts(period_id, layout_json, updated_by, updated_at)
-         VALUES(?,?,?,?)
+    let revision: i64 = sqlx::query_scalar(
+        "INSERT INTO report_layouts(period_id, layout_json, updated_by, updated_at, revision)
+         VALUES(?,?,?,?,1)
          ON CONFLICT(period_id) DO UPDATE SET
            layout_json = excluded.layout_json,
            updated_by = excluded.updated_by,
-           updated_at = excluded.updated_at",
+           updated_at = excluded.updated_at,
+           revision = report_layouts.revision + 1
+         RETURNING revision",
     )
     .bind(period_id)
     .bind(&layout_json)
     .bind(user_id)
     .bind(&now)
-    .execute(db)
+    .fetch_one(db)
     .await
     .map_err(ApiError::internal)?;
 
@@ -210,7 +214,22 @@ pub async fn save_layout(
         layout,
         updated_at: Some(now),
         updated_by: username,
+        revision: revision.max(0) as u64,
     })
+}
+
+/// Menerapkan patch ke layout terbaru. Pemanggil (HTTP handler) memegang lock
+/// per periode agar dua patch tidak saling menimpa saat dibaca bersamaan.
+pub async fn apply_patch(
+    db: &SqlitePool,
+    user_id: &str,
+    period_id: &str,
+    patch: &LayoutPatch,
+) -> ApiResult<LayoutView> {
+    let current = get_layout(db, period_id).await?;
+    let mut layout = current.layout;
+    layout.apply_patch(patch);
+    save_layout(db, user_id, period_id, layout).await
 }
 
 pub async fn list_templates(db: &SqlitePool) -> ApiResult<Vec<DesignTemplateView>> {
@@ -1505,6 +1524,7 @@ pub async fn public_download_path(db: &SqlitePool, token: &str) -> ApiResult<(Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::reports::layout::{LayoutElement, PageLayout, PagePatch};
 
     #[tokio::test]
     async fn media_library_lists_and_copies_images() {
@@ -1806,5 +1826,60 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn applies_element_patch_and_increments_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::test_config();
+        config.data_dir = dir.path().to_path_buf();
+        let db = crate::db::connect(&config).await.unwrap();
+        sqlx::query(
+            "INSERT INTO users(id,username,password_hash,role) VALUES('u1','tester','x','admin')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO report_periods(id,start_date,end_date,label,created_by)
+             VALUES('p1','2026-10-19','2026-10-25','19–25 Oktober 2026','u1')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let element = || LayoutElement {
+            id: "teks-1".into(),
+            kind: "text".into(),
+            text: "Awal".into(),
+            ..LayoutElement::default()
+        };
+        let layout = ReportLayout {
+            version: 1,
+            mode: "blank".into(),
+            orientation: "portrait".into(),
+            pages: vec![PageLayout {
+                page: 1,
+                elements: vec![element()],
+                ..PageLayout::default()
+            }],
+        };
+        let first = save_layout(&db, "u1", "p1", layout).await.unwrap();
+        assert_eq!(first.revision, 1);
+
+        let mut changed = element();
+        changed.text = "Diperbarui".into();
+        let patch = LayoutPatch {
+            base_revision: first.revision,
+            pages: vec![PagePatch {
+                page: 1,
+                elements_upsert: vec![changed],
+                ..PagePatch::default()
+            }],
+            ..LayoutPatch::default()
+        };
+        let second = apply_patch(&db, "u1", "p1", &patch).await.unwrap();
+        assert_eq!(second.revision, 2);
+        assert_eq!(second.layout.pages[0].elements[0].text, "Diperbarui");
     }
 }

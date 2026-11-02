@@ -37,6 +37,7 @@
     Trash2,
     Type,
     Undo2,
+    Wifi,
   } from 'lucide-svelte'
   import { designApi, importsApi, reportsApi } from '../../api'
   import { errorMessage } from '../../api/client'
@@ -48,9 +49,12 @@
     CoverageUnitCount,
     DesignSource,
     DesignTemplateView,
+    DesignEditor,
+    DesignLiveEvent,
     LayoutBlockOffset,
     LayoutElement,
     LayoutPage,
+    LayoutPatch,
     PeriodDetail,
     ReportContent,
     ReportLayout,
@@ -65,6 +69,7 @@
   import { createCardNode } from '../../utils/cardNode'
   import { CHART_PALETTE, createChartSvg } from '../../utils/chartSvg'
   import { createTableNode } from '../../utils/tableNode'
+  import { applyLayoutPatch, diffLayout, mergeLocalIntoRemote } from '../../design/layoutPatch'
   import {
     clearDesignDraft,
     layoutsMatch,
@@ -277,11 +282,31 @@
   let autosaveErrorNotified = false
   let localDraftAt = $state<string | null>(null)
   let draftUnavailable = $state(false)
+  let serverRevision = $state(0)
+  let liveStatus = $state<'off' | 'connecting' | 'online'>('off')
+  let liveEditors = $state<DesignEditor[]>([])
+  let liveSource: EventSource | null = null
+  let livePeriod = ''
+  let presenceTimer: ReturnType<typeof setInterval> | null = null
+  let liveWatchdog: ReturnType<typeof setInterval> | null = null
+  let resyncTimer: ReturnType<typeof setInterval> | null = null
+  let lastLiveAt = 0
+  let remoteRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  let remoteRetryTimer: ReturnType<typeof setTimeout> | null = null
+  let remoteRetryCount = 0
+  let remoteApplyPending = false
+  const liveClientId = createLiveClientId()
   const defaultTexts = new Map<string, string>()
 
   const hasImport = $derived(detail.imports.length > 0)
   const draftOwner = $derived(auth.user?.id ?? 'anon')
   const dirty = $derived(JSON.stringify(layout) !== savedJson)
+  const liveEditorNames = $derived(
+    liveEditors.map((editor) => `${editor.username} (hal. ${editor.page})`).join(', '),
+  )
+  const otherEditorCount = $derived(
+    liveEditors.filter((editor) => editor.client_id !== liveClientId).length,
+  )
   const pageNumbers = $derived(Array.from({ length: layout.pages.length }, (_, index) => index + 1))
   const periodDateText = $derived.by(() => {
     const period = detail.period
@@ -545,11 +570,18 @@
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') {
         if (dirty && autosaveReady) void autosaveNow()
-      } else if (dirty) {
-        scheduleAutosave()
+        return
       }
+      // Saat tab kembali aktif, samakan revisi dengan server lalu terapkan
+      // perubahan yang sempat tertunda agar kanvas tidak menunggu aksi lain.
+      void resyncFromServer(true)
+      if (remoteApplyPending) applyRemoteToDom()
+      if (dirty) scheduleAutosave()
     }
-    const onPageHide = () => flushOnPageHide()
+    const onPageHide = () => {
+      sendLiveLeave()
+      flushOnPageHide()
+    }
     document.addEventListener('visibilitychange', onVisibility)
     window.addEventListener('pagehide', onPageHide)
     return () => {
@@ -559,8 +591,17 @@
   })
 
   onDestroy(() => {
+    sendLiveLeave()
+    disconnectLive()
     clearAutosaveTimers()
     flushOnPageHide()
+  })
+
+  $effect(() => {
+    const page = currentPage
+    if (liveStatus === 'online') {
+      void designApi.presence(periodId, liveClientId, page).catch(() => {})
+    }
   })
 
   $effect(() => {
@@ -1075,10 +1116,13 @@
     try {
       const view = await designApi.applyTemplate(periodId, selectedTemplateId)
       pushSnapshot(before)
-      layout = normalizeLayout(view.layout)
-      savedJson = JSON.stringify(layout)
-      updatedAt = view.updated_at
-      updatedBy = view.updated_by
+      if (view.revision >= serverRevision) {
+        layout = normalizeLayout(view.layout)
+        savedJson = JSON.stringify(layout)
+        updatedAt = view.updated_at
+        updatedBy = view.updated_by
+        serverRevision = view.revision
+      }
       hasSavedDesign = true
       autosaveReady = true
       autosaveState = 'idle'
@@ -1093,6 +1137,7 @@
       checkedIds = []
       applyLayoutToDom()
       void refreshCanvasStructure()
+      connectLive()
       toast.success('Template diterapkan ke versi impor ini.')
     } catch (caught) {
       toast.error(errorMessage(caught))
@@ -1244,6 +1289,8 @@
 
   async function load() {
     const targetPeriod = periodId
+    if (livePeriod && livePeriod !== targetPeriod) sendLiveLeave()
+    disconnectLive()
     clearAutosaveTimers()
     loading = true
     autosaveReady = false
@@ -1350,6 +1397,7 @@
       savedJson = serverJson
       updatedAt = layoutView.updated_at
       updatedBy = layoutView.updated_by
+      serverRevision = layoutView.revision
       localDraftAt = restoredAt
       autosaveReady = true
       autosaveState = 'idle'
@@ -1368,7 +1416,10 @@
       error = errorMessage(caught)
       autosaveReady = false
     } finally {
-      if (targetPeriod === periodId) loading = false
+      if (targetPeriod === periodId) {
+        loading = false
+        if (autosaveReady && !choosingTemplate) connectLive()
+      }
     }
   }
 
@@ -1382,6 +1433,306 @@
     } catch (caught) {
       if (request === canvasRequest) toast.error(errorMessage(caught))
     }
+  }
+
+  function createLiveClientId(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
+    return `editor-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  }
+
+  /** Layout terakhir yang diketahui berasal dari server. */
+  function parseSavedLayout(): ReportLayout {
+    if (!savedJson) return normalizeLayout(null)
+    try {
+      return normalizeLayout(JSON.parse(savedJson) as ReportLayout)
+    } catch {
+      return normalizeLayout(null)
+    }
+  }
+
+  function disconnectLive(): void {
+    liveSource?.close()
+    liveSource = null
+    if (presenceTimer !== null) {
+      clearInterval(presenceTimer)
+      presenceTimer = null
+    }
+    if (liveWatchdog !== null) {
+      clearInterval(liveWatchdog)
+      liveWatchdog = null
+    }
+    if (resyncTimer !== null) {
+      clearInterval(resyncTimer)
+      resyncTimer = null
+    }
+    if (remoteRefreshTimer !== null) {
+      clearTimeout(remoteRefreshTimer)
+      remoteRefreshTimer = null
+    }
+    clearRemoteRetry()
+    liveStatus = 'off'
+    liveEditors = []
+    livePeriod = ''
+    remoteApplyPending = false
+  }
+
+  function connectLive(): void {
+    if (typeof EventSource === 'undefined' || !hasImport || loading || choosingTemplate) return
+    if (liveSource && livePeriod === periodId) return
+    disconnectLive()
+    livePeriod = periodId
+    liveStatus = 'connecting'
+    let source: EventSource
+    try {
+      source = new EventSource(designApi.liveUrl(periodId, liveClientId, currentPage))
+    } catch {
+      liveStatus = 'off'
+      return
+    }
+    liveSource = source
+    lastLiveAt = Date.now()
+    source.onopen = () => {
+      if (liveSource !== source) return
+      lastLiveAt = Date.now()
+      liveStatus = 'online'
+      sendPresence()
+    }
+    source.onerror = () => {
+      if (liveSource !== source) return
+      liveStatus = 'connecting'
+    }
+    source.addEventListener('hello', (event) => {
+      if (liveSource !== source) return
+      try {
+        handleLiveHello(
+          JSON.parse((event as MessageEvent).data) as Extract<DesignLiveEvent, { type: 'hello' }>,
+        )
+      } catch {
+        // Abaikan payload yang tidak valid; EventSource tetap tersambung.
+      }
+    })
+    source.addEventListener('patch', (event) => {
+      if (liveSource !== source) return
+      try {
+        handleLivePatch(
+          JSON.parse((event as MessageEvent).data) as Extract<DesignLiveEvent, { type: 'patch' }>,
+        )
+      } catch {
+        // Abaikan payload yang tidak valid.
+      }
+    })
+    source.addEventListener('presence', (event) => {
+      if (liveSource !== source) return
+      try {
+        const data = JSON.parse((event as MessageEvent).data) as Extract<
+          DesignLiveEvent,
+          { type: 'presence' }
+        >
+        liveEditors = data.editors
+      } catch {
+        // Abaikan payload yang tidak valid.
+      }
+    })
+    source.addEventListener('resync', () => {
+      if (liveSource === source) void resyncFromServer()
+    })
+    source.addEventListener('ping', () => {
+      if (liveSource === source) lastLiveAt = Date.now()
+    })
+    presenceTimer = setInterval(sendPresence, 15_000)
+    // Koneksi bisa tetap "terbuka" padahal tidak ada data yang masuk (laptop
+    // sleep, proxy menahan buffer). Sambung ulang agar snapshot terbaru diambil.
+    liveWatchdog = setInterval(() => {
+      if (liveSource !== source || liveStatus !== 'online') return
+      if (Date.now() - lastLiveAt < 55_000) return
+      disconnectLive()
+      connectLive()
+    }, 20_000)
+    // Jaring pengaman bila siaran tidak sampai sama sekali: bandingkan revisi
+    // tiap 10 detik dan ambil snapshot penuh bila server sudah lebih baru.
+    resyncTimer = setInterval(() => {
+      if (document.visibilityState === 'hidden') return
+      if (loading || choosingTemplate || !autosaveReady || saving || drag) return
+      if (remoteApplyPending) applyRemoteToDom()
+      void resyncFromServer(true)
+    }, 10_000)
+  }
+
+  function sendPresence(): void {
+    if (!liveSource || liveStatus !== 'online' || !hasImport) return
+    void designApi.presence(periodId, liveClientId, currentPage).catch(() => {})
+  }
+
+  /// Mengirim leave saat refresh/tutup tab. Beacon berjalan sebelum halaman
+  /// dilepas sehingga editor lama tidak tampil sebagai editor lain.
+  function sendLiveLeave(): void {
+    const target = livePeriod
+    if (!target) return
+    const body = JSON.stringify({ client_id: liveClientId })
+    const url = designApi.leaveUrl(target)
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+        const sent = navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }))
+        if (sent) return
+      }
+    } catch {
+      // Jatuh ke fetch keepalive di bawah.
+    }
+    void fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    }).catch(() => {})
+  }
+
+  function handleLiveHello(data: Extract<DesignLiveEvent, { type: 'hello' }>): void {
+    liveEditors = data.editors
+    if (data.revision <= serverRevision) {
+      if (remoteApplyPending) applyRemoteToDom()
+      return
+    }
+    const remote = normalizeLayout(data.layout)
+    const base = parseSavedLayout()
+    layout = dirty ? mergeLocalIntoRemote(base, layout, remote) : remote
+    savedJson = JSON.stringify(remote)
+    serverRevision = data.revision
+    updatedAt = data.updated_at
+    updatedBy = data.updated_by
+    hasSavedDesign = true
+    pruneSelection()
+    clampCurrentPage()
+    applyRemoteToDom()
+  }
+
+  function handleLivePatch(data: Extract<DesignLiveEvent, { type: 'patch' }>): void {
+    // Perubahan sendiri sudah diterima lengkap lewat respons HTTP. Revisi tidak
+    // dimajukan di sini agar patch pengguna lain berikutnya tidak terlewat.
+    if (data.client_id === liveClientId) return
+    if (data.revision <= serverRevision) return
+    const base = parseSavedLayout()
+    let remote: ReportLayout
+    if (data.layout) {
+      // Server mengirim snapshot setelah patch digabung; tidak ada risiko
+      // patch ditempelkan ke basis yang basi.
+      remote = normalizeLayout(data.layout)
+    } else {
+      // Ada peristiwa yang terlewat (koneksi sempat putus atau buffer proxy).
+      // Snapshot penuh lebih aman daripada menerapkan patch ke basis yang basi.
+      if (data.revision > serverRevision + 1 && !data.patch.replace) {
+        void resyncFromServer()
+        return
+      }
+      remote = normalizeLayout(applyLayoutPatch(base, data.patch))
+    }
+    layout = mergeLocalIntoRemote(base, layout, remote)
+    savedJson = JSON.stringify(remote)
+    serverRevision = data.revision
+    updatedAt = data.updated_at ?? updatedAt
+    updatedBy = data.updated_by ?? updatedBy
+    hasSavedDesign = true
+    pruneSelection()
+    clampCurrentPage()
+    applyRemoteToDom()
+  }
+
+  async function resyncFromServer(silent = false): Promise<void> {
+    const target = periodId
+    try {
+      const view = await designApi.getLayout(target)
+      if (target !== periodId) return
+      if (view.revision <= serverRevision) return
+      const remote = normalizeLayout(view.layout)
+      const base = parseSavedLayout()
+      layout = mergeLocalIntoRemote(base, layout, remote)
+      savedJson = JSON.stringify(remote)
+      serverRevision = view.revision
+      updatedAt = view.updated_at
+      updatedBy = view.updated_by
+      hasSavedDesign = view.updated_at !== null
+      pruneSelection()
+      clampCurrentPage()
+      applyRemoteToDom()
+    } catch (caught) {
+      if (!silent) toast.error(errorMessage(caught))
+    }
+  }
+
+  function isInlineEditing(): boolean {
+    if (document.activeElement === textAreaEl) return true
+    const active = iframeEl?.contentDocument?.activeElement as HTMLElement | null
+    return Boolean(
+      active && (active.isContentEditable || active.closest('[contenteditable="true"]')),
+    )
+  }
+
+  function pruneSelection(): void {
+    if (selected?.kind === 'element' && !getElement(selected.page, selected.id)) {
+      selected = null
+    }
+  }
+
+  function clampCurrentPage(): void {
+    if (currentPage > layout.pages.length) {
+      currentPage = Math.max(1, layout.pages.length)
+    }
+  }
+
+  /** Menerapkan perubahan pengguna lain ke DOM tanpa mengganggu edit aktif. */
+  function applyRemoteToDom(): void {
+    if (!autosaveReady || loading || choosingTemplate || !hasImport) return
+    if (isInlineEditing()) {
+      // Edit teks sedang berjalan; penyelesaian edit akan memanggil ulang.
+      remoteApplyPending = true
+      return
+    }
+    if (drag || saving) {
+      remoteApplyPending = true
+      scheduleRemoteRetry()
+      return
+    }
+    remoteApplyPending = false
+    clearRemoteRetry()
+    applyLayoutToDom()
+    applyPageBackgroundToDom()
+    if (remoteRefreshTimer === null) {
+      remoteRefreshTimer = setTimeout(() => {
+        remoteRefreshTimer = null
+        refreshRemoteCanvas()
+      }, 600)
+    }
+  }
+
+  /** Mengulang penerapan patch yang tertahan drag/simpan tanpa menunggu aksi pengguna. */
+  function scheduleRemoteRetry(): void {
+    if (remoteRetryTimer !== null || remoteRetryCount >= 40) return
+    remoteRetryCount += 1
+    remoteRetryTimer = setTimeout(() => {
+      remoteRetryTimer = null
+      if (!remoteApplyPending) return
+      applyRemoteToDom()
+    }, 500)
+  }
+
+  function clearRemoteRetry(): void {
+    remoteRetryCount = 0
+    if (remoteRetryTimer !== null) {
+      clearTimeout(remoteRetryTimer)
+      remoteRetryTimer = null
+    }
+  }
+
+  /** Menyegarkan struktur kanvas agar halaman baru dari editor lain ikut tampil. */
+  function refreshRemoteCanvas(): void {
+    if (drag || saving || isInlineEditing()) {
+      remoteApplyPending = true
+      scheduleRemoteRetry()
+      return
+    }
+    void refreshCanvasStructure()
   }
 
   function resolveImageSrc(src: string | undefined): string {
@@ -1966,6 +2317,7 @@
       const value = commit()
       textEl.textContent = value
       renderSelection()
+      if (remoteApplyPending) applyRemoteToDom()
     }
     textEl.addEventListener('input', onInput)
     textEl.addEventListener('blur', finish, { once: true })
@@ -2260,6 +2612,7 @@
     drag = null
     applyLayoutToDom()
     scheduleAutosave()
+    if (remoteApplyPending) applyRemoteToDom()
   }
 
   function pushSnapshot(snapshot: ReportLayout) {
@@ -2355,6 +2708,7 @@
     draftUnavailable = false
     toast.success('Dokumen kosong siap disusun.')
     void refreshCanvasStructure()
+    connectLive()
     scheduleAutosave()
   }
 
@@ -2366,10 +2720,13 @@
     error = ''
     try {
       const view = await designApi.applyTemplate(periodId, templateId)
-      layout = normalizeLayout(view.layout)
-      savedJson = JSON.stringify(layout)
-      updatedAt = view.updated_at
-      updatedBy = view.updated_by
+      if (view.revision >= serverRevision) {
+        layout = normalizeLayout(view.layout)
+        savedJson = JSON.stringify(layout)
+        updatedAt = view.updated_at
+        updatedBy = view.updated_by
+        serverRevision = view.revision
+      }
       hasSavedDesign = true
       autosaveReady = true
       autosaveState = 'idle'
@@ -2386,6 +2743,7 @@
       redoStack = []
       applyLayoutToDom()
       void refreshCanvasStructure()
+      connectLive()
       toast.success(`Template "${template?.name ?? 'desain'}" diterapkan.`)
     } catch (caught) {
       error = errorMessage(caught)
@@ -2505,9 +2863,20 @@
       selected = null
     }
     currentPage = page
+    // Halaman yang dibuka harus memakai layout terbaru, termasuk perubahan
+    // editor lain yang sempat tertunda saat kanvas sedang sibuk.
+    if (remoteApplyPending) applyRemoteToDom()
+    applyLayoutToDom()
+    applyPageBackgroundToDom()
     applyPageVisibility()
     renderSelection()
     centerCanvas()
+    // Halaman dari editor lain bisa belum ada di iframe; minta render ulang.
+    const domPages = iframeEl?.contentDocument?.querySelectorAll('.page').length ?? 0
+    if (domPages !== layout.pages.length) void refreshCanvasStructure()
+    // Bila siaran langsung sedang tidak tersambung, ambil snapshot terbaru
+    // agar halaman tidak menampilkan versi lama sampai halaman dimuat ulang.
+    if (liveStatus !== 'online') void resyncFromServer()
   }
 
   function addElement(element: LayoutElement) {
@@ -4585,6 +4954,17 @@
       draftUnavailable = true
     }
 
+    const baseLayout = parseSavedLayout()
+    const patch = diffLayout(baseLayout, snapshot, serverRevision)
+    if (!patch) {
+      savedJson = snapshotJson
+      clearDesignDraft(targetPeriod, draftOwner)
+      localDraftAt = null
+      draftUnavailable = false
+      if (!options.auto && !options.silent) toast.success('Layout desain tersimpan.')
+      return true
+    }
+
     saving = true
     if (!options.auto) {
       error = ''
@@ -4594,31 +4974,35 @@
     const beforeStructure = layoutStructure(snapshot)
 
     try {
-      const view = await designApi.saveLayout(targetPeriod, snapshot)
+      const view = await designApi.patchLayout(targetPeriod, liveClientId, patch)
       if (targetPeriod !== periodId) return false
       clearDesignDraft(targetPeriod, draftOwner)
       localDraftAt = null
       draftUnavailable = false
-      const unchanged = JSON.stringify(layout) === snapshotJson
-      if (!options.auto && unchanged) {
-        const previous = selected
-        const normalized = normalizeLayout(view.layout)
-        layout = normalized
-        savedJson = JSON.stringify(normalized)
-        if (previous?.kind === 'element' && !getElement(previous.page, previous.id)) {
-          selected = null
-        } else {
-          selected = previous
-        }
-        applyLayoutToDom()
-        if (layoutStructure(normalized) !== beforeStructure) void refreshCanvasStructure()
-      } else {
-        // Autosave tidak mengganti layout/DOM agar fokus edit teks dan drag
-        // tidak terganggu. Simpan hanya penanda versi yang sudah tersimpan.
-        savedJson = snapshotJson
+
+      // Respons berisi layout server setelah patch ini digabung. Bila siaran
+      // pengguna lain sudah membawa revisi lebih baru, pertahankan versi itu.
+      const responseIsLatest = view.revision >= serverRevision
+      const server = responseIsLatest ? normalizeLayout(view.layout) : parseSavedLayout()
+      if (responseIsLatest) {
+        serverRevision = view.revision
+        updatedAt = view.updated_at
+        updatedBy = view.updated_by
       }
-      updatedAt = view.updated_at
-      updatedBy = view.updated_by
+
+      // Edit yang terjadi selama permintaan berjalan tetap dipertahankan.
+      const sinceSnapshot = diffLayout(snapshot, layout, 0)
+      let next = server
+      if (sinceSnapshot) {
+        next = sinceSnapshot.replace ? layout : applyLayoutPatch(server, sinceSnapshot)
+      }
+      const beforeJson = JSON.stringify(layout)
+      layout = next
+      savedJson = JSON.stringify(server)
+      if (selected?.kind === 'element' && !getElement(selected.page, selected.id)) {
+        selected = null
+      }
+      clampCurrentPage()
       hasSavedDesign = true
       autosaveReady = true
       lastSaveMode = options.auto ? 'auto' : 'manual'
@@ -4626,6 +5010,12 @@
       autosaveError = ''
       autosaveErrorNotified = false
       if (!options.silent) toast.success('Layout desain tersimpan.')
+
+      const domChanged = JSON.stringify(next) !== beforeJson
+      if (domChanged || remoteApplyPending || layoutStructure(next) !== beforeStructure) {
+        saving = false
+        applyRemoteToDom()
+      }
       return true
     } catch (caught) {
       const message = errorMessage(caught)
@@ -5004,6 +5394,13 @@
         {:else}
           <span class="badge badge-success"><Check size={11} /> Tersimpan</span>
         {/if}
+        {#if liveStatus === 'online'}
+          <span class="badge badge-success" title={liveEditorNames || 'Hanya Anda'}>
+            <Wifi size={11} /> {otherEditorCount > 0 ? `${otherEditorCount} editor lain` : 'Hanya Anda'}
+          </span>
+        {:else if liveStatus === 'connecting'}
+          <span class="badge badge-progress"><Wifi size={11} /> Menghubungkan…</span>
+        {/if}
       </div>
       {#if autosaveState === 'error' && dirty && autosaveError}
         <p class="mt-1 max-w-2xl text-xs text-red-700">Auto-save gagal: {autosaveError}</p>
@@ -5243,6 +5640,7 @@
                 <span class="label">Teks</span>
                 <textarea bind:this={textAreaEl} class="textarea text-xs" rows="4" value={activeElement.text ?? ''}
                   onfocus={pushHistory}
+                  onblur={() => { if (remoteApplyPending) applyRemoteToDom() }}
                   oninput={(event) => updateElement({ text: (event.currentTarget as HTMLTextAreaElement).value })}
                 ></textarea>
               </label>

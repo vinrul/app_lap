@@ -6,7 +6,7 @@ use std::{
 use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 
-use crate::config::Config;
+use crate::{config::Config, modules::reports::live::DesignLive};
 
 #[derive(Default)]
 pub struct EvidenceDownloadLocks {
@@ -97,6 +97,16 @@ impl ShutdownSignal {
     pub fn is_shutdown(&self) -> bool {
         *self.receiver.borrow()
     }
+
+    /// Menunggu sinyal berhenti. Dipakai aliran SSE agar koneksi panjang ikut
+    /// ditutup saat graceful shutdown.
+    pub async fn wait(&self) {
+        let mut receiver = self.receiver.clone();
+        if *receiver.borrow() {
+            return;
+        }
+        let _ = receiver.changed().await;
+    }
 }
 
 #[derive(Clone)]
@@ -105,6 +115,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub pdf_lock: Arc<Mutex<()>>,
     pub evidence_downloads: Arc<EvidenceDownloadLocks>,
+    pub design_live: Arc<DesignLive>,
+    pub design_lock: Arc<Mutex<()>>,
     pub shutdown: ShutdownSignal,
     pub http: reqwest::Client,
 }

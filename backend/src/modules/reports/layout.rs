@@ -166,6 +166,48 @@ pub struct LayoutView {
     pub layout: ReportLayout,
     pub updated_at: Option<String>,
     pub updated_by: Option<String>,
+    pub revision: u64,
+}
+
+/// Perubahan kecil dari satu klien. Server menerapkannya ke layout terbaru,
+/// sehingga perubahan pengguna lain pada elemen berbeda tetap dipertahankan.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayoutPatch {
+    pub base_revision: u64,
+    pub mode: Option<String>,
+    pub orientation: Option<String>,
+    pub pages: Vec<PagePatch>,
+    /// Dipakai untuk perubahan struktur (tambah/hapus halaman, template, atau
+    /// dokumen kosong). Menggantikan seluruh layout.
+    pub replace: Option<ReportLayout>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PagePatch {
+    pub page: usize,
+    pub background: Option<String>,
+    pub background_mode: Option<String>,
+    pub gradient_angle: Option<f64>,
+    pub gradient_colors: Option<Vec<String>>,
+    pub elements_upsert: Vec<LayoutElement>,
+    pub elements_remove: Vec<String>,
+    pub blocks_upsert: Vec<BlockPatch>,
+    pub blocks_remove: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlockPatch {
+    pub id: String,
+    pub block: BlockLayout,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PatchLayoutRequest {
+    #[serde(default)]
+    pub client_id: String,
+    pub patch: LayoutPatch,
 }
 
 #[derive(Debug, Deserialize)]
@@ -381,6 +423,62 @@ impl ReportLayout {
             mode: mode.to_string(),
             orientation: orientation.to_string(),
             pages,
+        }
+    }
+
+    /// Menerapkan patch tanpa menyentuh elemen yang tidak disebutkan. Patch
+    /// yang menyertakan `replace` menggantikan seluruh layout (perubahan
+    /// struktur halaman).
+    pub fn apply_patch(&mut self, patch: &LayoutPatch) {
+        if let Some(replace) = &patch.replace {
+            *self = replace.clone();
+            return;
+        }
+        if let Some(mode) = &patch.mode {
+            self.mode = mode.clone();
+        }
+        if let Some(orientation) = &patch.orientation {
+            self.orientation = orientation.clone();
+        }
+        for page_patch in &patch.pages {
+            let Some(page) = self
+                .pages
+                .iter_mut()
+                .find(|page| page.page == page_patch.page)
+            else {
+                continue;
+            };
+            if let Some(background) = &page_patch.background {
+                page.background = background.clone();
+            }
+            if let Some(background_mode) = &page_patch.background_mode {
+                page.background_mode = background_mode.clone();
+            }
+            if let Some(angle) = page_patch.gradient_angle {
+                page.gradient_angle = angle;
+            }
+            if let Some(colors) = &page_patch.gradient_colors {
+                page.gradient_colors = colors.clone();
+            }
+            for element in &page_patch.elements_upsert {
+                if let Some(existing) = page
+                    .elements
+                    .iter_mut()
+                    .find(|existing| existing.id == element.id)
+                {
+                    *existing = element.clone();
+                } else {
+                    page.elements.push(element.clone());
+                }
+            }
+            page.elements
+                .retain(|element| !page_patch.elements_remove.contains(&element.id));
+            for block in &page_patch.blocks_upsert {
+                page.blocks.insert(block.id.clone(), block.block.clone());
+            }
+            for id in &page_patch.blocks_remove {
+                page.blocks.remove(id);
+            }
         }
     }
 }
@@ -1878,5 +1976,78 @@ mod tests {
         assert!(!sanitized.chart_series[0].color.is_empty());
         assert_eq!(sanitized.chart_series[1].values, vec![0.0, 0.0]);
         assert_ne!(sanitized.chart_series[1].color, "red;bad");
+    }
+
+    #[test]
+    fn applies_element_patches_without_overwriting_other_elements() {
+        let mut layout = ReportLayout {
+            version: 1,
+            mode: "blank".into(),
+            orientation: "portrait".into(),
+            pages: vec![PageLayout {
+                page: 1,
+                elements: vec![
+                    LayoutElement {
+                        id: "a".into(),
+                        kind: "text".into(),
+                        text: "A".into(),
+                        ..Default::default()
+                    },
+                    LayoutElement {
+                        id: "b".into(),
+                        kind: "text".into(),
+                        text: "B".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..PageLayout::default()
+            }],
+        }
+        .sanitize();
+
+        layout.apply_patch(&LayoutPatch {
+            pages: vec![PagePatch {
+                page: 1,
+                elements_upsert: vec![LayoutElement {
+                    id: "a".into(),
+                    kind: "text".into(),
+                    text: "A2".into(),
+                    ..Default::default()
+                }],
+                ..PagePatch::default()
+            }],
+            ..LayoutPatch::default()
+        });
+        layout.apply_patch(&LayoutPatch {
+            pages: vec![PagePatch {
+                page: 1,
+                elements_upsert: vec![LayoutElement {
+                    id: "b".into(),
+                    kind: "text".into(),
+                    text: "B2".into(),
+                    ..Default::default()
+                }],
+                ..PagePatch::default()
+            }],
+            ..LayoutPatch::default()
+        });
+
+        let page = &layout.pages[0];
+        assert_eq!(
+            page.elements
+                .iter()
+                .find(|item| item.id == "a")
+                .unwrap()
+                .text,
+            "A2"
+        );
+        assert_eq!(
+            page.elements
+                .iter()
+                .find(|item| item.id == "b")
+                .unwrap()
+                .text,
+            "B2"
+        );
     }
 }

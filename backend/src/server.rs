@@ -41,6 +41,8 @@ pub async fn run() -> anyhow::Result<()> {
         config: Arc::new(config.clone()),
         pdf_lock: Arc::new(Mutex::new(())),
         evidence_downloads: Arc::new(EvidenceDownloadLocks::default()),
+        design_live: Arc::new(reports::live::DesignLive::default()),
+        design_lock: Arc::new(Mutex::new(())),
         shutdown: ShutdownSignal::new(),
         http,
     };

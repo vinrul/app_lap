@@ -234,6 +234,24 @@ berstatus `pending` dan dilanjutkan otomatis saat service hidup lagi.
 
 Migrasi baru dijalankan otomatis saat startup. Cek `journalctl -u laporan -n 50` bila gagal.
 
+Desain laporan memakai SSE untuk kolaborasi realtime. Pastikan blok `location /` di Nginx
+memuat `proxy_buffering off;` seperti pada `deploy/nginx-laporan.conf`, lalu muat ulang Nginx:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Tanpa `proxy_buffering off`, perubahan desain pengguna lain bisa tertahan di buffer Nginx
+sampai cukup besar sebelum diteruskan ke browser. Server mengirim event `ping` setiap 20 detik;
+editor yang tidak menerima data selama 55 detik akan menyambung ulang sendiri dan mengambil
+snapshot terbaru. Sebagai jaring pengaman, editor juga memeriksa revisi layout tiap 10 detik,
+jadi halaman tidak perlu dimuat ulang manual meskipun siaran SSE terhambat.
+
+Sinkronisasi desain memakai koordinasi dalam satu proses backend. Jalankan satu instance
+`laporan_mingguan serve` per database; jangan menyalakan beberapa worker dengan database
+yang sama.
+
 ### Perawatan bukti dukung
 
 Versi ini menyimpan bukti dukung berdasarkan hash isi dan membersihkan bukti
