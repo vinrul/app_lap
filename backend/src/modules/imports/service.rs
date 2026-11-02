@@ -911,7 +911,90 @@ pub async fn coverage_for_period(
     } else {
         None
     };
-    Ok(coverage::build_coverage_scoped(&start, &end, &rows, polres))
+    let universe = match data_scope {
+        DataScope::All => coverage::CoverageUnitUniverse {
+            primary: match polres {
+                Some(label) => polsek_universe(db, label).await?,
+                None => polres_universe(db).await?,
+            },
+            secondary: if polres.is_some() {
+                Vec::new()
+            } else {
+                satker_polda_universe(db).await?
+            },
+        },
+        DataScope::Polres(label) => coverage::CoverageUnitUniverse {
+            // Pembaca polres melihat satu dimensi polres (baris polsek ikut
+            // digabung ke polres), jadi universe-nya adalah polres itu sendiri.
+            primary: vec![label.clone()],
+            secondary: Vec::new(),
+        },
+        DataScope::Polda {
+            satker: Some(label),
+        } => coverage::CoverageUnitUniverse {
+            primary: Vec::new(),
+            secondary: vec![label.clone()],
+        },
+        DataScope::Polda { satker: None } => coverage::CoverageUnitUniverse {
+            primary: Vec::new(),
+            secondary: satker_polda_universe(db).await?,
+        },
+        DataScope::None => coverage::CoverageUnitUniverse::default(),
+    };
+    Ok(coverage::build_coverage_scoped_with_universe(
+        &start,
+        &end,
+        &rows,
+        polres,
+        Some(&universe),
+    ))
+}
+
+/// Unit historis di luar periode aktif. Dipakai agar polres/polsek yang tidak
+/// melapor sama sekali pada periode tetap muncul pada kepatuhan jadwal.
+async fn polres_universe(db: &SqlitePool) -> ApiResult<Vec<String>> {
+    let labels = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT TRIM(polres) AS label FROM import_rows
+         WHERE TRIM(polres) <> '' AND LOWER(TRIM(level)) <> 'polda'
+         ORDER BY label COLLATE NOCASE",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(ApiError::internal)?;
+    Ok(clean_unit_labels(labels))
+}
+
+async fn polsek_universe(db: &SqlitePool, polres: &str) -> ApiResult<Vec<String>> {
+    let labels = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT TRIM(polsek) AS label FROM import_rows
+         WHERE TRIM(polsek) <> '' AND LOWER(TRIM(polres)) = LOWER(?)
+           AND LOWER(TRIM(level)) <> 'polda'
+         ORDER BY label COLLATE NOCASE",
+    )
+    .bind(polres)
+    .fetch_all(db)
+    .await
+    .map_err(ApiError::internal)?;
+    Ok(clean_unit_labels(labels))
+}
+
+async fn satker_polda_universe(db: &SqlitePool) -> ApiResult<Vec<String>> {
+    let labels = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT TRIM(satker) AS label FROM import_rows
+         WHERE TRIM(satker) <> '' AND LOWER(TRIM(level)) = 'polda'
+         ORDER BY label COLLATE NOCASE",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(ApiError::internal)?;
+    Ok(clean_unit_labels(labels))
+}
+
+fn clean_unit_labels(labels: Vec<String>) -> Vec<String> {
+    labels
+        .into_iter()
+        .filter(|label| !is_noise(label))
+        .collect()
 }
 
 pub async fn record_detail_for_period(
@@ -1487,6 +1570,19 @@ mod tests {
                 .iter()
                 .any(|item| item.polsek > 0)
         );
+
+        let coverage = super::coverage_for_period(&db, "p1", None, &DataScope::All)
+            .await
+            .unwrap();
+        assert_eq!(coverage.schedule.len(), 8);
+        let qw11 = coverage
+            .schedule
+            .iter()
+            .find(|item| item.code == "QW1.1")
+            .unwrap();
+        assert_eq!(qw11.day, "Senin");
+        assert_eq!(qw11.expected_dates, vec!["2026-10-19"]);
+        assert!(!qw11.polres.is_empty());
 
         let polres = analysis.by_polres_breakdown.first().unwrap();
         let polres_detail = super::unit_detail_for_period(

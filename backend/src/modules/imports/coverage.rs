@@ -1,11 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use chrono::{Datelike, NaiveDate};
+
 use crate::{
     modules::imports::{
         models::{
             CoverageBreakdown, CoverageCode, CoverageGroup, CoverageMetric, CoverageProgram,
-            CoverageResponse, CoverageTable, CoverageTableRow, CoverageUnit, CoverageUnitCount,
-            CoverageUnitValue, RecordView,
+            CoverageResponse, CoverageSchedule, CoverageScheduleChild, CoverageScheduleUnit,
+            CoverageTable, CoverageTableRow, CoverageUnit, CoverageUnitCount, CoverageUnitValue,
+            RecordView,
         },
         qw,
     },
@@ -56,12 +59,36 @@ impl KnownUnits {
         Self { polres, satker }
     }
 
+    fn insert(&mut self, scope: Scope, label: &str) {
+        let label = label.trim();
+        if label.is_empty() || is_noise(label) {
+            return;
+        }
+        let target = match scope {
+            Scope::Polres => &mut self.polres,
+            Scope::Satker => &mut self.satker,
+        };
+        target
+            .entry(label.to_lowercase())
+            .or_insert_with(|| label.to_string());
+    }
+
     fn set(&self, scope: Scope) -> &BTreeMap<String, String> {
         match scope {
             Scope::Polres => &self.polres,
             Scope::Satker => &self.satker,
         }
     }
+}
+
+/// Daftar unit di luar periode aktif, dipakai agar unit yang tidak melapor
+/// sama sekali tetap muncul pada kepatuhan jadwal.
+#[derive(Clone, Debug, Default)]
+pub struct CoverageUnitUniverse {
+    /// Polres (tanpa filter) atau polsek (saat difilter satu polres).
+    pub primary: Vec<String>,
+    /// Satker Polda. Kosong berarti memakai unit yang diketahui dari periode.
+    pub secondary: Vec<String>,
 }
 
 /// Peran yang menentukan tanggung jawab pada dimensi polres/polsek.
@@ -3789,6 +3816,286 @@ fn unit_counts(counts: Option<&BTreeMap<String, (String, i64)>>) -> Vec<Coverage
     items
 }
 
+/// Jadwal tetap sub-kode QW1.1–QW1.8. Nilai kedua adalah hari ISO:
+/// 1 = Senin sampai 7 = Minggu.
+const QW1_SCHEDULE: [(&str, u32); 8] = [
+    ("QW1.1", 1),
+    ("QW1.2", 1),
+    ("QW1.3", 4),
+    ("QW1.4", 3),
+    ("QW1.5", 5),
+    ("QW1.6", 5),
+    ("QW1.7", 6),
+    ("QW1.8", 7),
+];
+
+const DAY_NAMES: [&str; 7] = [
+    "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu",
+];
+
+#[derive(Default)]
+struct ScheduleChildAcc {
+    label: String,
+    on_time_rows: i64,
+    off_schedule_rows: i64,
+    on_time_dates: BTreeSet<String>,
+    off_schedule_dates: BTreeSet<String>,
+}
+
+impl ScheduleChildAcc {
+    fn add(&mut self, on_time: bool, date: Option<NaiveDate>) {
+        if on_time {
+            self.on_time_rows += 1;
+            if let Some(date) = date {
+                self.on_time_dates
+                    .insert(date.format("%Y-%m-%d").to_string());
+            }
+        } else {
+            self.off_schedule_rows += 1;
+            if let Some(date) = date {
+                self.off_schedule_dates
+                    .insert(date.format("%Y-%m-%d").to_string());
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct ScheduleUnitAcc {
+    label: String,
+    on_time_rows: i64,
+    off_schedule_rows: i64,
+    on_time_dates: BTreeSet<String>,
+    off_schedule_dates: BTreeSet<String>,
+    polsek: BTreeMap<String, ScheduleChildAcc>,
+    satker: BTreeMap<String, ScheduleChildAcc>,
+}
+
+impl ScheduleUnitAcc {
+    fn rows(&self) -> i64 {
+        self.on_time_rows + self.off_schedule_rows
+    }
+}
+
+fn expected_dates(start: Option<NaiveDate>, end: Option<NaiveDate>, weekday: u32) -> Vec<String> {
+    let (Some(mut current), Some(end)) = (start, end) else {
+        return Vec::new();
+    };
+    let mut dates = Vec::new();
+    while current <= end {
+        if current.weekday().number_from_monday() == weekday {
+            dates.push(current.format("%Y-%m-%d").to_string());
+        }
+        let Some(next) = current.succ_opt() else {
+            break;
+        };
+        current = next;
+    }
+    dates
+}
+
+fn build_schedule(
+    start: &str,
+    end: &str,
+    rows: &[RecordView],
+    known: &KnownUnits,
+    mode: UnitMode,
+) -> Vec<CoverageSchedule> {
+    let start_date = NaiveDate::parse_from_str(start.trim(), "%Y-%m-%d").ok();
+    let end_date = NaiveDate::parse_from_str(end.trim(), "%Y-%m-%d").ok();
+
+    QW1_SCHEDULE
+        .iter()
+        .filter_map(|(code, weekday)| {
+            let item = qw::find(code)?;
+            let expected = expected_dates(start_date, end_date, *weekday);
+            let not_scheduled = expected.is_empty();
+            let mut polres_acc: BTreeMap<String, ScheduleUnitAcc> = BTreeMap::new();
+            let mut satker_acc: BTreeMap<String, ScheduleUnitAcc> = BTreeMap::new();
+
+            for row in rows {
+                let normalized = qw::normalize(&row.kode);
+                let Some(found) = qw::find(&normalized) else {
+                    continue;
+                };
+                if found.code != *code {
+                    continue;
+                }
+                let Some((scope, label)) = row_unit(row, mode) else {
+                    continue;
+                };
+                let key = label.to_lowercase();
+                let acc = match scope {
+                    Scope::Polres => polres_acc.entry(key).or_insert_with(|| ScheduleUnitAcc {
+                        label: label.clone(),
+                        ..ScheduleUnitAcc::default()
+                    }),
+                    Scope::Satker => satker_acc.entry(key).or_insert_with(|| ScheduleUnitAcc {
+                        label: label.clone(),
+                        ..ScheduleUnitAcc::default()
+                    }),
+                };
+                let date = NaiveDate::parse_from_str(row.tanggal.trim(), "%Y-%m-%d").ok();
+                let on_time = !not_scheduled
+                    && date
+                        .map(|value| value.weekday().number_from_monday() == *weekday)
+                        .unwrap_or(false);
+                if on_time {
+                    acc.on_time_rows += 1;
+                    if let Some(date) = date {
+                        acc.on_time_dates
+                            .insert(date.format("%Y-%m-%d").to_string());
+                    }
+                } else {
+                    acc.off_schedule_rows += 1;
+                    if let Some(date) = date {
+                        acc.off_schedule_dates
+                            .insert(date.format("%Y-%m-%d").to_string());
+                    }
+                }
+
+                // Pada tampilan seluruh Polda, rincian pelapor per polsek dan
+                // satker polres disimpan agar bisa dibuka dari unit polres.
+                if mode == UnitMode::Polda && scope == Scope::Polres {
+                    let polsek = row.polsek.trim();
+                    if !is_noise(polsek) {
+                        let child = acc.polsek.entry(polsek.to_lowercase()).or_insert_with(|| {
+                            ScheduleChildAcc {
+                                label: polsek.to_string(),
+                                ..ScheduleChildAcc::default()
+                            }
+                        });
+                        child.add(on_time, date);
+                    } else {
+                        let satker = record_satker_label(row);
+                        if !is_noise(&satker) && !satker.eq_ignore_ascii_case(&label) {
+                            let child =
+                                acc.satker.entry(satker.to_lowercase()).or_insert_with(|| {
+                                    ScheduleChildAcc {
+                                        label: satker.clone(),
+                                        ..ScheduleChildAcc::default()
+                                    }
+                                });
+                            child.add(on_time, date);
+                        }
+                    }
+                }
+            }
+
+            let performed_polres: BTreeSet<String> = polres_acc.keys().cloned().collect();
+            let performed_satker: BTreeSet<String> = satker_acc.keys().cloned().collect();
+            let responsible_polres =
+                responsible_units(known, Scope::Polres, mode, code, &performed_polres);
+            let responsible_satker =
+                responsible_units(known, Scope::Satker, mode, code, &performed_satker);
+
+            Some(CoverageSchedule {
+                code: item.code.to_string(),
+                title: item.title.to_string(),
+                day: DAY_NAMES[(*weekday - 1) as usize].to_string(),
+                weekday: *weekday as u8,
+                expected_dates: expected,
+                polres: schedule_units(
+                    known,
+                    Scope::Polres,
+                    &responsible_polres,
+                    polres_acc,
+                    not_scheduled,
+                ),
+                satker: schedule_units(
+                    known,
+                    Scope::Satker,
+                    &responsible_satker,
+                    satker_acc,
+                    not_scheduled,
+                ),
+            })
+        })
+        .collect()
+}
+
+fn schedule_units(
+    known: &KnownUnits,
+    scope: Scope,
+    responsible: &BTreeSet<String>,
+    mut accumulated: BTreeMap<String, ScheduleUnitAcc>,
+    not_scheduled: bool,
+) -> Vec<CoverageScheduleUnit> {
+    let mut units = Vec::new();
+    for (key, label) in known.set(scope) {
+        if !responsible.contains(key) {
+            continue;
+        }
+        units.push(schedule_unit(label, accumulated.remove(key), not_scheduled));
+    }
+    // Unit yang melapor tetapi tidak dikenal dari daftar unit tetap ditampilkan.
+    for (_, entry) in accumulated {
+        if entry.rows() > 0 {
+            let label = entry.label.clone();
+            units.push(schedule_unit(&label, Some(entry), not_scheduled));
+        }
+    }
+    units.sort_by(|left, right| left.label.to_lowercase().cmp(&right.label.to_lowercase()));
+    units
+}
+
+fn schedule_unit(
+    label: &str,
+    accumulated: Option<ScheduleUnitAcc>,
+    not_scheduled: bool,
+) -> CoverageScheduleUnit {
+    let accumulated = accumulated.unwrap_or_default();
+    CoverageScheduleUnit {
+        label: label.to_string(),
+        status: schedule_status(
+            not_scheduled,
+            accumulated.on_time_rows,
+            accumulated.off_schedule_rows,
+        )
+        .to_string(),
+        on_time_rows: accumulated.on_time_rows,
+        off_schedule_rows: accumulated.off_schedule_rows,
+        on_time_dates: accumulated.on_time_dates.into_iter().collect(),
+        off_schedule_dates: accumulated.off_schedule_dates.into_iter().collect(),
+        polsek: schedule_children(accumulated.polsek, not_scheduled),
+        satker: schedule_children(accumulated.satker, not_scheduled),
+    }
+}
+
+fn schedule_children(
+    accumulated: BTreeMap<String, ScheduleChildAcc>,
+    not_scheduled: bool,
+) -> Vec<CoverageScheduleChild> {
+    let mut units: Vec<CoverageScheduleChild> = accumulated
+        .into_values()
+        .map(|child| CoverageScheduleChild {
+            label: child.label,
+            status: schedule_status(not_scheduled, child.on_time_rows, child.off_schedule_rows)
+                .to_string(),
+            on_time_rows: child.on_time_rows,
+            off_schedule_rows: child.off_schedule_rows,
+            on_time_dates: child.on_time_dates.into_iter().collect(),
+            off_schedule_dates: child.off_schedule_dates.into_iter().collect(),
+        })
+        .collect();
+    units.sort_by(|left, right| left.label.to_lowercase().cmp(&right.label.to_lowercase()));
+    units
+}
+
+fn schedule_status(not_scheduled: bool, on_time_rows: i64, off_schedule_rows: i64) -> &'static str {
+    if not_scheduled {
+        "not_scheduled"
+    } else if off_schedule_rows > 0 {
+        // Ada laporan di hari lain: dianggap tidak patuh meskipun juga
+        // melapor pada hari jadwal. Tanggal keduanya tetap ditampilkan.
+        "off_schedule"
+    } else if on_time_rows > 0 {
+        "on_time"
+    } else {
+        "missing"
+    }
+}
+
 pub fn build_coverage(start: &str, end: &str, rows: &[RecordView]) -> CoverageResponse {
     build_coverage_scoped(start, end, rows, None)
 }
@@ -3800,6 +4107,19 @@ pub fn build_coverage_scoped(
     end: &str,
     rows: &[RecordView],
     polres: Option<&str>,
+) -> CoverageResponse {
+    build_coverage_scoped_with_universe(start, end, rows, polres, None)
+}
+
+/// Seperti `build_coverage_scoped`, tetapi unit yang tidak muncul pada periode
+/// dapat ditambahkan dari daftar unit historis agar status "belum melapor"
+/// tetap terlihat.
+pub fn build_coverage_scoped_with_universe(
+    start: &str,
+    end: &str,
+    rows: &[RecordView],
+    polres: Option<&str>,
+    universe: Option<&CoverageUnitUniverse>,
 ) -> CoverageResponse {
     let polres_options: Vec<String> = KnownUnits::from_rows(rows, UnitMode::Polda)
         .set(Scope::Polres)
@@ -3822,6 +4142,18 @@ pub fn build_coverage_scoped(
         UnitMode::Polda
     };
     let known = KnownUnits::from_rows(rows, mode);
+    // Daftar unit untuk kepatuhan jadwal memakai universe historis agar unit
+    // yang tidak melapor sama sekali tetap terlihat, tanpa mengubah cakupan
+    // Quick Wins lain yang hanya memakai unit pada periode ini.
+    let mut schedule_known = KnownUnits::from_rows(rows, mode);
+    if let Some(universe) = universe {
+        for label in &universe.primary {
+            schedule_known.insert(Scope::Polres, label);
+        }
+        for label in &universe.secondary {
+            schedule_known.insert(Scope::Satker, label);
+        }
+    }
 
     let mut group_rows: BTreeMap<&'static str, i64> =
         qw::GROUPS.iter().map(|group| (group.code, 0)).collect();
@@ -3989,6 +4321,7 @@ pub fn build_coverage_scoped(
         .map(|spec| build_program(spec, rows, &known, mode))
         .collect();
     let codes = build_code_programs(rows, &known, mode);
+    let schedule = build_schedule(start, end, rows, &schedule_known, mode);
     let (media_metrics, media_tables) = media_coverage(rows);
 
     CoverageResponse {
@@ -4012,6 +4345,7 @@ pub fn build_coverage_scoped(
         groups,
         programs,
         codes,
+        schedule,
         media_metrics,
         media_tables,
     }
@@ -7078,5 +7412,66 @@ mod tests {
             .find(|program| program.key != "green_policing")
             .unwrap();
         assert_eq!(narkoba.rows, 0);
+    }
+
+    #[test]
+    fn builds_qw1_schedule_compliance() {
+        let mut on_time = row("QW1.1", "Polres", "Polres Badung", &[], 1, 0, 0.0, 0);
+        on_time.tanggal = "2026-10-19".into();
+        on_time.polsek = "Polsek Kuta".into();
+        let mut late = row("QW1.1", "Polres", "Polres Tabanan", &[], 1, 0, 0.0, 0);
+        late.tanggal = "2026-10-21".into();
+        let mut mixed_monday = row("QW1.1", "Polres", "Polres Denpasar", &[], 1, 0, 0.0, 0);
+        mixed_monday.tanggal = "2026-10-19".into();
+        let mut mixed_wednesday = row("QW1.1", "Polres", "Polres Denpasar", &[], 1, 0, 0.0, 0);
+        mixed_wednesday.tanggal = "2026-10-21".into();
+        let universe = CoverageUnitUniverse {
+            primary: vec!["Polres Bangli".into()],
+            secondary: Vec::new(),
+        };
+
+        let coverage = build_coverage_scoped_with_universe(
+            "2026-10-19",
+            "2026-10-25",
+            &[on_time, late, mixed_monday, mixed_wednesday],
+            None,
+            Some(&universe),
+        );
+
+        assert_eq!(coverage.schedule.len(), 8);
+        assert!(!coverage.schedule.iter().any(|item| item.code == "QW1.9"));
+
+        let qw11 = coverage
+            .schedule
+            .iter()
+            .find(|item| item.code == "QW1.1")
+            .unwrap();
+        assert_eq!(qw11.day, "Senin");
+        assert_eq!(qw11.expected_dates, vec!["2026-10-19"]);
+        let unit = |label: &str| qw11.polres.iter().find(|item| item.label == label).unwrap();
+        let badung = unit("Polres Badung");
+        assert_eq!(badung.status, "on_time");
+        assert_eq!(badung.polsek.len(), 1);
+        assert_eq!(badung.polsek[0].label, "Polsek Kuta");
+        assert_eq!(badung.polsek[0].status, "on_time");
+
+        let late_unit = unit("Polres Tabanan");
+        assert_eq!(late_unit.status, "off_schedule");
+        assert_eq!(late_unit.off_schedule_dates, vec!["2026-10-21"]);
+        assert_eq!(unit("Polres Bangli").status, "missing");
+
+        // Laporan pada hari jadwal sekaligus hari lain tetap dianggap tidak patuh.
+        let mixed = unit("Polres Denpasar");
+        assert_eq!(mixed.status, "off_schedule");
+        assert_eq!(mixed.on_time_dates, vec!["2026-10-19"]);
+        assert_eq!(mixed.off_schedule_dates, vec!["2026-10-21"]);
+
+        let qw14 = coverage
+            .schedule
+            .iter()
+            .find(|item| item.code == "QW1.4")
+            .unwrap();
+        assert_eq!(qw14.day, "Rabu");
+        assert_eq!(qw14.expected_dates, vec!["2026-10-21"]);
     }
 }

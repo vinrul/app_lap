@@ -336,10 +336,52 @@ pub struct CoverageResponse {
     pub programs: Vec<CoverageProgram>,
     /// Kartu per sub-kode Quick Wins, dihitung otomatis dari isian laporan.
     pub codes: Vec<CoverageProgram>,
+    /// Kepatuhan jadwal mingguan untuk QW1.1–QW1.8.
+    pub schedule: Vec<CoverageSchedule>,
     /// Ringkasan amplifikasi media dari tautan berita/media sosial.
     pub media_metrics: Vec<CoverageMetric>,
     /// Rekap media per kegiatan dan per satuan.
     pub media_tables: Vec<CoverageTable>,
+}
+
+/// Jadwal satu sub-kode QW1 beserta status tiap polres/satker.
+#[derive(Clone, Debug, Serialize)]
+pub struct CoverageSchedule {
+    pub code: String,
+    pub title: String,
+    /// Nama hari dalam bahasa Indonesia, mis. "Senin".
+    pub day: String,
+    /// 1 = Senin sampai 7 = Minggu.
+    pub weekday: u8,
+    /// Tanggal yang jatuh pada hari tersebut di dalam periode.
+    pub expected_dates: Vec<String>,
+    pub polres: Vec<CoverageScheduleUnit>,
+    pub satker: Vec<CoverageScheduleUnit>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CoverageScheduleUnit {
+    pub label: String,
+    /// `on_time`, `off_schedule`, `missing`, atau `not_scheduled`.
+    pub status: String,
+    pub on_time_rows: i64,
+    pub off_schedule_rows: i64,
+    pub on_time_dates: Vec<String>,
+    pub off_schedule_dates: Vec<String>,
+    /// Rincian pelapor tingkat polsek untuk unit polres.
+    pub polsek: Vec<CoverageScheduleChild>,
+    /// Rincian pelapor satker tingkat polres.
+    pub satker: Vec<CoverageScheduleChild>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CoverageScheduleChild {
+    pub label: String,
+    pub status: String,
+    pub on_time_rows: i64,
+    pub off_schedule_rows: i64,
+    pub on_time_dates: Vec<String>,
+    pub off_schedule_dates: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

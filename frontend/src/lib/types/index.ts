@@ -185,7 +185,61 @@ export interface LayoutView {
   layout: ReportLayout
   updated_at: string | null
   updated_by: string | null
+  revision: number
 }
+
+export interface LayoutBlockPatch {
+  id: string
+  block: LayoutBlockOffset
+}
+
+export interface LayoutPagePatch {
+  page: number
+  background?: string
+  background_mode?: LayoutPage['background_mode']
+  gradient_angle?: number
+  gradient_colors?: string[]
+  elements_upsert?: LayoutElement[]
+  elements_remove?: string[]
+  blocks_upsert?: LayoutBlockPatch[]
+  blocks_remove?: string[]
+}
+
+export interface LayoutPatch {
+  base_revision: number
+  mode?: string
+  orientation?: string
+  pages?: LayoutPagePatch[]
+  replace?: ReportLayout
+}
+
+export interface DesignEditor {
+  client_id: string
+  user_id: string
+  username: string
+  page: number
+}
+
+export type DesignLiveEvent =
+  | {
+      type: 'hello'
+      revision: number
+      layout: ReportLayout
+      updated_at: string | null
+      updated_by: string | null
+      editors: DesignEditor[]
+    }
+  | {
+      type: 'patch'
+      revision: number
+      client_id: string
+      updated_at: string | null
+      updated_by: string | null
+      patch: LayoutPatch
+      /** Layout lengkap hasil penggabungan di server, bila tersedia. */
+      layout?: ReportLayout
+    }
+  | { type: 'presence'; editors: DesignEditor[] }
 
 export interface UploadedDesignImage {
   id: string
@@ -628,8 +682,46 @@ export interface CoverageResponse {
   groups: CoverageGroup[]
   programs: CoverageProgram[]
   codes: CoverageProgram[]
+  schedule: CoverageSchedule[]
   media_metrics?: CoverageMetric[]
   media_tables?: CoverageTable[]
+}
+
+/** `not_scheduled` dipakai bila periode tidak memuat hari jadwal tersebut. */
+export type CoverageScheduleStatus =
+  | 'on_time'
+  | 'off_schedule'
+  | 'missing'
+  | 'not_scheduled'
+
+export interface CoverageScheduleUnit {
+  label: string
+  status: CoverageScheduleStatus
+  on_time_rows: number
+  off_schedule_rows: number
+  on_time_dates: string[]
+  off_schedule_dates: string[]
+  polsek: CoverageScheduleChild[]
+  satker: CoverageScheduleChild[]
+}
+
+export interface CoverageScheduleChild {
+  label: string
+  status: CoverageScheduleStatus
+  on_time_rows: number
+  off_schedule_rows: number
+  on_time_dates: string[]
+  off_schedule_dates: string[]
+}
+
+export interface CoverageSchedule {
+  code: string
+  title: string
+  day: string
+  weekday: number
+  expected_dates: string[]
+  polres: CoverageScheduleUnit[]
+  satker: CoverageScheduleUnit[]
 }
 
 export interface CoverageGroup {
