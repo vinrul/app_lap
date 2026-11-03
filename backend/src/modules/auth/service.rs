@@ -116,6 +116,7 @@ pub async fn change_password(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn create_session(
     db: &SqlitePool,
     user_id: &str,
