@@ -51,30 +51,7 @@ pub async fn run() -> anyhow::Result<()> {
         http,
     };
 
-    match evidence::resume_pending_downloads(
-        &state.db,
-        state.config.clone(),
-        state.evidence_downloads.clone(),
-        state.hub.clone(),
-        state.jobs.clone(),
-        state.shutdown.clone(),
-    )
-    .await
-    {
-        Ok(0) => {}
-        Ok(count) => {
-            info!(count, "melanjutkan unduhan bukti dukung yang tertunda");
-        }
-        Err(error) => {
-            tracing::warn!(%error, "gagal melanjutkan unduhan bukti dukung yang tertunda");
-        }
-    }
-
     let router = app::build_router(state.clone());
-
-    // Permintaan pertama setelah server hidup tidak perlu menanggung
-    // pembacaan disk dari nol untuk periode yang paling sering dibuka.
-    tokio::spawn(warm_latest_period(state.clone()));
 
     let listener = tokio::net::TcpListener::bind((config.bind_addr, config.port)).await?;
     info!(
@@ -82,15 +59,42 @@ pub async fn run() -> anyhow::Result<()> {
         config.bind_addr, config.port
     );
 
-    // Pemindaian dokumentasi bisa memakan waktu pada database besar karena
-    // harus menghitung target per periode. Jalankan setelah listener siap agar
-    // port tidak tertahan.
+    // Pekerjaan lanjutan dijalankan setelah listener siap agar pembukaan port
+    // tidak menunggu query atau proses latar belakang apa pun.
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            match evidence::resume_pending_downloads(
+                &state.db,
+                state.config.clone(),
+                state.evidence_downloads.clone(),
+                state.hub.clone(),
+                state.jobs.clone(),
+                state.shutdown.clone(),
+            )
+            .await
+            {
+                Ok(0) => {}
+                Ok(count) => {
+                    info!(count, "melanjutkan unduhan bukti dukung yang tertunda");
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "gagal melanjutkan unduhan bukti dukung yang tertunda");
+                }
+            }
+        }
+    });
+
     tokio::spawn({
         let state = state.clone();
         async move {
             crate::modules::documentation::resume(&state).await;
         }
     });
+
+    // Permintaan pertama setelah server hidup tidak perlu menanggung
+    // pembacaan disk dari nol untuk periode yang paling sering dibuka.
+    tokio::spawn(warm_latest_period(state.clone()));
     if !config.bind_addr.is_loopback() {
         if config.allowed_hosts.is_empty() {
             tracing::warn!(
