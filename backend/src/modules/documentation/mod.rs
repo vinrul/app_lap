@@ -119,29 +119,16 @@ async fn list(
     let mut stats: HashMap<i64, EvidenceStats> = HashMap::new();
     for row in evidence_rows(&state.db, &start, &end).await? {
         let row_id: i64 = row.get("row_id");
-        let content_type: String = row.get("content_type");
-        let evidence_status: String = row.get("evidence_status");
-        let analysis: Option<String> = row.try_get("analysis_status").ok().flatten();
-        let reason: Option<String> = row.try_get("reason").ok().flatten();
-        let entry = stats.entry(row_id).or_default();
-        if !content_type.starts_with("image/") || evidence_status != "ready" {
-            continue;
-        }
-        entry.images += 1;
-        match analysis.as_deref() {
-            Some("valid") => {
-                entry.valid += 1;
-                entry.analyzed += 1;
-            }
-            Some(_) => {
-                entry.manual += 1;
-                entry.analyzed += 1;
-                if entry.reason.is_empty() {
-                    entry.reason = reason.unwrap_or_default();
-                }
-            }
-            None => {}
-        }
+        stats.insert(
+            row_id,
+            EvidenceStats {
+                images: row.get("images"),
+                valid: row.get("valid_count"),
+                manual: row.get("manual_count"),
+                analyzed: row.get("analyzed_count"),
+                reason: row.get("reason"),
+            },
+        );
     }
 
     let mut summary = DocumentationSummary::default();
@@ -855,18 +842,19 @@ async fn store_analysis(db: &SqlitePool, evidence_id: &str, row_id: i64, result:
     .await;
 }
 
-fn ranked_rows() -> &'static str {
-    "WITH ranked AS (
-        SELECT r.id, r.tanggal, r.unit, r.polres, r.polsek, r.satker,
-               r.parsed_json, r.bukti_dukung, r.latitude, r.longitude,
-               ROW_NUMBER() OVER (
-                   PARTITION BY lower(trim(r.dedupe_key))
-                   ORDER BY i.created_at DESC, i.id DESC, r.source_row DESC
-               ) AS rn
-        FROM import_rows r
-        JOIN imports i ON i.id = r.import_id
-        WHERE r.tanggal BETWEEN ? AND ?
-    )"
+fn ranked_rows(columns: &str) -> String {
+    format!(
+        "WITH ranked AS (
+            SELECT {columns},
+                   ROW_NUMBER() OVER (
+                       PARTITION BY lower(trim(r.dedupe_key))
+                       ORDER BY i.created_at DESC, i.id DESC, r.source_row DESC
+                   ) AS rn
+            FROM import_rows r
+            JOIN imports i ON i.id = r.import_id
+            WHERE r.tanggal BETWEEN ? AND ?
+        )"
+    )
 }
 
 async fn period_rows(
@@ -880,7 +868,9 @@ async fn period_rows(
                          NULLIF(TRIM(polres), ''), TRIM(satker)) AS unit,
                 parsed_json, bukti_dukung
          FROM ranked WHERE rn = 1 ORDER BY tanggal ASC, unit ASC, id ASC",
-        ranked_rows()
+        ranked_rows(
+            "r.id, r.tanggal, r.unit, r.polres, r.polsek, r.satker, r.parsed_json, r.bukti_dukung"
+        )
     );
     sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(start)
@@ -896,12 +886,22 @@ async fn evidence_rows(
     end: &str,
 ) -> ApiResult<Vec<sqlx::sqlite::SqliteRow>> {
     let sql = format!(
-        "{} SELECT e.row_id, e.content_type, e.status AS evidence_status,
-                a.status AS analysis_status, a.reason
+        "{} SELECT e.row_id,
+                COUNT(*) AS images,
+                SUM(CASE WHEN a.status = 'valid' THEN 1 ELSE 0 END) AS valid_count,
+                SUM(CASE WHEN a.status IS NOT NULL AND a.status <> 'valid' THEN 1 ELSE 0 END)
+                    AS manual_count,
+                SUM(CASE WHEN a.status IS NOT NULL THEN 1 ELSE 0 END) AS analyzed_count,
+                COALESCE(MIN(CASE
+                    WHEN a.status IS NOT NULL AND a.status <> 'valid' AND a.reason <> ''
+                    THEN a.reason
+                END), '') AS reason
          FROM import_evidence e
          JOIN ranked r ON r.id = e.row_id AND r.rn = 1
-         LEFT JOIN evidence_analysis a ON a.evidence_id = e.id",
-        ranked_rows()
+         LEFT JOIN evidence_analysis a ON a.evidence_id = e.id
+         WHERE e.status = 'ready' AND e.content_type LIKE 'image/%'
+         GROUP BY e.row_id",
+        ranked_rows("r.id")
     );
     sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(start)
@@ -926,7 +926,7 @@ async fn scan_targets(db: &SqlitePool, start: &str, end: &str, force: bool) -> V
          WHERE e.status = 'ready' AND e.content_type LIKE 'image/%'
            {filter}
          ORDER BY e.row_id, e.id",
-        ranked_rows()
+        ranked_rows("r.id, r.tanggal, r.latitude, r.longitude")
     );
     sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(start)
