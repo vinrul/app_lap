@@ -220,9 +220,29 @@ export interface DesignEditor {
   page: number
 }
 
-export type DesignLiveEvent =
+export type RealtimeClientMessage =
+  | { type: 'subscribe'; period_id: string; client_id: string; page: number }
+  | { type: 'unsubscribe' }
+  | { type: 'presence'; page: number }
+  | { type: 'design_patch'; request_id: string; patch: LayoutPatch }
   | {
-      type: 'hello'
+      type: 'drag'
+      page: number
+      element: string
+      phase: 'start' | 'move' | 'end'
+      x: number
+      y: number
+    }
+  | { type: 'watch_job'; job: string }
+  | { type: 'cancel'; job: string }
+  | { type: 'ping' }
+
+export type RealtimeServerMessage =
+  | { type: 'hello'; username: string; server_time: string; session: string }
+  | {
+      type: 'design_hello'
+      period_id: string
+      client_id: string
       revision: number
       layout: ReportLayout
       updated_at: string | null
@@ -230,20 +250,102 @@ export type DesignLiveEvent =
       editors: DesignEditor[]
     }
   | {
-      type: 'patch'
+      type: 'design_patch'
+      period_id: string
       revision: number
       client_id: string
       updated_at: string | null
       updated_by: string | null
       patch: LayoutPatch
-      /** Layout lengkap hasil penggabungan di server, bila tersedia. */
       layout?: ReportLayout
     }
-  | { type: 'presence'; editors: DesignEditor[] }
+  | {
+      type: 'design_saved'
+      period_id: string
+      request_id: string
+      revision: number
+      updated_at: string | null
+      updated_by: string | null
+      layout?: ReportLayout
+    }
+  | { type: 'design_presence'; period_id: string; editors: DesignEditor[] }
+  | {
+      type: 'drag'
+      period_id: string
+      client_id: string
+      page: number
+      element: string
+      phase: string
+      x: number
+      y: number
+    }
+  | {
+      type: 'job_state'
+      job: string
+      kind: string
+      phase: string
+      total: number
+      ready: number
+      failed: number
+      skipped: number
+      pending: number
+    }
+  | {
+      type: 'job_finished'
+      job: string
+      status: string
+      total: number
+      ready: number
+      failed: number
+      skipped: number
+      pending: number
+    }
+  | {
+      type: 'notification_created'
+      id: string
+      kind: string
+      level: string
+      title: string
+      body: string
+      url: string
+      created_at: string
+    }
+  | { type: 'notification_count'; unread: number }
+  | { type: 'session_revoked'; token: string }
+  | { type: 'error'; code: string; message: string }
+  | { type: 'pong' }
 
 export interface UploadedDesignImage {
   id: string
   url: string
+}
+
+export interface NotificationItem {
+  id: string
+  kind: string
+  level: string
+  title: string
+  body: string
+  url: string
+  read_at: string | null
+  created_at: string
+}
+
+export interface NotificationList {
+  items: NotificationItem[]
+  unread: number
+}
+
+export interface AdminSession {
+  id: number
+  user_id: string
+  username: string
+  role: string
+  created_at: string
+  expires_at: string
+  last_seen_at: string
+  ip: string
+  user_agent: string
 }
 
 export interface MediaItem {

@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 argon2 = { version = "0.6.0", features = ["rand_core"] }
-axum = { version = "0.8.9", features = ["multipart"] }
+axum = { version = "0.8.9", features = ["multipart", "ws"] }
 base64 = "0.22.1"
 calamine = "0.37.0"
 chrono = { version = "0.4.45", features = ["serde"] }
@@ -29,3 +29,4 @@ uuid = { version = "1.28.0", features = ["v4", "serde"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+tokio-tungstenite = "0.29.0"

@@ -9,6 +9,8 @@ pub struct AuthUser {
     pub role: String,
     pub polres: String,
     pub satker: String,
+    /// Token sesi mentah; dipakai untuk penanda sesi pada kanal realtime.
+    pub token: String,
 }
 
 /// Batas data yang boleh dilihat oleh peran baca-saja.

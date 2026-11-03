@@ -68,6 +68,9 @@ pub struct PublicShareView {
 pub struct GenerateReportRequest {
     #[serde(default)]
     pub content: Option<ReportContent>,
+    /// Dipakai klien untuk memantau progres pekerjaan PDF.
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

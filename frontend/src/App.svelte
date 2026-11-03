@@ -18,8 +18,55 @@
   import EvidencePreview from './lib/components/ui/EvidencePreview.svelte'
   import Button from './lib/components/ui/Button.svelte'
   import EmptyState from './lib/components/ui/EmptyState.svelte'
+  import { realtime } from './lib/realtime/socket'
+  import { notifications } from './lib/stores/notifications.svelte'
 
   let bootError = $state('')
+  let offRealtime: (() => void) | null = null
+  let offRealtimeStatus: (() => void) | null = null
+  let realtimeWired = false
+
+  $effect(() => {
+    const user = auth.user
+    if (!user) {
+      if (realtimeWired) {
+        offRealtime?.()
+        offRealtime = null
+        offRealtimeStatus?.()
+        offRealtimeStatus = null
+        realtimeWired = false
+        notifications.reset()
+      }
+      return
+    }
+    if (realtimeWired) return
+    realtimeWired = true
+    offRealtime = realtime.onMessage((message) => {
+      if (message.type === 'notification_created') {
+        notifications.push({
+          id: message.id,
+          kind: message.kind,
+          level: message.level,
+          title: message.title,
+          body: message.body,
+          url: message.url,
+          read_at: null,
+          created_at: message.created_at,
+        })
+      } else if (message.type === 'notification_count') {
+        notifications.setUnread(message.unread)
+      } else if (message.type === 'session_revoked' && message.token === realtime.sessionId) {
+        toast.error('Sesi Anda dicabut oleh administrator.')
+        void auth.logout()
+      }
+    })
+    // Setelah tersambung ulang, ambil notifikasi yang terlewat.
+    offRealtimeStatus = realtime.onStatus((status) => {
+      if (status === 'online') void notifications.load()
+    })
+    realtime.connect()
+    void notifications.load()
+  })
 
   onMount(() => {
     window.addEventListener('hashchange', router.sync)

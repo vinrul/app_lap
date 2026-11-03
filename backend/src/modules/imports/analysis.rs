@@ -101,15 +101,13 @@ fn clean_link(value: &str) -> String {
 }
 
 fn find_map_url(text: &str) -> Option<String> {
-    text.split_whitespace()
-        .map(clean_link)
-        .find(|token| {
-            let lower = token.to_ascii_lowercase();
-            is_url(&lower)
-                && (lower.contains("maps")
-                    || lower.contains("openstreetmap")
-                    || lower.contains("goo.gl/maps"))
-        })
+    text.split_whitespace().map(clean_link).find(|token| {
+        let lower = token.to_ascii_lowercase();
+        is_url(&lower)
+            && (lower.contains("maps")
+                || lower.contains("openstreetmap")
+                || lower.contains("goo.gl/maps"))
+    })
 }
 
 pub fn coordinates_from_url(url: &str) -> Option<(f64, f64)> {
@@ -139,8 +137,8 @@ pub fn coordinates_from_text(text: &str) -> Option<(f64, f64)> {
     }
     let lower = text.to_ascii_lowercase();
 
-    let labeled_latitude = labeled_value(&lower, text, "latitude")
-        .or_else(|| labeled_value(&lower, text, "lat"));
+    let labeled_latitude =
+        labeled_value(&lower, text, "latitude").or_else(|| labeled_value(&lower, text, "lat"));
     let labeled_longitude = labeled_value(&lower, text, "longitude")
         .or_else(|| labeled_value(&lower, text, "lon"))
         .or_else(|| labeled_value(&lower, text, "lng"));

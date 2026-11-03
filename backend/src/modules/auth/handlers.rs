@@ -1,5 +1,10 @@
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::{ConnectInfo, State},
+    http::{HeaderMap, StatusCode, header},
+};
 use serde_json::json;
+use std::net::SocketAddr;
 use time::Duration as TimeDuration;
 use tower_cookies::{Cookie, Cookies};
 
@@ -17,6 +22,8 @@ use crate::{
 pub async fn login(
     State(state): State<AppState>,
     cookies: Cookies,
+    headers: HeaderMap,
+    connect: ConnectInfo<SocketAddr>,
     Json(input): Json<LoginRequest>,
 ) -> ApiResult<Json<UserView>> {
     if input.username.trim().is_empty() || input.password.is_empty() {
@@ -26,8 +33,19 @@ pub async fn login(
     }
 
     let user = service::authenticate(&state.db, &input.username, &input.password).await?;
-    let (token, _expires) =
-        service::create_session(&state.db, &user.id, state.config.session_hours).await?;
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let ip = connect.0.ip().to_string();
+    let (token, _expires) = service::create_session_with_context(
+        &state.db,
+        &user.id,
+        state.config.session_hours,
+        user_agent,
+        &ip,
+    )
+    .await?;
 
     let mut cookie = Cookie::new(COOKIE_NAME, token);
     cookie.set_http_only(true);

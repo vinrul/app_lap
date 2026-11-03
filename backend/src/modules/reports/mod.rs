@@ -2,7 +2,6 @@ pub mod fonts;
 mod handlers;
 pub mod icons;
 pub mod layout;
-pub mod live;
 pub mod metrics;
 pub mod models;
 pub mod render;
@@ -33,22 +32,14 @@ pub fn period_routes() -> Router<AppState> {
             post(handlers::preview_render),
         )
         .route(
+            "/periods/{period_id}/reports/{request_id}/cancel",
+            post(handlers::cancel_report),
+        )
+        .route(
             "/periods/{period_id}/layout",
             get(handlers::get_layout)
                 .put(handlers::save_layout)
                 .patch(handlers::patch_layout),
-        )
-        .route(
-            "/periods/{period_id}/design/live",
-            get(handlers::design_live),
-        )
-        .route(
-            "/periods/{period_id}/design/presence",
-            post(handlers::design_presence),
-        )
-        .route(
-            "/periods/{period_id}/design/presence/leave",
-            post(handlers::design_presence_leave),
         )
         .route(
             "/periods/{period_id}/design/sources",

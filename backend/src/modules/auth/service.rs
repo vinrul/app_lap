@@ -54,12 +54,14 @@ pub async fn authenticate(db: &SqlitePool, username: &str, password: &str) -> Ap
         return Err(ApiError::unauthorized());
     }
 
+    use sqlx::Row;
     Ok(AuthUser {
         id: row.get("id"),
         username: row.get("username"),
         role: row.get("role"),
         polres: row.get("polres"),
         satker: row.get("satker"),
+        token: String::new(),
     })
 }
 
@@ -119,16 +121,133 @@ pub async fn create_session(
     user_id: &str,
     hours: i64,
 ) -> ApiResult<(String, chrono::DateTime<Utc>)> {
+    create_session_with_context(db, user_id, hours, "", "").await
+}
+
+pub async fn create_session_with_context(
+    db: &SqlitePool,
+    user_id: &str,
+    hours: i64,
+    user_agent: &str,
+    ip: &str,
+) -> ApiResult<(String, chrono::DateTime<Utc>)> {
     let token = random_token()?;
     let expires = Utc::now() + Duration::hours(hours);
-    sqlx::query("INSERT INTO sessions(token,user_id,expires_at) VALUES(?,?,?)")
-        .bind(&token)
-        .bind(user_id)
-        .bind(expires.to_rfc3339())
+    sqlx::query(
+        "INSERT INTO sessions(token,user_id,expires_at,user_agent,ip,last_seen_at)
+         VALUES(?,?,?,?,?,?)",
+    )
+    .bind(&token)
+    .bind(user_id)
+    .bind(expires.to_rfc3339())
+    .bind(user_agent.chars().take(240).collect::<String>())
+    .bind(ip.chars().take(60).collect::<String>())
+    .bind(Utc::now().to_rfc3339())
+    .execute(db)
+    .await
+    .map_err(ApiError::internal)?;
+    Ok((token, expires))
+}
+
+/// Penanda sesi singkat untuk kanal realtime (tidak membocorkan token asli).
+pub fn token_hash(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(token.as_bytes());
+    hex::encode(digest).chars().take(16).collect()
+}
+
+/// Memperbarui waktu terakhir sesi dipakai, paling sering sekali per menit.
+pub async fn touch_session(db: &SqlitePool, token: &str) {
+    let now = Utc::now().to_rfc3339();
+    let cutoff = (Utc::now() - Duration::seconds(60)).to_rfc3339();
+    let _ = sqlx::query(
+        "UPDATE sessions SET last_seen_at = ?
+         WHERE token = ? AND (last_seen_at = '' OR last_seen_at < ?)",
+    )
+    .bind(now)
+    .bind(token)
+    .bind(cutoff)
+    .execute(db)
+    .await;
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SessionView {
+    pub id: i64,
+    pub user_id: String,
+    pub username: String,
+    pub role: String,
+    pub created_at: String,
+    pub expires_at: String,
+    pub last_seen_at: String,
+    pub ip: String,
+    pub user_agent: String,
+}
+
+pub async fn list_sessions(db: &SqlitePool) -> ApiResult<Vec<SessionView>> {
+    let rows = sqlx::query(
+        "SELECT sessions.rowid AS id, sessions.user_id, users.username, users.role,
+                sessions.created_at, sessions.expires_at, sessions.last_seen_at,
+                sessions.ip, sessions.user_agent
+         FROM sessions
+         JOIN users ON users.id = sessions.user_id
+         WHERE sessions.expires_at > ?
+         ORDER BY sessions.last_seen_at DESC, sessions.created_at DESC",
+    )
+    .bind(Utc::now().to_rfc3339())
+    .fetch_all(db)
+    .await
+    .map_err(ApiError::internal)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| SessionView {
+            id: row.get("id"),
+            user_id: row.get("user_id"),
+            username: row.get("username"),
+            role: row.get("role"),
+            created_at: row.get("created_at"),
+            expires_at: row.get("expires_at"),
+            last_seen_at: row.get("last_seen_at"),
+            ip: row.get("ip"),
+            user_agent: row.get("user_agent"),
+        })
+        .collect())
+}
+
+/// Menghapus satu sesi. Mengembalikan `(user_id, token)` bila ada.
+pub async fn revoke_session(db: &SqlitePool, id: i64) -> ApiResult<Option<(String, String)>> {
+    let row = sqlx::query("SELECT user_id, token FROM sessions WHERE rowid = ?")
+        .bind(id)
+        .fetch_optional(db)
+        .await
+        .map_err(ApiError::internal)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let user_id: String = row.get("user_id");
+    let token: String = row.get("token");
+    sqlx::query("DELETE FROM sessions WHERE rowid = ?")
+        .bind(id)
         .execute(db)
         .await
         .map_err(ApiError::internal)?;
-    Ok((token, expires))
+    Ok(Some((user_id, token)))
+}
+
+/// Menghapus semua sesi pengguna dan mengembalikan token-tokennya.
+pub async fn revoke_user_sessions(db: &SqlitePool, user_id: &str) -> ApiResult<Vec<String>> {
+    let tokens: Vec<String> = sqlx::query_scalar("SELECT token FROM sessions WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_all(db)
+        .await
+        .map_err(ApiError::internal)?;
+    sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+        .bind(user_id)
+        .execute(db)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(tokens)
 }
 
 pub async fn delete_session(db: &SqlitePool, token: &str) -> ApiResult<()> {

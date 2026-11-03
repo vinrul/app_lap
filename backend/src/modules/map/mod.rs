@@ -110,10 +110,9 @@ fn tile_cache_path(state: &AppState, z: u32, x: u32, y: u32) -> PathBuf {
 
 fn tile_response(bytes: Vec<u8>) -> ApiResult<Response> {
     let mut response = Response::new(Body::from(bytes));
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("image/png"),
-    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=604800"),

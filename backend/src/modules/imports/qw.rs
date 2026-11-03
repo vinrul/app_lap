@@ -47,7 +47,11 @@ pub const GROUPS: &[QuickWinGroup] = &[
 ];
 
 pub const CODES: &[QuickWinCode] = &[
-    code("QW1.1", "QW1", "Gatur Pagi (Pengaturan Lalu Lintas Senin Pagi oleh Ka/Waka)"),
+    code(
+        "QW1.1",
+        "QW1",
+        "Gatur Pagi (Pengaturan Lalu Lintas Senin Pagi oleh Ka/Waka)",
+    ),
     code("QW1.2", "QW1", "Polisi Peduli Pendidikan (Polidik)"),
     code("QW1.3", "QW1", "Polisi Peduli Pengangguran (Poliran)"),
     code("QW1.4", "QW1", "Kumpul Bersama Masyarakat"),
@@ -61,7 +65,11 @@ pub const CODES: &[QuickWinCode] = &[
     code("QW1.12", "QW1", "Pencegahan ekstremisme pada anak"),
     code("QW1.13", "QW1", "Polisi Peduli Pangan"),
     code("QW1.14", "QW1", "DIMTAQ (Disiplin Iman dan Taqwa)"),
-    code("QW2.1", "QW2", "Pemberantasan dan pemulihan kawasan narkoba"),
+    code(
+        "QW2.1",
+        "QW2",
+        "Pemberantasan dan pemulihan kawasan narkoba",
+    ),
     code("QW2.2", "QW2", "Pembinaan kawasan bersama BNN dan Pemda"),
     code("QW2.3", "QW2", "Rujukan rehabilitasi pengguna"),
     code("QW2.4", "QW2", "Penyuluhan bahaya narkoba"),
@@ -92,7 +100,11 @@ pub const CODES: &[QuickWinCode] = &[
     code("QW7.2", "QW7", "Penataan Personel"),
     code("QW7.3", "QW7", "Polsek Siaga 24 Jam"),
     code("QW7.4", "QW7", "Perkara Ringan dan Rembuk Warga"),
-    code("QW8.1", "QW8", "Penanganan BBM Ilegal dan Kejahatan Ekonomi"),
+    code(
+        "QW8.1",
+        "QW8",
+        "Penanganan BBM Ilegal dan Kejahatan Ekonomi",
+    ),
     code(
         "QW8.2",
         "QW8",

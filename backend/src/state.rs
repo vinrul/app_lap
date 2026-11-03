@@ -6,7 +6,10 @@ use std::{
 use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 
-use crate::{config::Config, modules::reports::live::DesignLive};
+use crate::{
+    config::Config,
+    modules::live::{Hub, JobRegistry},
+};
 
 #[derive(Default)]
 pub struct EvidenceDownloadLocks {
@@ -115,7 +118,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub pdf_lock: Arc<Mutex<()>>,
     pub evidence_downloads: Arc<EvidenceDownloadLocks>,
-    pub design_live: Arc<DesignLive>,
+    pub hub: Arc<Hub>,
+    pub jobs: Arc<JobRegistry>,
     pub design_lock: Arc<Mutex<()>>,
     pub shutdown: ShutdownSignal,
     pub http: reqwest::Client,

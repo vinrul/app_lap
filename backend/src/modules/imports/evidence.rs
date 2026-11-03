@@ -19,7 +19,11 @@ use uuid::Uuid;
 use crate::{
     config::Config,
     error::{ApiError, ApiResult},
-    modules::imports::{drive, evidence_store},
+    modules::{
+        imports::{drive, evidence_store},
+        live::{Hub, JobHandle, JobRegistry, ServerMessage},
+        notifications,
+    },
     state::{EvidenceDownloadLocks, ShutdownSignal},
 };
 
@@ -30,27 +34,53 @@ const MAX_DRIVE_FILES: usize = 100;
 const MAX_DRIVE_SKIPPED: usize = 100;
 /// Batas id per pernyataan agar tidak melewati batas parameter SQLite.
 const MAX_UPDATE_BATCH: usize = 500;
+/// Jenis pekerjaan pada kanal realtime.
+const JOB_KIND: &str = "import";
+
+pub fn job_id(import_id: &str) -> String {
+    format!("import:{import_id}")
+}
 
 pub fn spawn_import_downloads(
     db: SqlitePool,
     config: Arc<Config>,
     locks: Arc<EvidenceDownloadLocks>,
+    hub: Arc<Hub>,
+    jobs: Arc<JobRegistry>,
     import_id: String,
     shutdown: ShutdownSignal,
 ) -> bool {
     if !locks.claim(&import_id) {
         return false;
     }
+    let job = job_id(&import_id);
+    let cancel = jobs.start(&job);
     tokio::spawn(async move {
+        let mut status = "done";
+        publish_state(&hub, &db, &job, &import_id, "queued").await;
         loop {
             if shutdown.is_shutdown() {
                 locks.release(&import_id);
+                status = "interrupted";
                 break;
             }
-            if let Err(error) = process_import(&db, &config, &import_id, &shutdown).await {
+            if cancel.is_cancelled() {
+                locks.release(&import_id);
+                status = "cancelled";
+                break;
+            }
+            if let Err(error) =
+                process_import(&db, &config, &import_id, &shutdown, &hub, &job, &cancel).await
+            {
                 tracing::warn!(%error, %import_id, "unduhan bukti dukung gagal diproses");
             }
+            if cancel.is_cancelled() {
+                locks.release(&import_id);
+                status = "cancelled";
+                break;
+            }
             if config.evidence_purge_superseded {
+                publish_state(&hub, &db, &job, &import_id, "purge").await;
                 purge_after_import(&db, &config, &import_id).await;
             }
             if !locks.continue_or_finish(&import_id) {
@@ -58,17 +88,130 @@ pub fn spawn_import_downloads(
             }
             if shutdown.is_shutdown() {
                 locks.release(&import_id);
+                status = "interrupted";
                 break;
             }
         }
+        jobs.finish(&job);
+        publish_finished(&hub, &db, &job, &import_id, status).await;
     });
     true
+}
+
+#[derive(Default)]
+struct ProgressCounts {
+    total: i64,
+    ready: i64,
+    failed: i64,
+    skipped: i64,
+    pending: i64,
+}
+
+async fn progress_counts(db: &SqlitePool, import_id: &str) -> ApiResult<ProgressCounts> {
+    let rows = sqlx::query(
+        "SELECT status, COUNT(*) AS total FROM import_evidence
+         WHERE import_id = ? GROUP BY status",
+    )
+    .bind(import_id)
+    .fetch_all(db)
+    .await
+    .map_err(ApiError::internal)?;
+
+    let mut counts = ProgressCounts::default();
+    for row in rows {
+        let status: String = row.get("status");
+        let total: i64 = row.get("total");
+        counts.total += total;
+        match status.as_str() {
+            "ready" => counts.ready += total,
+            "failed" => counts.failed += total,
+            "pending" => counts.pending += total,
+            _ => counts.skipped += total,
+        }
+    }
+    Ok(counts)
+}
+
+async fn publish_state(hub: &Hub, db: &SqlitePool, job: &str, import_id: &str, phase: &str) {
+    let Ok(counts) = progress_counts(db, import_id).await else {
+        return;
+    };
+    hub.publish(
+        job,
+        ServerMessage::JobState {
+            job: job.to_string(),
+            kind: JOB_KIND.to_string(),
+            phase: phase.to_string(),
+            total: counts.total,
+            ready: counts.ready,
+            failed: counts.failed,
+            skipped: counts.skipped,
+            pending: counts.pending,
+        },
+    )
+    .await;
+}
+
+async fn publish_finished(hub: &Hub, db: &SqlitePool, job: &str, import_id: &str, status: &str) {
+    let counts = progress_counts(db, import_id).await.unwrap_or_default();
+    hub.publish(
+        job,
+        ServerMessage::JobFinished {
+            job: job.to_string(),
+            status: status.to_string(),
+            total: counts.total,
+            ready: counts.ready,
+            failed: counts.failed,
+            skipped: counts.skipped,
+            pending: counts.pending,
+        },
+    )
+    .await;
+
+    let owner: Option<String> = sqlx::query_scalar("SELECT imported_by FROM imports WHERE id = ?")
+        .bind(import_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+    if let Some(owner) = owner {
+        let (level, title) = match status {
+            "cancelled" => ("info", "Unduhan bukti dukung dibatalkan"),
+            _ if counts.failed > 0 => ("warn", "Unduhan bukti dukung selesai dengan kegagalan"),
+            _ => ("info", "Unduhan bukti dukung selesai"),
+        };
+        let body = format!(
+            "{} berhasil, {} gagal, {} dilewati, {} belum diunduh.",
+            counts.ready, counts.failed, counts.skipped, counts.pending
+        );
+        notifications::notify(db, hub, &owner, "import", level, title, &body, "/#/imports").await;
+    }
+}
+
+/// Snapshot untuk klien yang baru mulai memantau pekerjaan impor.
+pub async fn job_state(db: &SqlitePool, job: &str) -> ApiResult<Option<ServerMessage>> {
+    let Some(import_id) = job.strip_prefix("import:") else {
+        return Ok(None);
+    };
+    let counts = progress_counts(db, import_id).await?;
+    Ok(Some(ServerMessage::JobState {
+        job: job.to_string(),
+        kind: JOB_KIND.to_string(),
+        phase: "running".to_string(),
+        total: counts.total,
+        ready: counts.ready,
+        failed: counts.failed,
+        skipped: counts.skipped,
+        pending: counts.pending,
+    }))
 }
 
 pub async fn resume_pending_downloads(
     db: &SqlitePool,
     config: Arc<Config>,
     locks: Arc<EvidenceDownloadLocks>,
+    hub: Arc<Hub>,
+    jobs: Arc<JobRegistry>,
     shutdown: ShutdownSignal,
 ) -> ApiResult<usize> {
     let import_ids: Vec<String> = sqlx::query_scalar(
@@ -89,6 +232,8 @@ pub async fn resume_pending_downloads(
             db.clone(),
             config.clone(),
             locks.clone(),
+            hub.clone(),
+            jobs.clone(),
             import_id,
             shutdown.clone(),
         ) {
@@ -102,6 +247,8 @@ pub async fn retry_import(
     db: &SqlitePool,
     config: Arc<Config>,
     locks: Arc<EvidenceDownloadLocks>,
+    hub: Arc<Hub>,
+    jobs: Arc<JobRegistry>,
     import_id: &str,
     shutdown: ShutdownSignal,
 ) -> ApiResult<u64> {
@@ -127,7 +274,15 @@ pub async fn retry_import(
     .map_err(ApiError::internal)?;
 
     if queued > 0
-        && !spawn_import_downloads(db.clone(), config, locks, import_id.to_string(), shutdown)
+        && !spawn_import_downloads(
+            db.clone(),
+            config,
+            locks,
+            hub,
+            jobs,
+            import_id.to_string(),
+            shutdown,
+        )
     {
         tracing::debug!(%import_id, "worker unduhan sudah berjalan; permintaan rerun dicatat");
     }
@@ -241,6 +396,9 @@ async fn process_import(
     config: &Config,
     import_id: &str,
     shutdown: &ShutdownSignal,
+    hub: &Hub,
+    job: &str,
+    cancel: &JobHandle,
 ) -> ApiResult<()> {
     let client = Client::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
@@ -252,7 +410,7 @@ async fn process_import(
     // anak yang baru dibuat agar unduhan folder ikut berjalan pada proses yang
     // sama, sementara status pending tetap tersimpan untuk auto-resume.
     for _pass in 0..2 {
-        if shutdown.is_shutdown() {
+        if shutdown.is_shutdown() || cancel.is_cancelled() {
             return Ok(());
         }
         let rows = sqlx::query(
@@ -295,11 +453,24 @@ async fn process_import(
             mark_many(db, &ids, "skipped", &reason).await;
         }
 
-        if !folders.is_empty() {
-            expand_drive_folders(db, config, import_id, &client, folders, shutdown).await;
+        if cancel.is_cancelled() {
+            return Ok(());
         }
 
-        download_groups(db, config, &client, groups, shutdown).await;
+        if !folders.is_empty() {
+            publish_state(hub, db, job, import_id, "expand").await;
+            expand_drive_folders(db, config, import_id, &client, folders, shutdown, cancel).await;
+        }
+
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
+
+        publish_state(hub, db, job, import_id, "download").await;
+        download_groups(
+            db, config, &client, groups, shutdown, hub, job, import_id, cancel,
+        )
+        .await;
     }
 
     Ok(())
@@ -312,6 +483,7 @@ async fn expand_drive_folders(
     client: &Client,
     folders: HashMap<String, Vec<(String, i64)>>,
     shutdown: &ShutdownSignal,
+    cancel: &JobHandle,
 ) {
     let Some(api_key) = config.google_drive_api_key.as_deref() else {
         for (_, parents) in folders {
@@ -328,7 +500,7 @@ async fn expand_drive_folders(
     };
 
     for (folder_id, parents) in folders {
-        if shutdown.is_shutdown() {
+        if shutdown.is_shutdown() || cancel.is_cancelled() {
             return;
         }
         let evidence_ids = parents.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
@@ -484,8 +656,12 @@ async fn download_groups(
     client: &Client,
     groups: HashMap<String, (Url, Vec<String>)>,
     shutdown: &ShutdownSignal,
+    hub: &Hub,
+    job: &str,
+    import_id: &str,
+    cancel: &JobHandle,
 ) {
-    if groups.is_empty() || shutdown.is_shutdown() {
+    if groups.is_empty() || shutdown.is_shutdown() || cancel.is_cancelled() {
         return;
     }
 
@@ -505,13 +681,18 @@ async fn download_groups(
         ));
     }
 
+    let mut completed = 0_usize;
     while let Some(result) = tasks.join_next().await {
         if let Err(error) = result {
             tracing::warn!(%error, "tugas unduhan bukti dukung berhenti");
         }
-        // Saat shutdown, tugas yang sedang berjalan diselesaikan tetapi tidak
-        // ada tugas baru yang dijadwalkan.
-        if shutdown.is_shutdown() {
+        completed += 1;
+        if completed % 5 == 0 {
+            publish_state(hub, db, job, import_id, "download").await;
+        }
+        // Saat shutdown atau dibatalkan, tugas yang sedang berjalan diselesaikan
+        // tetapi tidak ada tugas baru yang dijadwalkan.
+        if shutdown.is_shutdown() || cancel.is_cancelled() {
             continue;
         }
         let Some((target, ids)) = pending.next() else {
@@ -525,6 +706,7 @@ async fn download_groups(
             client.clone(),
         ));
     }
+    publish_state(hub, db, job, import_id, "download").await;
 }
 
 async fn download_group(

@@ -15,7 +15,9 @@ use crate::{
     error::{ApiError, ApiResult},
     modules::{
         auth::DataScope,
-        imports, periods,
+        imports,
+        live::{Hub, JobHandle, ServerMessage},
+        periods,
         reports::{
             layout::{
                 DesignTemplateView, LayoutPatch, LayoutView, MediaFilters, MediaItem, MediaOption,
@@ -1129,9 +1131,16 @@ pub async fn generate(
     db: &SqlitePool,
     config: &Config,
     pdf_lock: &Mutex<()>,
+    hub: &Hub,
+    job: &str,
+    handle: &JobHandle,
     user_id: &str,
     period_id: &str,
 ) -> ApiResult<ReportView> {
+    publish_phase(hub, job, "build").await;
+    if handle.is_cancelled() {
+        return Err(cancelled_pdf());
+    }
     let (start_date, end_date, label) = periods::service::dates(db, period_id).await?;
     let source_filename = source_summary(db, &start_date, &end_date).await?;
     let content = get_draft(db, period_id).await?.content;
@@ -1147,6 +1156,10 @@ pub async fn generate(
 
     let html_path = report_dir.join(format!("{report_id}.html"));
     let pdf_path = report_dir.join(format!("{report_id}.pdf"));
+    let chrome_dir = report_dir.join(format!("chrome-{report_id}"));
+    // Berkas sementara dibersihkan juga saat task dihentikan paksa (batal).
+    let mut files = ReportFiles::new(html_path.clone(), pdf_path.clone(), chrome_dir.clone());
+
     tokio::fs::write(&html_path, &html)
         .await
         .map_err(ApiError::internal)?;
@@ -1155,9 +1168,13 @@ pub async fn generate(
         let _ = tokio::fs::remove_file(&pdf_path).await;
     }
 
-    let chrome_dir = report_dir.join(format!("chrome-{report_id}"));
+    publish_phase(hub, job, "queue").await;
     let result = {
         let _guard = pdf_lock.lock().await;
+        if handle.is_cancelled() {
+            return Err(cancelled_pdf());
+        }
+        publish_phase(hub, job, "render").await;
         let output = Command::new(&config.chrome_path)
             .arg("--headless")
             .arg("--disable-gpu")
@@ -1171,6 +1188,7 @@ pub async fn generate(
             .arg("--virtual-time-budget=2000")
             .arg(format!("--print-to-pdf={}", pdf_path.display()))
             .arg(file_url(&html_path))
+            .kill_on_drop(true)
             .output()
             .await;
 
@@ -1189,8 +1207,11 @@ pub async fn generate(
         }
     };
 
-    let _ = tokio::fs::remove_dir_all(&chrome_dir).await;
+    if handle.is_cancelled() {
+        return Err(cancelled_pdf());
+    }
     result?;
+    publish_phase(hub, job, "finalize").await;
 
     let meta = tokio::fs::metadata(&pdf_path)
         .await
@@ -1233,6 +1254,7 @@ pub async fn generate(
     )
     .await?;
 
+    files.keep();
     Ok(ReportView {
         id: report_id.clone(),
         period_id: period_id.to_string(),
@@ -1242,6 +1264,61 @@ pub async fn generate(
         pdf_url: format!("/api/reports/{report_id}/pdf"),
         preview_url: format!("/api/reports/{report_id}/preview"),
     })
+}
+
+fn cancelled_pdf() -> ApiError {
+    ApiError::bad_request("Pembuatan PDF dibatalkan.")
+}
+
+async fn publish_phase(hub: &Hub, job: &str, phase: &str) {
+    hub.publish(
+        job,
+        ServerMessage::JobState {
+            job: job.to_string(),
+            kind: "pdf".to_string(),
+            phase: phase.to_string(),
+            total: 0,
+            ready: 0,
+            failed: 0,
+            skipped: 0,
+            pending: 0,
+        },
+    )
+    .await;
+}
+
+/// Membersihkan berkas sementara bila pembuatan PDF gagal atau dibatalkan.
+struct ReportFiles {
+    html: PathBuf,
+    pdf: PathBuf,
+    chrome: PathBuf,
+    keep: bool,
+}
+
+impl ReportFiles {
+    fn new(html: PathBuf, pdf: PathBuf, chrome: PathBuf) -> Self {
+        Self {
+            html,
+            pdf,
+            chrome,
+            keep: false,
+        }
+    }
+
+    fn keep(&mut self) {
+        self.keep = true;
+    }
+}
+
+impl Drop for ReportFiles {
+    fn drop(&mut self) {
+        if self.keep {
+            return;
+        }
+        let _ = std::fs::remove_dir_all(&self.chrome);
+        let _ = std::fs::remove_file(&self.html);
+        let _ = std::fs::remove_file(&self.pdf);
+    }
 }
 
 pub async fn stored_preview(

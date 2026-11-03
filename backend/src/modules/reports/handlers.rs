@@ -1,26 +1,24 @@
 use axum::{
+    Json,
     body::Body,
     extract::{Multipart, Path, Query, State},
-    http::{header, HeaderValue, StatusCode},
-    response::sse::{KeepAlive, Sse},
+    http::{HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
-    Json,
 };
 use serde_json::json;
-use std::time::Duration;
 
 use crate::{
     error::{ApiError, ApiResult},
     modules::{
         auth::AuthUser,
-        periods,
+        live::ServerMessage,
+        notifications,
         reports::{
             layout::{
                 DesignSource, DesignTemplateView, ImportMediaRequest, LayoutPatch, LayoutView,
                 MediaFilters, MediaItem, PatchLayoutRequest, SaveLayoutRequest,
                 SaveTemplateRequest, UploadedImage,
             },
-            live::{self, DesignEvent, EditorView, LiveQuery, PresenceRequest},
             models::{
                 DraftView, GenerateReportRequest, PreviewReportRequest, PreviewResponse,
                 PublicShareView, ReportContent, ReportMetrics, ReportShareView, ReportView,
@@ -90,17 +88,21 @@ pub async fn save_layout(
     let _guard = state.design_lock.lock().await;
     let view = service::save_layout(&state.db, &user.id, &period_id, input.layout).await?;
     state
-        .design_live
+        .hub
         .publish(
             &period_id,
-            DesignEvent::patch(
-                &view,
-                String::new(),
-                LayoutPatch {
+            ServerMessage::DesignPatch {
+                period_id: period_id.clone(),
+                revision: view.revision,
+                client_id: String::new(),
+                updated_at: view.updated_at.clone(),
+                updated_by: view.updated_by.clone(),
+                patch: LayoutPatch {
                     replace: Some(view.layout.clone()),
                     ..LayoutPatch::default()
                 },
-            ),
+                layout: None,
+            },
         )
         .await;
     Ok(Json(view))
@@ -117,105 +119,23 @@ pub async fn patch_layout(
     user.require_writer()?;
     let _guard = state.design_lock.lock().await;
     let view = service::apply_patch(&state.db, &user.id, &period_id, &input.patch).await?;
+    let snapshot = ServerMessage::snapshot(&view.layout);
     state
-        .design_live
+        .hub
         .publish(
             &period_id,
-            DesignEvent::patch(&view, input.client_id, input.patch),
+            ServerMessage::DesignPatch {
+                period_id: period_id.clone(),
+                revision: view.revision,
+                client_id: input.client_id,
+                updated_at: view.updated_at.clone(),
+                updated_by: view.updated_by.clone(),
+                patch: input.patch,
+                layout: snapshot,
+            },
         )
         .await;
     Ok(Json(view))
-}
-
-/// Aliran SSE perubahan desain sekaligus pendaftaran kehadiran editor.
-pub async fn design_live(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path(period_id): Path<String>,
-    Query(query): Query<LiveQuery>,
-) -> ApiResult<Response> {
-    user.require_writer()?;
-    let room = state.design_live.room(&period_id).await;
-    let receiver = room.subscribe();
-    let snapshot = service::get_layout(&state.db, &period_id).await?;
-    let client_id = if query.client_id.trim().is_empty() {
-        uuid::Uuid::new_v4().to_string()
-    } else {
-        query.client_id
-    };
-    let editors = room
-        .join(EditorView {
-            client_id,
-            user_id: user.id,
-            username: user.username,
-            page: query.page.unwrap_or(1).max(1),
-        })
-        .await;
-    let initial = DesignEvent::Hello {
-        revision: snapshot.revision,
-        layout: snapshot.layout,
-        updated_at: snapshot.updated_at,
-        updated_by: snapshot.updated_by,
-        editors,
-    };
-    let stream = live::stream(initial, receiver, state.shutdown.clone());
-    let mut response = Sse::new(stream)
-        .keep_alive(
-            KeepAlive::new()
-                .interval(Duration::from_secs(15))
-                .text("keep-alive"),
-        )
-        .into_response();
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    response.headers_mut().insert(
-        header::HeaderName::from_static("x-accel-buffering"),
-        HeaderValue::from_static("no"),
-    );
-    Ok(response)
-}
-
-pub async fn design_presence(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path(period_id): Path<String>,
-    Json(input): Json<PresenceRequest>,
-) -> ApiResult<StatusCode> {
-    user.require_writer()?;
-    if input.client_id.trim().is_empty() {
-        return Err(ApiError::bad_request("client_id wajib diisi."));
-    }
-    periods::service::get(&state.db, &period_id).await?;
-    let room = state.design_live.room(&period_id).await;
-    room.heartbeat(EditorView {
-        client_id: input.client_id,
-        user_id: user.id,
-        username: user.username,
-        page: input.page.unwrap_or(1).max(1),
-    })
-    .await;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn design_presence_leave(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path(period_id): Path<String>,
-    Json(input): Json<PresenceRequest>,
-) -> ApiResult<StatusCode> {
-    user.require_writer()?;
-    if input.client_id.trim().is_empty() {
-        return Err(ApiError::bad_request("client_id wajib diisi."));
-    }
-    periods::service::get(&state.db, &period_id).await?;
-    state
-        .design_live
-        .room(&period_id)
-        .await
-        .leave(&input.client_id)
-        .await;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn design_sources(
@@ -268,17 +188,21 @@ pub async fn apply_template(
         service::apply_template(&state.db, &state.config, &user.id, &period_id, &template_id)
             .await?;
     state
-        .design_live
+        .hub
         .publish(
             &period_id,
-            DesignEvent::patch(
-                &view,
-                String::new(),
-                LayoutPatch {
+            ServerMessage::DesignPatch {
+                period_id: period_id.clone(),
+                revision: view.revision,
+                client_id: String::new(),
+                updated_at: view.updated_at.clone(),
+                updated_by: view.updated_by.clone(),
+                patch: LayoutPatch {
                     replace: Some(view.layout.clone()),
                     ..LayoutPatch::default()
                 },
-            ),
+                layout: None,
+            },
         )
         .await;
     Ok(Json(view))
@@ -410,16 +334,111 @@ pub async fn generate(
         service::save_draft(&state.db, &user.id, &period_id, content).await?;
     }
 
-    let report = service::generate(
-        &state.db,
-        &state.config,
-        &state.pdf_lock,
-        &user.id,
-        &period_id,
-    )
-    .await?;
+    let request_id = input
+        .request_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let job = format!("pdf:{request_id}");
+    let handle = state.jobs.start(&job);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let task_state = state.clone();
+    let task_handle = handle.clone();
+    let task_job = job.clone();
+    let user_id = user.id.clone();
+    let task_period = period_id.clone();
+    let task = tokio::spawn(async move {
+        let result = service::generate(
+            &task_state.db,
+            &task_state.config,
+            &task_state.pdf_lock,
+            &task_state.hub,
+            &task_job,
+            &task_handle,
+            &user_id,
+            &task_period,
+        )
+        .await;
+        let _ = sender.send(result);
+    });
+    handle.attach_task(task);
 
-    Ok(Json(report))
+    let outcome = receiver.await;
+    handle.detach_task();
+    state.jobs.finish(&job);
+
+    let (status, result) = match outcome {
+        Ok(Ok(report)) => ("done", Ok(report)),
+        Ok(Err(error)) => (
+            if handle.is_cancelled() {
+                "cancelled"
+            } else {
+                "failed"
+            },
+            Err(error),
+        ),
+        Err(_) => (
+            "cancelled",
+            Err(ApiError::bad_request("Pembuatan PDF dibatalkan.")),
+        ),
+    };
+    state
+        .hub
+        .publish(
+            &job,
+            ServerMessage::JobFinished {
+                job: job.clone(),
+                status: status.to_string(),
+                total: 0,
+                ready: 0,
+                failed: 0,
+                skipped: 0,
+                pending: 0,
+            },
+        )
+        .await;
+
+    let url = format!("/#/periods/{period_id}/design");
+    match status {
+        "done" => {
+            notifications::notify(
+                &state.db,
+                &state.hub,
+                &user.id,
+                "report",
+                "info",
+                "PDF laporan siap",
+                "PDF laporan berhasil dibuat dan siap dibuka.",
+                &url,
+            )
+            .await;
+        }
+        "failed" => {
+            notifications::notify(
+                &state.db,
+                &state.hub,
+                &user.id,
+                "report",
+                "error",
+                "Pembuatan PDF gagal",
+                "Buka editor desain lalu coba lagi. Periksa juga pengaturan Chrome/Edge.",
+                &url,
+            )
+            .await;
+        }
+        _ => {}
+    }
+
+    Ok(Json(result?))
+}
+
+pub async fn cancel_report(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_period_id, request_id)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    user.require_writer()?;
+    let cancelled = state.jobs.cancel(&format!("pdf:{request_id}"));
+    Ok(Json(serde_json::json!({ "cancelled": cancelled })))
 }
 
 pub async fn preview_render(

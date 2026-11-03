@@ -56,6 +56,8 @@ pub async fn commit(
             state.db.clone(),
             state.config.clone(),
             state.evidence_downloads.clone(),
+            state.hub.clone(),
+            state.jobs.clone(),
             view.id.clone(),
             state.shutdown.clone(),
         );
@@ -83,11 +85,32 @@ pub async fn retry_evidence(
         &state.db,
         state.config.clone(),
         state.evidence_downloads.clone(),
+        state.hub.clone(),
+        state.jobs.clone(),
         &import_id,
         state.shutdown.clone(),
     )
     .await?;
     Ok(Json(serde_json::json!({ "queued": queued })))
+}
+
+pub async fn cancel_evidence(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(import_id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    user.require_writer()?;
+    let cancelled = state.jobs.cancel(&evidence::job_id(&import_id));
+    Ok(Json(serde_json::json!({ "cancelled": cancelled })))
+}
+
+/// Pekerjaan latar belakang yang sedang berjalan, mis. `import:{id}`.
+pub async fn running_jobs(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<Vec<String>>> {
+    user.require_writer()?;
+    Ok(Json(state.jobs.running()))
 }
 
 pub async fn evidence_file(

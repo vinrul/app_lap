@@ -23,11 +23,16 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/imports", get(handlers::list).post(handlers::commit))
         .route("/imports/preview", post(handlers::preview))
+        .route("/imports/jobs", get(handlers::running_jobs))
         .route("/imports/{import_id}", delete(handlers::delete_import))
         .route("/imports/{import_id}/records", get(handlers::records))
         .route(
             "/imports/{import_id}/evidence/retry",
             post(handlers::retry_evidence),
+        )
+        .route(
+            "/imports/{import_id}/evidence/cancel",
+            post(handlers::cancel_evidence),
         )
         .route("/evidence/{evidence_id}", get(handlers::evidence_file))
 }

@@ -17,7 +17,8 @@
   } from 'lucide-svelte'
   import { importsApi } from '../../lib/api'
   import { errorMessage } from '../../lib/api/client'
-  import type { ImportPreview, ImportView, RecordItem, RecordsResponse } from '../../lib/types'
+  import type { ImportPreview, ImportView, RecordItem, RecordsResponse, RealtimeServerMessage } from '../../lib/types'
+  import { realtime } from '../../lib/realtime/socket'
   import { formatBytes, formatDate, formatDateTime, formatNumber } from '../../lib/utils/format'
   import { meta } from '../../lib/stores/meta.svelte'
   import { auth } from '../../lib/stores/auth.svelte'
@@ -49,6 +50,20 @@
   let retrying = $state<string | null>(null)
   let removing = $state<string | null>(null)
 
+  interface JobView {
+    job: string
+    phase: string
+    total: number
+    ready: number
+    failed: number
+    skipped: number
+    pending: number
+    finished: boolean
+    cancelled: boolean
+  }
+
+  let jobStates = $state<Record<string, JobView>>({})
+
   const maxBytes = $derived(meta.data?.max_upload_bytes ?? 32 * 1024 * 1024)
   const totalRows = $derived(imports.reduce((total, item) => total + item.row_count, 0))
   const coverage = $derived.by(() => {
@@ -59,12 +74,106 @@
     return `${formatDate(starts[0])} – ${formatDate(ends[ends.length - 1])}`
   })
 
+  onMount(() => {
+    const off = realtime.onMessage(handleRealtime)
+    realtime.connect()
+    return off
+  })
   onMount(load)
+
+  function handleRealtime(message: RealtimeServerMessage): void {
+    if (message.type === 'job_state') {
+      jobStates = {
+        ...jobStates,
+        [message.job]: {
+          job: message.job,
+          phase: message.phase,
+          total: message.total,
+          ready: message.ready,
+          failed: message.failed,
+          skipped: message.skipped,
+          pending: message.pending,
+          finished: false,
+          cancelled: false,
+        },
+      }
+      return
+    }
+    if (message.type !== 'job_finished') return
+    jobStates = {
+      ...jobStates,
+      [message.job]: {
+        job: message.job,
+        phase: message.status,
+        total: message.total,
+        ready: message.ready,
+        failed: message.failed,
+        skipped: message.skipped,
+        pending: message.pending,
+        finished: true,
+        cancelled: message.status === 'cancelled',
+      },
+    }
+    if (message.status === 'cancelled') {
+      toast.show('Unduhan bukti dukung dibatalkan.', 'info')
+    } else if (message.status === 'done') {
+      toast.success(
+        `Unduhan bukti dukung selesai: ${message.ready} berhasil, ${message.failed} gagal.`,
+      )
+    }
+    const job = message.job
+    setTimeout(() => {
+      const next = { ...jobStates }
+      delete next[job]
+      jobStates = next
+    }, 6_000)
+  }
+
+  function watchJob(importId: string): void {
+    realtime.connect()
+    realtime.send({ type: 'watch_job', job: `import:${importId}` })
+  }
+
+  async function cancelEvidence(item: ImportView): Promise<void> {
+    const job = `import:${item.id}`
+    if (realtime.isOnline) {
+      realtime.send({ type: 'cancel', job })
+      return
+    }
+    try {
+      await importsApi.cancelEvidence(item.id)
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    }
+  }
+
+  function progressPercent(job: JobView): number {
+    if (!job.total) return 0
+    const processed = job.total - job.pending
+    return Math.min(100, Math.max(0, Math.round((processed / job.total) * 100)))
+  }
+
+  function phaseLabel(phase: string): string {
+    switch (phase) {
+      case 'queued':
+        return 'Menyiapkan…'
+      case 'expand':
+        return 'Membaca folder Drive…'
+      case 'download':
+        return 'Mengunduh bukti…'
+      case 'purge':
+        return 'Merapikan berkas lama…'
+      default:
+        return 'Memproses…'
+    }
+  }
 
   async function load() {
     loading = true
     try {
       imports = await importsApi.list()
+      const running = await importsApi.runningJobs().catch(() => [])
+      for (const job of running) realtime.send({ type: 'watch_job', job })
     } catch (caught) {
       error = errorMessage(caught)
     } finally {
@@ -113,6 +222,7 @@
     try {
       const saved = await importsApi.commit(file)
       toast.success(`${saved.row_count} baris dari ${saved.filename} berhasil diimpor.`)
+      if (saved.id) watchJob(saved.id)
       reset()
       await load()
     } catch (caught) {
@@ -156,6 +266,7 @@
     try {
       const result = await importsApi.retryEvidence(item.id)
       if (result.queued) {
+        watchJob(item.id)
         toast.success(`${result.queued} tautan bukti dukung dijadwalkan ulang.`)
       } else {
         toast.show('Tidak ada tautan bukti dukung yang perlu diunduh ulang.', 'info')
@@ -380,10 +491,36 @@
         <thead><tr><th>Berkas</th><th>Cakupan tanggal</th><th class="text-right">Baris</th><th class="text-right">Duplikat</th><th>Diimpor</th><th class="text-right">Aksi</th></tr></thead>
         <tbody>
           {#each imports as item}
+            {@const job = jobStates[`import:${item.id}`]}
             <tr>
               <td>
                 <strong class="block text-xs font-semibold text-ink">{item.filename}</strong>
                 <small class="text-[10px] text-ink-muted">{item.imported_by} · parser v{item.parser_version}</small>
+                {#if job}
+                  <div class="mt-1.5 max-w-[220px]">
+                    <div class="flex items-center justify-between gap-2 text-[9px] text-ink-muted">
+                      <span>
+                        {#if !job.finished}
+                          {phaseLabel(job.phase)}
+                        {:else if job.cancelled}
+                          Dibatalkan
+                        {:else}
+                          Selesai
+                        {/if}
+                      </span>
+                      <span>{job.ready}/{job.total}</span>
+                    </div>
+                    <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-stone-200">
+                      <div
+                        class="h-full rounded-full transition-all {job.cancelled ? 'bg-gold-600' : 'bg-forest-600'}"
+                        style={`width:${progressPercent(job)}%`}
+                      ></div>
+                    </div>
+                    {#if job.failed > 0}
+                      <p class="mt-0.5 text-[9px] text-red-700">{job.failed} gagal</p>
+                    {/if}
+                  </div>
+                {/if}
               </td>
               <td class="text-xs whitespace-nowrap text-ink-muted">
                 {item.date_start ? `${formatDate(item.date_start)} – ${formatDate(item.date_end)}` : '—'}
@@ -394,9 +531,15 @@
               <td class="text-right">
                 <div class="flex items-center justify-end gap-1">
                   <button class="btn btn-ghost btn-sm" onclick={() => openRecords(item)}>Lihat baris</button>
-                  <button class="btn btn-ghost btn-sm" disabled={retrying === item.id} onclick={() => retryEvidence(item)}>
-                    {retrying === item.id ? 'Menjadwalkan…' : 'Unduh bukti'}
-                  </button>
+                  {#if job && !job.finished}
+                    <button class="btn btn-ghost btn-sm text-gold-700" onclick={() => cancelEvidence(item)}>
+                      Batalkan
+                    </button>
+                  {:else}
+                    <button class="btn btn-ghost btn-sm" disabled={retrying === item.id} onclick={() => retryEvidence(item)}>
+                      {retrying === item.id ? 'Menjadwalkan…' : job?.cancelled ? 'Lanjutkan' : 'Unduh bukti'}
+                    </button>
+                  {/if}
                   {#if auth.user?.role === 'admin'}
                     <button
                       class="btn btn-ghost btn-sm text-red-700"

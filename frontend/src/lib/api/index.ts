@@ -1,4 +1,5 @@
 import type {
+  AdminSession,
   AdminUser,
   AnalysisResponse,
   CoverageResponse,
@@ -13,6 +14,7 @@ import type {
   MediaFilters,
   MediaItem,
   Meta,
+  NotificationList,
   Period,
   PeriodDetail,
   QuickWinDetail,
@@ -87,6 +89,11 @@ export const periodsApi = {
 
 export const importsApi = {
   list: () => request<ImportView[]>('/imports'),
+  runningJobs: () => request<string[]>('/imports/jobs'),
+  cancelEvidence: (importId: string) =>
+    request<{ cancelled: boolean }>(`/imports/${importId}/evidence/cancel`, {
+      method: 'POST',
+    }),
   preview: async (file: File) => {
     const form = new FormData()
     form.append('file', file)
@@ -174,10 +181,14 @@ export const reportsApi = {
       method: 'PUT',
       body: JSON.stringify(content),
     }),
-  generate: (periodId: string, content: ReportContent) =>
+  generate: (periodId: string, content: ReportContent, requestId?: string) =>
     request<ReportView>(`/periods/${periodId}/reports`, {
       method: 'POST',
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, request_id: requestId }),
+    }),
+  cancelPdf: (periodId: string, requestId: string) =>
+    request<{ cancelled: boolean }>(`/periods/${periodId}/reports/${requestId}/cancel`, {
+      method: 'POST',
     }),
   preview: (periodId: string, content: ReportContent, layout?: ReportLayout) =>
     request<{ html: string }>(`/periods/${periodId}/reports/preview`, {
@@ -215,17 +226,6 @@ export const designApi = {
       method: 'PATCH',
       body: JSON.stringify({ client_id: clientId, patch }),
     }),
-  presence: (periodId: string, clientId: string, page: number) =>
-    request<void>(`/periods/${periodId}/design/presence`, {
-      method: 'POST',
-      body: JSON.stringify({ client_id: clientId, page }),
-    }),
-  leaveUrl: (periodId: string) => `/api/periods/${periodId}/design/presence/leave`,
-  liveUrl: (periodId: string, clientId: string, page: number) =>
-    `/api/periods/${periodId}/design/live?${new URLSearchParams({
-      client_id: clientId,
-      page: String(page),
-    }).toString()}`,
   uploadImage: async (periodId: string, file: File) => {
     const form = new FormData()
     form.append('file', file)
@@ -271,9 +271,23 @@ export const designApi = {
     }),
 }
 
+export const notificationsApi = {
+  list: () => request<NotificationList>('/notifications'),
+  markRead: (ids?: string[]) =>
+    request<{ unread: number }>('/notifications/read', {
+      method: 'POST',
+      body: JSON.stringify(ids && ids.length ? { ids } : { all: true }),
+    }),
+}
+
 export const usersApi = {
   list: () => request<AdminUser[]>('/admin/users'),
   options: () => request<UserOptions>('/admin/users/options'),
+  sessions: () => request<AdminSession[]>('/admin/sessions'),
+  revokeSession: (id: number) =>
+    request<{ revoked: boolean }>(`/admin/sessions/${id}`, { method: 'DELETE' }),
+  revokeUserSessions: (userId: string) =>
+    request<{ revoked: number }>(`/admin/users/${userId}/sessions`, { method: 'DELETE' }),
   create: (input: {
     username: string
     password: string

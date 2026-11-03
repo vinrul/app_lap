@@ -234,19 +234,27 @@ berstatus `pending` dan dilanjutkan otomatis saat service hidup lagi.
 
 Migrasi baru dijalankan otomatis saat startup. Cek `journalctl -u laporan -n 50` bila gagal.
 
-Desain laporan memakai SSE untuk kolaborasi realtime. Pastikan blok `location /` di Nginx
-memuat `proxy_buffering off;` seperti pada `deploy/nginx-laporan.conf`, lalu muat ulang Nginx:
+Desain laporan memakai satu koneksi WebSocket per tab untuk kolaborasi realtime
+(`/api/ws`). Service berjalan langsung pada port `4317` tanpa Nginx; WebSocket memakai
+origin yang sama sehingga tidak ada konfigurasi tambahan.
 
-```bash
-sudo nginx -t
-sudo systemctl reload nginx
+Bila nanti dipasang Nginx di depannya, blok `location /` harus meneruskan upgrade:
+
+```nginx
+proxy_http_version 1.1;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection "upgrade";
+proxy_read_timeout 3600s;
 ```
 
-Tanpa `proxy_buffering off`, perubahan desain pengguna lain bisa tertahan di buffer Nginx
-sampai cukup besar sebelum diteruskan ke browser. Server mengirim event `ping` setiap 20 detik;
-editor yang tidak menerima data selama 55 detik akan menyambung ulang sendiri dan mengambil
-snapshot terbaru. Sebagai jaring pengaman, editor juga memeriksa revisi layout tiap 10 detik,
-jadi halaman tidak perlu dimuat ulang manual meskipun siaran SSE terhambat.
+Editor menyambung ulang otomatis dengan backoff dan mengirim heartbeat setiap 20 detik.
+Sebagai jaring pengaman, editor juga memeriksa revisi layout tiap 10 detik, jadi halaman
+tidak perlu dimuat ulang manual meskipun kanal realtime terhambat. Bila kanal belum
+siap, penyimpanan otomatis jatuh ke `PATCH /layout`.
+
+Port `4317` tanpa TLS mengirim cookie sesi dalam teks biasa. Batasi akses lewat VPN,
+terowongan SSH, atau terminator TLS; setel juga `LAPORAN_ALLOWED_HOSTS` bila bind bukan
+loopback.
 
 Sinkronisasi desain memakai koordinasi dalam satu proses backend. Jalankan satu instance
 `laporan_mingguan serve` per database; jangan menyalakan beberapa worker dengan database

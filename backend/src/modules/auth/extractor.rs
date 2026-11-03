@@ -29,7 +29,7 @@ impl FromRequestParts<AppState> for AuthUser {
                AND sessions.expires_at > ?
                AND users.active = 1",
         )
-        .bind(token)
+        .bind(&token)
         .bind(chrono::Utc::now().to_rfc3339())
         .fetch_optional(&state.db)
         .await
@@ -37,12 +37,14 @@ impl FromRequestParts<AppState> for AuthUser {
         .ok_or_else(ApiError::unauthorized)?;
 
         use sqlx::Row;
+        super::service::touch_session(&state.db, &token).await;
         Ok(AuthUser {
             id: row.get("id"),
             username: row.get("username"),
             role: row.get("role"),
             polres: row.get("polres"),
             satker: row.get("satker"),
+            token,
         })
     }
 }

@@ -50,12 +50,13 @@
     DesignSource,
     DesignTemplateView,
     DesignEditor,
-    DesignLiveEvent,
     LayoutBlockOffset,
     LayoutElement,
     LayoutPage,
     LayoutPatch,
+    LayoutView,
     PeriodDetail,
+    RealtimeServerMessage,
     ReportContent,
     ReportLayout,
     ReportView,
@@ -70,6 +71,7 @@
   import { CHART_PALETTE, createChartSvg } from '../../utils/chartSvg'
   import { createTableNode } from '../../utils/tableNode'
   import { applyLayoutPatch, diffLayout, mergeLocalIntoRemote } from '../../design/layoutPatch'
+  import { realtime } from '../../realtime/socket'
   import {
     clearDesignDraft,
     layoutsMatch,
@@ -230,6 +232,8 @@
   let autosaveError = $state('')
   let lastSaveMode = $state<'manual' | 'auto' | null>(null)
   let generating = $state(false)
+  let pdfJob = $state<string | null>(null)
+  let pdfPhase = $state('')
   let sharing = $state(false)
   let shareTarget = $state<ReportView | null>(null)
   let previewing = $state(false)
@@ -285,12 +289,34 @@
   let serverRevision = $state(0)
   let liveStatus = $state<'off' | 'connecting' | 'online'>('off')
   let liveEditors = $state<DesignEditor[]>([])
-  let liveSource: EventSource | null = null
-  let livePeriod = ''
-  let presenceTimer: ReturnType<typeof setInterval> | null = null
-  let liveWatchdog: ReturnType<typeof setInterval> | null = null
   let resyncTimer: ReturnType<typeof setInterval> | null = null
-  let lastLiveAt = 0
+  let subscribedPeriod = ''
+  let liveOffMessage: (() => void) | null = null
+  let liveOffStatus: (() => void) | null = null
+  const pendingSaves = new Map<
+    string,
+    {
+      resolve: (view: LayoutView) => void
+      reject: (error: Error) => void
+      timer: ReturnType<typeof setTimeout>
+    }
+  >()
+
+  interface RemoteDrag {
+    clientId: string
+    username: string
+    page: number
+    element: string
+    x: number
+    y: number
+    at: number
+  }
+
+  const remoteDrags = new Map<string, RemoteDrag>()
+  const PRESENCE_TTL = 4_000
+  const DRAG_THROTTLE_MS = 50
+  let lastDragSent = 0
+  let presenceCleanup: ReturnType<typeof setInterval> | null = null
   let remoteRefreshTimer: ReturnType<typeof setTimeout> | null = null
   let remoteRetryTimer: ReturnType<typeof setTimeout> | null = null
   let remoteRetryCount = 0
@@ -579,7 +605,6 @@
       if (dirty) scheduleAutosave()
     }
     const onPageHide = () => {
-      sendLiveLeave()
       flushOnPageHide()
     }
     document.addEventListener('visibilitychange', onVisibility)
@@ -591,7 +616,6 @@
   })
 
   onDestroy(() => {
-    sendLiveLeave()
     disconnectLive()
     clearAutosaveTimers()
     flushOnPageHide()
@@ -600,7 +624,7 @@
   $effect(() => {
     const page = currentPage
     if (liveStatus === 'online') {
-      void designApi.presence(periodId, liveClientId, page).catch(() => {})
+      sendPresence()
     }
   })
 
@@ -1289,7 +1313,6 @@
 
   async function load() {
     const targetPeriod = periodId
-    if (livePeriod && livePeriod !== targetPeriod) sendLiveLeave()
     disconnectLive()
     clearAutosaveTimers()
     loading = true
@@ -1453,16 +1476,14 @@
   }
 
   function disconnectLive(): void {
-    liveSource?.close()
-    liveSource = null
-    if (presenceTimer !== null) {
-      clearInterval(presenceTimer)
-      presenceTimer = null
+    if (subscribedPeriod) {
+      realtime.send({ type: 'unsubscribe' })
+      subscribedPeriod = ''
     }
-    if (liveWatchdog !== null) {
-      clearInterval(liveWatchdog)
-      liveWatchdog = null
-    }
+    liveOffMessage?.()
+    liveOffStatus?.()
+    liveOffMessage = null
+    liveOffStatus = null
     if (resyncTimer !== null) {
       clearInterval(resyncTimer)
       resyncTimer = null
@@ -1472,84 +1493,31 @@
       remoteRefreshTimer = null
     }
     clearRemoteRetry()
+    if (presenceCleanup !== null) {
+      clearInterval(presenceCleanup)
+      presenceCleanup = null
+    }
+    remoteDrags.clear()
     liveStatus = 'off'
     liveEditors = []
-    livePeriod = ''
     remoteApplyPending = false
+    for (const entry of pendingSaves.values()) {
+      clearTimeout(entry.timer)
+      entry.reject(new Error('Kanal realtime ditutup.'))
+    }
+    pendingSaves.clear()
   }
 
   function connectLive(): void {
-    if (typeof EventSource === 'undefined' || !hasImport || loading || choosingTemplate) return
-    if (liveSource && livePeriod === periodId) return
-    disconnectLive()
-    livePeriod = periodId
-    liveStatus = 'connecting'
-    let source: EventSource
-    try {
-      source = new EventSource(designApi.liveUrl(periodId, liveClientId, currentPage))
-    } catch {
-      liveStatus = 'off'
-      return
-    }
-    liveSource = source
-    lastLiveAt = Date.now()
-    source.onopen = () => {
-      if (liveSource !== source) return
-      lastLiveAt = Date.now()
-      liveStatus = 'online'
-      sendPresence()
-    }
-    source.onerror = () => {
-      if (liveSource !== source) return
-      liveStatus = 'connecting'
-    }
-    source.addEventListener('hello', (event) => {
-      if (liveSource !== source) return
-      try {
-        handleLiveHello(
-          JSON.parse((event as MessageEvent).data) as Extract<DesignLiveEvent, { type: 'hello' }>,
-        )
-      } catch {
-        // Abaikan payload yang tidak valid; EventSource tetap tersambung.
-      }
+    if (!hasImport || loading || choosingTemplate) return
+    if (liveOffMessage) return
+    liveOffMessage = realtime.onMessage(handleRealtimeMessage)
+    liveOffStatus = realtime.onStatus((status) => {
+      liveStatus = status
+      if (status === 'online') subscribeDesign()
     })
-    source.addEventListener('patch', (event) => {
-      if (liveSource !== source) return
-      try {
-        handleLivePatch(
-          JSON.parse((event as MessageEvent).data) as Extract<DesignLiveEvent, { type: 'patch' }>,
-        )
-      } catch {
-        // Abaikan payload yang tidak valid.
-      }
-    })
-    source.addEventListener('presence', (event) => {
-      if (liveSource !== source) return
-      try {
-        const data = JSON.parse((event as MessageEvent).data) as Extract<
-          DesignLiveEvent,
-          { type: 'presence' }
-        >
-        liveEditors = data.editors
-      } catch {
-        // Abaikan payload yang tidak valid.
-      }
-    })
-    source.addEventListener('resync', () => {
-      if (liveSource === source) void resyncFromServer()
-    })
-    source.addEventListener('ping', () => {
-      if (liveSource === source) lastLiveAt = Date.now()
-    })
-    presenceTimer = setInterval(sendPresence, 15_000)
-    // Koneksi bisa tetap "terbuka" padahal tidak ada data yang masuk (laptop
-    // sleep, proxy menahan buffer). Sambung ulang agar snapshot terbaru diambil.
-    liveWatchdog = setInterval(() => {
-      if (liveSource !== source || liveStatus !== 'online') return
-      if (Date.now() - lastLiveAt < 55_000) return
-      disconnectLive()
-      connectLive()
-    }, 20_000)
+    realtime.connect()
+    if (realtime.isOnline) subscribeDesign()
     // Jaring pengaman bila siaran tidak sampai sama sekali: bandingkan revisi
     // tiap 10 detik dan ambil snapshot penuh bila server sudah lebih baru.
     resyncTimer = setInterval(() => {
@@ -1558,38 +1526,142 @@
       if (remoteApplyPending) applyRemoteToDom()
       void resyncFromServer(true)
     }, 10_000)
+    // Hapus kursor/hantu drag yang sudah tidak diperbarui.
+    presenceCleanup = setInterval(() => {
+      const now = Date.now()
+      let changed = false
+      for (const [clientId, ghost] of remoteDrags) {
+        if (now - ghost.at > PRESENCE_TTL) {
+          remoteDrags.delete(clientId)
+          changed = true
+        }
+      }
+      if (changed) renderPresence()
+    }, 1_000)
+  }
+
+  function subscribeDesign(): void {
+    if (!hasImport || loading || choosingTemplate) return
+    subscribedPeriod = periodId
+    realtime.send({
+      type: 'subscribe',
+      period_id: periodId,
+      client_id: liveClientId,
+      page: currentPage,
+    })
+  }
+
+  function handleRealtimeMessage(message: RealtimeServerMessage): void {
+    switch (message.type) {
+      case 'design_hello':
+        handleLiveHello(message)
+        break
+      case 'design_patch':
+        handleLivePatch(message)
+        break
+      case 'design_saved':
+        handleLiveSaved(message)
+        break
+      case 'design_presence':
+        liveEditors = message.editors
+        break
+      case 'drag':
+        if (message.client_id !== liveClientId) {
+          if (message.phase === 'end') {
+            remoteDrags.delete(message.client_id)
+          } else {
+            remoteDrags.set(message.client_id, {
+              clientId: message.client_id,
+              username: editorName(message.client_id),
+              page: message.page,
+              element: message.element,
+              x: message.x,
+              y: message.y,
+              at: Date.now(),
+            })
+          }
+          renderPresence()
+        }
+        break
+      case 'job_state':
+        if (pdfJob && message.job === pdfJob) pdfPhase = pdfPhaseLabel(message.phase)
+        break
+      case 'job_finished':
+        if (pdfJob && message.job === pdfJob) {
+          pdfPhase = message.status === 'cancelled' ? 'Dibatalkan' : ''
+        }
+        break
+      case 'error':
+        if (message.code === 'lagged') void resyncFromServer(true)
+        break
+      default:
+        break
+    }
   }
 
   function sendPresence(): void {
-    if (!liveSource || liveStatus !== 'online' || !hasImport) return
-    void designApi.presence(periodId, liveClientId, currentPage).catch(() => {})
+    if (!hasImport || liveStatus !== 'online') return
+    realtime.send({ type: 'presence', page: currentPage })
   }
 
-  /// Mengirim leave saat refresh/tutup tab. Beacon berjalan sebelum halaman
-  /// dilepas sehingga editor lama tidak tampil sebagai editor lain.
-  function sendLiveLeave(): void {
-    const target = livePeriod
-    if (!target) return
-    const body = JSON.stringify({ client_id: liveClientId })
-    const url = designApi.leaveUrl(target)
-    try {
-      if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
-        const sent = navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }))
-        if (sent) return
-      }
-    } catch {
-      // Jatuh ke fetch keepalive di bawah.
+  function editorName(clientId: string): string {
+    return liveEditors.find((editor) => editor.client_id === clientId)?.username ?? 'Editor'
+  }
+
+  function presenceColor(clientId: string): string {
+    let hash = 0
+    for (let index = 0; index < clientId.length; index += 1) {
+      hash = (hash * 31 + clientId.charCodeAt(index)) % 99_991
     }
-    void fetch(url, {
-      method: 'POST',
-      credentials: 'same-origin',
-      keepalive: true,
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    }).catch(() => {})
+    return CHART_PALETTE[hash % CHART_PALETTE.length]
   }
 
-  function handleLiveHello(data: Extract<DesignLiveEvent, { type: 'hello' }>): void {
+  /** Menggambar hantu drag pengguna lain di halaman aktif. */
+  function renderPresence(): void {
+    const doc = iframeEl?.contentDocument
+    if (!doc) return
+    const pageEl = doc.querySelectorAll<HTMLElement>('.page')[currentPage - 1]
+    if (!pageEl) return
+    let layer = pageEl.querySelector<HTMLElement>('.editor-presence-layer')
+    if (!layer) {
+      layer = doc.createElement('div')
+      layer.className = 'editor-presence-layer'
+      pageEl.appendChild(layer)
+    }
+    layer.innerHTML = ''
+    const now = Date.now()
+
+    for (const ghost of remoteDrags.values()) {
+      if (ghost.page !== currentPage || now - ghost.at > PRESENCE_TTL) continue
+      const target = getElement(ghost.page, ghost.element)
+      if (!target) continue
+      const node = doc.createElement('div')
+      node.className = 'editor-drag-ghost'
+      node.style.color = presenceColor(ghost.clientId)
+      node.style.left = `${ghost.x}mm`
+      node.style.top = `${ghost.y}mm`
+      node.style.width = `${target.width}mm`
+      node.style.height = `${target.height}mm`
+      layer.appendChild(node)
+    }
+  }
+
+  function sendDrag(
+    phase: 'start' | 'move' | 'end',
+    page: number,
+    element: string,
+    x: number,
+    y: number,
+  ): void {
+    if (!hasImport || liveStatus !== 'online') return
+    const now = Date.now()
+    if (phase === 'move' && now - lastDragSent < DRAG_THROTTLE_MS) return
+    if (phase !== 'end') lastDragSent = now
+    realtime.send({ type: 'drag', page, element, phase, x, y })
+  }
+
+  function handleLiveHello(data: Extract<RealtimeServerMessage, { type: 'design_hello' }>): void {
+    if (data.period_id !== periodId) return
     liveEditors = data.editors
     if (data.revision <= serverRevision) {
       if (remoteApplyPending) applyRemoteToDom()
@@ -1608,9 +1680,9 @@
     applyRemoteToDom()
   }
 
-  function handleLivePatch(data: Extract<DesignLiveEvent, { type: 'patch' }>): void {
-    // Perubahan sendiri sudah diterima lengkap lewat respons HTTP. Revisi tidak
-    // dimajukan di sini agar patch pengguna lain berikutnya tidak terlewat.
+  function handleLivePatch(data: Extract<RealtimeServerMessage, { type: 'design_patch' }>): void {
+    if (data.period_id !== periodId) return
+    // Patch milik sendiri sudah ditangani lewat `design_saved`.
     if (data.client_id === liveClientId) return
     if (data.revision <= serverRevision) return
     const base = parseSavedLayout()
@@ -1620,8 +1692,8 @@
       // patch ditempelkan ke basis yang basi.
       remote = normalizeLayout(data.layout)
     } else {
-      // Ada peristiwa yang terlewat (koneksi sempat putus atau buffer proxy).
-      // Snapshot penuh lebih aman daripada menerapkan patch ke basis yang basi.
+      // Ada peristiwa yang terlewat. Snapshot penuh lebih aman daripada
+      // menerapkan patch ke basis yang basi.
       if (data.revision > serverRevision + 1 && !data.patch.replace) {
         void resyncFromServer()
         return
@@ -1637,6 +1709,58 @@
     pruneSelection()
     clampCurrentPage()
     applyRemoteToDom()
+  }
+
+  function handleLiveSaved(data: Extract<RealtimeServerMessage, { type: 'design_saved' }>): void {
+    if (data.period_id !== periodId) return
+    const pending = pendingSaves.get(data.request_id)
+    if (!pending) return
+    clearTimeout(pending.timer)
+    pendingSaves.delete(data.request_id)
+    if (data.layout) {
+      pending.resolve({
+        layout: data.layout,
+        updated_at: data.updated_at,
+        updated_by: data.updated_by,
+        revision: data.revision,
+      })
+      return
+    }
+    const target = periodId
+    void designApi
+      .getLayout(target)
+      .then((view) => pending.resolve(view))
+      .catch((error: unknown) =>
+        pending.reject(error instanceof Error ? error : new Error(String(error))),
+      )
+  }
+
+  /** Menyimpan patch lewat kanal realtime. HTTP tetap dipakai sebagai cadangan. */
+  function savePatchOverSocket(patch: LayoutPatch): Promise<LayoutView> {
+    if (!realtime.isOnline) {
+      return Promise.reject(new Error('Kanal realtime belum tersambung.'))
+    }
+    const requestId = createRequestId()
+    return new Promise<LayoutView>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingSaves.delete(requestId)
+        reject(new Error('Simpan realtime tidak dijawab.'))
+      }, 8_000)
+      pendingSaves.set(requestId, { resolve, reject, timer })
+      const sent = realtime.send({ type: 'design_patch', request_id: requestId, patch })
+      if (!sent) {
+        clearTimeout(timer)
+        pendingSaves.delete(requestId)
+        reject(new Error('Kanal realtime belum tersambung.'))
+      }
+    })
+  }
+
+  function createRequestId(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
+    return `save-${Date.now()}-${Math.random().toString(36).slice(2)}`
   }
 
   async function resyncFromServer(silent = false): Promise<void> {
@@ -1759,6 +1883,8 @@
       .layout-element:hover { outline: 1px dashed rgba(184,137,75,.7); }
       .layout-shape-svg { display: block; width: 100%; height: 100%; overflow: visible; }
       .editor-selection { position: absolute; border: 1.5px solid #b8894b; z-index: 9999; pointer-events: none; box-sizing: border-box; }
+      .editor-presence-layer { position: absolute; inset: 0; pointer-events: none; z-index: 9998; }
+      .editor-drag-ghost { position: absolute; border: 1px dashed currentColor; border-radius: 1mm; background: rgba(255,255,255,.18); }
       .editor-handle { position: absolute; width: 10px; height: 10px; background: #fff; border: 1.5px solid #b8894b; border-radius: 2px; pointer-events: auto; box-sizing: border-box; }
       .editor-dragging * { cursor: grabbing !important; }
       .layout-table table { width: 100%; border-collapse: collapse; table-layout: fixed; }
@@ -1785,6 +1911,7 @@
     applyPageBackgroundToDom()
     updateCanvasSize()
     applyPageVisibility()
+    renderPresence()
   }
 
   function applyPageVisibility(): void {
@@ -2337,6 +2464,10 @@
     const doc = iframeEl?.contentDocument
     if (!doc) return
     drag = state
+    if (state.type === 'element') {
+      const element = getElement(state.page, state.id)
+      if (element) sendDrag('start', state.page, element.id, element.x, element.y)
+    }
     doc.body.classList.add('editor-dragging')
     doc.addEventListener('pointermove', onPointerMove)
     doc.addEventListener('pointerup', onPointerUp)
@@ -2586,6 +2717,10 @@
       element.height = Math.round(height * 1000) / 1000
     }
 
+    if (drag.type === 'element') {
+      sendDrag('move', drag.page, drag.id, element.x, element.y)
+    }
+
     if (node) {
       node.style.left = `${element.x}mm`
       node.style.top = `${element.y}mm`
@@ -2602,6 +2737,11 @@
   }
 
   function onPointerUp() {
+    const finished = drag
+    if (finished && finished.type === 'element') {
+      const element = getElement(finished.page, finished.id)
+      if (element) sendDrag('end', finished.page, element.id, element.x, element.y)
+    }
     const doc = iframeEl?.contentDocument
     if (doc) {
       doc.body.classList.remove('editor-dragging')
@@ -2871,6 +3011,7 @@
     applyPageVisibility()
     renderSelection()
     centerCanvas()
+    renderPresence()
     // Halaman dari editor lain bisa belum ada di iframe; minta render ulang.
     const domPages = iframeEl?.contentDocument?.querySelectorAll('.page').length ?? 0
     if (domPages !== layout.pages.length) void refreshCanvasStructure()
@@ -4974,7 +5115,15 @@
     const beforeStructure = layoutStructure(snapshot)
 
     try {
-      const view = await designApi.patchLayout(targetPeriod, liveClientId, patch)
+      let view: LayoutView
+      try {
+        // Jalur utama: patch disimpan dan disiarkan lewat satu kanal realtime.
+        view = await savePatchOverSocket(patch)
+      } catch {
+        if (targetPeriod !== periodId) return false
+        // Cadangan bila kanal belum tersambung atau server tidak menjawab.
+        view = await designApi.patchLayout(targetPeriod, liveClientId, patch)
+      }
       if (targetPeriod !== periodId) return false
       clearDesignDraft(targetPeriod, draftOwner)
       localDraftAt = null
@@ -5122,18 +5271,68 @@
     }
   }
 
+  function pdfPhaseLabel(phase: string): string {
+    switch (phase) {
+      case 'build':
+        return 'Menyiapkan laporan…'
+      case 'queue':
+        return 'Menunggu antrean PDF…'
+      case 'render':
+        return 'Membuat PDF…'
+      case 'finalize':
+        return 'Menyimpan PDF…'
+      case 'cancelled':
+        return 'Dibatalkan'
+      default:
+        return 'Memproses PDF…'
+    }
+  }
+
+  /** Menjalankan pembuatan PDF sambil memantau progres dan menyediakan pembatalan. */
+  async function withPdfJob<T>(work: (requestId: string) => Promise<T>): Promise<T> {
+    const requestId = createRequestId()
+    const job = `pdf:${requestId}`
+    pdfJob = job
+    pdfPhase = pdfPhaseLabel('build')
+    realtime.connect()
+    realtime.send({ type: 'watch_job', job })
+    try {
+      return await work(requestId)
+    } finally {
+      pdfJob = null
+      pdfPhase = ''
+    }
+  }
+
+  function cancelPdf(): void {
+    const job = pdfJob
+    if (!job) return
+    if (realtime.isOnline) {
+      realtime.send({ type: 'cancel', job })
+      return
+    }
+    void reportsApi.cancelPdf(periodId, job.replace('pdf:', '')).catch(() => {})
+  }
+
   async function sharePresentation() {
     if (!hasImport || generating || sharing) return
     if (!(await flushAutosave())) return
     sharing = true
     error = ''
     try {
-      const report = await reportsApi.generate(periodId, content)
+      const report = await withPdfJob((requestId) =>
+        reportsApi.generate(periodId, content, requestId),
+      )
       await ongenerated()
       shareTarget = report
     } catch (caught) {
-      error = errorMessage(caught)
-      toast.error(errorMessage(caught))
+      const message = errorMessage(caught)
+      if (message.includes('dibatalkan')) {
+        toast.show('Pembuatan PDF dibatalkan.', 'info')
+      } else {
+        error = message
+        toast.error(message)
+      }
     } finally {
       sharing = false
     }
@@ -5145,12 +5344,19 @@
     generating = true
     error = ''
     try {
-      const report = await reportsApi.generate(periodId, content)
+      const report = await withPdfJob((requestId) =>
+        reportsApi.generate(periodId, content, requestId),
+      )
       toast.success('PDF laporan berhasil dibuat dengan layout desain.')
       await ongenerated()
       window.open(reportsApi.previewUrl(report.id), '_blank', 'noopener')
     } catch (caught) {
-      error = errorMessage(caught)
+      const message = errorMessage(caught)
+      if (message.includes('dibatalkan')) {
+        toast.show('Pembuatan PDF dibatalkan.', 'info')
+      } else {
+        error = message
+      }
     } finally {
       generating = false
     }
@@ -5431,6 +5637,10 @@
       <Button variant="secondary" size="sm" loading={previewing} onclick={preview}><Eye size={14} /> Pratinjau</Button>
       <Button variant="secondary" size="sm" loading={saving} onclick={() => save()}><Save size={14} /> Simpan</Button>
       <Button size="sm" loading={generating} disabled={sharing} onclick={generate}><FileDown size={14} /> Buat PDF</Button>
+      {#if pdfJob}
+        <Button variant="secondary" size="sm" onclick={cancelPdf}>Batalkan PDF</Button>
+        <span class="text-[10px] text-ink-muted">{pdfPhase}</span>
+      {/if}
       <Button variant="secondary" size="sm" loading={sharing} disabled={generating} onclick={sharePresentation}><Share2 size={14} /> Bagikan & presentasi</Button>
     </div>
   </section>

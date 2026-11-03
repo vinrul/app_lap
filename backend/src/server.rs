@@ -27,6 +27,9 @@ pub async fn run() -> anyhow::Result<()> {
     if let Err(error) = auth_service::cleanup_expired_sessions(&db).await {
         tracing::warn!(%error, "gagal membersihkan sesi kedaluwarsa");
     }
+    if let Err(error) = crate::modules::notifications::prune(&db, 90).await {
+        tracing::warn!(%error, "gagal membersihkan notifikasi lama");
+    }
 
     let http = reqwest::Client::builder()
         .user_agent(concat!(
@@ -41,7 +44,8 @@ pub async fn run() -> anyhow::Result<()> {
         config: Arc::new(config.clone()),
         pdf_lock: Arc::new(Mutex::new(())),
         evidence_downloads: Arc::new(EvidenceDownloadLocks::default()),
-        design_live: Arc::new(reports::live::DesignLive::default()),
+        hub: Arc::new(crate::modules::live::Hub::default()),
+        jobs: Arc::new(crate::modules::live::JobRegistry::default()),
         design_lock: Arc::new(Mutex::new(())),
         shutdown: ShutdownSignal::new(),
         http,
@@ -51,6 +55,8 @@ pub async fn run() -> anyhow::Result<()> {
         &state.db,
         state.config.clone(),
         state.evidence_downloads.clone(),
+        state.hub.clone(),
+        state.jobs.clone(),
         state.shutdown.clone(),
     )
     .await
@@ -88,9 +94,12 @@ pub async fn run() -> anyhow::Result<()> {
             );
         }
     }
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal(state.shutdown.clone()))
-        .await?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal(state.shutdown.clone()))
+    .await?;
 
     info!("server berhenti menerima permintaan; menyelesaikan pekerjaan latar belakang");
     state.shutdown.trigger();

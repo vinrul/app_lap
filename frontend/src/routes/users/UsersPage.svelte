@@ -3,9 +3,10 @@
   import { AlertCircle, Check, Plus, ShieldCheck, UserPlus, X } from 'lucide-svelte'
   import { usersApi } from '../../lib/api'
   import { errorMessage } from '../../lib/api/client'
-  import type { AdminUser, User, UserOptions } from '../../lib/types'
+  import type { AdminSession, AdminUser, User, UserOptions } from '../../lib/types'
   import { formatDateTime } from '../../lib/utils/format'
   import { auth } from '../../lib/stores/auth.svelte'
+  import { dialog } from '../../lib/stores/dialog.svelte'
   import { toast } from '../../lib/stores/toast.svelte'
   import PageHeader from '../../lib/components/ui/PageHeader.svelte'
   import Button from '../../lib/components/ui/Button.svelte'
@@ -33,6 +34,10 @@
   let editForm = $state({ role: 'operator', polres: '', satker: '', password: '' })
   let editLoading = $state(false)
   let editError = $state('')
+
+  let sessions = $state<AdminSession[]>([])
+  let sessionsLoading = $state(false)
+  let revokingSession = $state<number | null>(null)
 
   function roleLabel(role: string): string {
     switch (role) {
@@ -64,10 +69,65 @@
       const [accounts, unitOptions] = await Promise.all([usersApi.list(), usersApi.options()])
       users = accounts
       options = unitOptions
+      void loadSessions()
     } catch (caught) {
       error = errorMessage(caught)
     } finally {
       loading = false
+    }
+  }
+
+  async function loadSessions(): Promise<void> {
+    sessionsLoading = true
+    try {
+      sessions = await usersApi.sessions()
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    } finally {
+      sessionsLoading = false
+    }
+  }
+
+  function sessionOnline(value: string): boolean {
+    if (!value) return false
+    const seen = Date.parse(value)
+    return Number.isFinite(seen) && Date.now() - seen < 120_000
+  }
+
+  async function revokeSession(entry: AdminSession): Promise<void> {
+    const confirmed = await dialog.confirm({
+      title: 'Cabut sesi?',
+      message: `Sesi ${entry.username} akan diakhiri dan perangkat tersebut harus masuk kembali.`,
+      confirmLabel: 'Cabut sesi',
+      tone: 'danger',
+    })
+    if (!confirmed) return
+    revokingSession = entry.id
+    try {
+      await usersApi.revokeSession(entry.id)
+      toast.success('Sesi dicabut.')
+      await loadSessions()
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    } finally {
+      revokingSession = null
+    }
+  }
+
+  async function revokeUserSessions(entry: AdminSession): Promise<void> {
+    const confirmed = await dialog.confirm({
+      title: 'Cabut semua sesi?',
+      message: `Semua sesi milik ${entry.username} akan diakhiri.`,
+      confirmLabel: 'Cabut semua',
+      tone: 'danger',
+    })
+    if (!confirmed) return
+    try {
+      const result = await usersApi.revokeUserSessions(entry.user_id)
+      toast.success(`${result.revoked} sesi dicabut.`)
+      await loadSessions()
+    } catch (caught) {
+      toast.error(errorMessage(caught))
     }
   }
 
@@ -254,6 +314,69 @@
     <ShieldCheck size={14} class="mt-0.5 shrink-0 text-forest-600" />
     Kata sandi di-hash sebelum disimpan. Administrator dapat mereset sandi akun operator, polres, dan polda; sandi administrator hanya diubah pemiliknya. Minimal satu administrator aktif harus selalu tersedia.
   </div>
+</section>
+
+<section class="card mt-5 overflow-hidden">
+  <div class="panel-heading">
+    <div>
+      <span class="eyebrow">SESI AKTIF</span>
+      <h2 class="panel-title mt-1">Perangkat yang masuk</h2>
+    </div>
+    <Button variant="secondary" size="sm" loading={sessionsLoading} onclick={loadSessions}>Muat ulang</Button>
+  </div>
+  {#if sessions.length}
+    <div class="overflow-x-auto">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Pengguna</th>
+            <th>Peran</th>
+            <th>Alamat</th>
+            <th>Perangkat</th>
+            <th>Terakhir aktif</th>
+            <th class="text-right">Aksi</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each sessions as entry (entry.id)}
+            <tr>
+              <td><strong class="text-xs font-semibold text-ink">{entry.username}</strong></td>
+              <td class="text-xs text-ink-muted">{roleLabel(entry.role)}</td>
+              <td class="text-xs text-ink-muted">{entry.ip || '—'}</td>
+              <td class="max-w-[220px] truncate text-[10px] text-ink-muted" title={entry.user_agent}>
+                {entry.user_agent || '—'}
+              </td>
+              <td class="text-xs whitespace-nowrap">
+                {#if sessionOnline(entry.last_seen_at)}
+                  <span class="badge badge-success">Aktif</span>
+                {:else}
+                  <span class="text-ink-muted">
+                    {entry.last_seen_at ? formatDateTime(entry.last_seen_at) : '—'}
+                  </span>
+                {/if}
+              </td>
+              <td class="text-right">
+                <div class="flex items-center justify-end gap-1">
+                  <button
+                    class="btn btn-ghost btn-sm text-red-700"
+                    disabled={revokingSession === entry.id}
+                    onclick={() => revokeSession(entry)}
+                  >
+                    {revokingSession === entry.id ? 'Mencabut…' : 'Cabut'}
+                  </button>
+                  <button class="btn btn-ghost btn-sm" onclick={() => revokeUserSessions(entry)}>
+                    Cabut semua
+                  </button>
+                </div>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  {:else}
+    <p class="px-5 py-6 text-center text-[11px] text-ink-muted">Tidak ada sesi aktif.</p>
+  {/if}
 </section>
 
 <datalist id="polres-options">
