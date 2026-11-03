@@ -94,6 +94,16 @@ pub fn spawn_import_downloads(
         }
         jobs.finish(&job);
         publish_finished(&hub, &db, &job, &import_id, status).await;
+        if !shutdown.is_shutdown() {
+            crate::modules::documentation::autoscan_import(
+                &db,
+                config.clone(),
+                hub.clone(),
+                jobs.clone(),
+                &import_id,
+            )
+            .await;
+        }
     });
     true
 }

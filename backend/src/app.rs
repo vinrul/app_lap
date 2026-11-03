@@ -28,6 +28,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(modules::reports::routes())
         .merge(modules::live::routes())
         .merge(modules::notifications::routes())
+        .merge(modules::documentation::routes())
         .merge(modules::users::routes())
         .with_state(state.clone());
 

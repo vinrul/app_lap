@@ -348,6 +348,45 @@ export interface AdminSession {
   user_agent: string
 }
 
+export interface DocumentationRow {
+  row_id: number
+  tanggal: string
+  unit: string
+  status: string
+  reason: string
+  links: number
+  images: number
+  valid: number
+  manual: number
+}
+
+export interface DocumentationImage {
+  evidence_id: string
+  filename: string
+  content_type: string
+  status: string
+  reason: string
+  ocr_text: string
+  analyzed_at: string
+}
+
+export interface DocumentationSummary {
+  total_rows: number
+  valid: number
+  manual: number
+  mabes: number
+  invalid: number
+  pending: number
+  images_total: number
+  images_done: number
+}
+
+export interface DocumentationResponse {
+  summary: DocumentationSummary
+  rows: DocumentationRow[]
+  scanning: boolean
+}
+
 export interface MediaItem {
   source: 'design' | 'evidence'
   id: string

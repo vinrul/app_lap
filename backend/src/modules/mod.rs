@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod dashboard;
+pub mod documentation;
 pub mod imports;
 pub mod live;
 pub mod map;

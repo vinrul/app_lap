@@ -29,6 +29,7 @@
   import RecordsPanel from '../../lib/components/period/RecordsPanel.svelte'
   import DesignPanel from '../../lib/components/period/DesignPanel.svelte'
   import DocumentsPanel from '../../lib/components/period/DocumentsPanel.svelte'
+  import DocumentationPanel from '../../lib/components/period/DocumentationPanel.svelte'
 
   type Props = { periodId: string; tab?: string }
 
@@ -47,9 +48,9 @@
   const reader = $derived(auth.user?.role === 'polres' || auth.user?.role === 'polda')
 
   const activeTab = $derived(
-    ['overview', 'analysis', 'coverage', 'records', 'design', 'documents'].includes(tab) &&
+    ['overview', 'analysis', 'coverage', 'records', 'design', 'documents', 'documentation'].includes(tab) &&
       !hiddenTabs.has(tab) &&
-      !(reader && tab === 'design')
+      !(reader && (tab === 'design' || tab === 'documentation'))
       ? tab
       : 'coverage',
   )
@@ -140,7 +141,12 @@
     { id: 'records', label: 'Data sumber' },
     { id: 'design', label: 'Desain' },
     { id: 'documents', label: 'Dokumen', count: detail?.reports.length ?? 0 },
-  ].filter((item) => !hiddenTabs.has(item.id) && !(reader && item.id === 'design')))
+    { id: 'documentation', label: 'Dokumentasi' },
+  ].filter(
+    (item) =>
+      !hiddenTabs.has(item.id) &&
+      !(reader && (item.id === 'design' || item.id === 'documentation')),
+  ))
 </script>
 
 <svelte:head><title>{detail?.period.label ?? 'Periode'} · Laporan Mingguan PBM</title></svelte:head>
@@ -237,6 +243,8 @@
     <RecordsPanel {periodId} />
   {:else if activeTab === 'design'}
     <DesignPanel {periodId} {detail} ongenerated={handleGenerated} />
+  {:else if activeTab === 'documentation'}
+    <DocumentationPanel {periodId} />
   {:else if activeTab === 'documents'}
     <DocumentsPanel reports={detail.reports} onrefresh={() => load()} />
   {/if}

@@ -17,6 +17,7 @@ Aplikasi lokal untuk mengubah export Excel **Quick Wins / Qins Polri** menjadi l
 - Monitor sesi admin: daftar perangkat yang masuk beserta alamat, perangkat, dan waktu aktif terakhir; admin dapat mencabut satu sesi atau seluruh sesi pengguna. Sesi yang dicabut langsung dikeluarkan dari aplikasi.
 - Progres pembuatan PDF tampil di toolbar desain (menyiapkan laporan, menunggu antrean, merender, menyimpan) dan bisa dibatalkan; proses Chrome/Edge dihentikan dan berkas sementara dibersihkan.
 - Hantu drag kolaborator tampil langsung di kanvas saat desain dibuka bersama. Posisi tidak disimpan, kedaluwarsa setelah 4 detik, dan tidak memengaruhi layout tersimpan.
+- Tab **Dokumentasi** menganalisis bukti dukung gambar secara latar belakang: OCR watermark dua mode (`--psm 11` lalu `--psm 6`, ditambah praproses crop bawah, perbesaran, dan masker merah bila field belum lengkap; alamat wajib, tanggal dan jam, koordinat opsional; mendukung nama bulan Indonesia, tahun dua digit, jam bertitik, desimal koma, dan arah S/W/E/N) plus EXIF, lalu membandingkan tanggal/koordinat dengan baris laporan. Status: valid sesuai, cek manual, valid tetapi cek ke mabes (tautan `/upload/...`), tidak valid (tautan tak terunduh/bukan gambar), atau belum dianalisis. Pemindaian berjalan otomatis setelah unduhan bukti dukung selesai dan saat server start untuk gambar yang sudah terunduh tetapi belum dianalisis; satu periode dipindai pada satu waktu, progres tampil realtime, dapat dibatalkan, dan dilanjutkan otomatis setelah backend restart; rincian status, alasan, dan teks OCR tiap gambar dapat dibuka dari baris laporan untuk cek manual. Tombol **Pindai ulang** menganalisis ulang seluruh gambar yang sudah terunduh dengan aturan OCR terbaru, termasuk hasil lama yang sebelumnya berstatus cek manual.
 - Progres unduhan bukti dukung tampil langsung di halaman Import: jumlah berhasil, gagal, dilewati, dan sisa tautan, dengan tombol **Batalkan** saat berjalan dan **Lanjutkan** setelah dibatalkan. Progres dan perintah batal memakai kanal WebSocket yang sama dengan editor desain; bila kanal belum tersambung, pembatalan tetap dapat dilakukan lewat endpoint HTTP.
 - Bukti dukung diunduh best-effort dari tautan gambar/PDF langsung, berkas Google Drive, ekspor Google Docs, dan folder Google Drive publik. Folder dibaca pada akar dan satu tingkat subfolder, maksimal 100 gambar/PDF per folder; berkas lain ditandai `skipped`. Media sosial dan tautan peta ditandai tidak dapat diunduh; pengguna dapat menjalankan ulang unduhan dari halaman Import data. Bukti yang sudah terunduh dapat dipratinjau langsung di aplikasi, termasuk galeri beberapa gambar/PDF dari folder Drive, tanpa harus mengunduh berkasnya terlebih dahulu. Antrean `pending` dilanjutkan otomatis saat backend start, dengan lock per import agar tidak ada worker ganda; permintaan baru saat worker berjalan dijadwalkan sebagai putaran ulang. Berkas disimpan sekali berdasarkan hash isinya sehingga tautan yang sama pada beberapa import tidak memakai ruang tambahan; jenis berkas dideteksi dari magic bytes (PDF yang dikirim sebagai `application/octet-stream` tetap terbaca), dan bukti dukung baris yang kalah deduplikasi dibersihkan otomatis setelah import baru selesai.
 - Peta lokasi kegiatan dari koordinat baris sumber memakai Leaflet + OpenStreetMap, dimuat hanya saat detail dibuka. Tersedia marker, popup, tombol **Google Maps**, dan **Rute** ke tab baru. Tile peta diambil melalui backend dengan User-Agent aplikasi dan cache di `data/map-tiles/`; koneksi internet tetap diperlukan.
@@ -210,6 +211,7 @@ Tutup aplikasi sebelum membuat cadangan konsisten. Salin seluruh direktori `data
 | `LAPORAN_ALLOWED_HOSTS` | kosong | Host yang diizinkan, dipisah koma; `*` untuk semua |
 | `LAPORAN_PORT` | `4317` | Port server |
 | `LAPORAN_CHROME` | auto-detect | Path `chrome.exe`/`msedge.exe` |
+| `LAPORAN_TESSERACT` | `tesseract` | Path executable Tesseract untuk analisis dokumentasi |
 | `LAPORAN_POLDA_NAME` | `POLDA BALI` | Nama polda pada laporan |
 | `LAPORAN_APP_NAME` | `Laporan Mingguan PBM` | Nama aplikasi |
 | `LAPORAN_MAX_UPLOAD_MB` | `32` | Batas ukuran workbook |
@@ -228,7 +230,16 @@ loopback + reverse proxy seperti pada `deploy/DEPLOY.md`.
 
 ### Menjalankan dengan API key Google Drive di Windows
 
+Salin `.env.example` menjadi `.env`, lalu isi kunci pada berkas itu. `start.ps1` memuat
+`.env` ke environment proses sebelum menjalankan backend, sehingga kunci tidak perlu
+ditulis di skrip atau di riwayat shell.
+
 ```powershell
-$env:LAPORAN_GOOGLE_DRIVE_API_KEY = '<API_KEY>'
+Copy-Item .env.example .env
+notepad .env
 .\start.ps1
 ```
+
+Berkas `.env` diabaikan Git. Untuk VPS, kunci diatur terpisah di
+`/etc/laporan/laporan.env` (lihat `deploy/DEPLOY.md`); berkas `.env` di repo tidak
+dipakai di produksi.

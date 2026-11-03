@@ -198,9 +198,9 @@ async fn handle(
                 )
             })?;
             let Some(import_id) = job.strip_prefix("import:") else {
-                if job.starts_with("pdf:") {
-                    // Pekerjaan PDF bisa didaftarkan beberapa saat setelah klien
-                    // mengirim `watch_job`, jadi langganan tetap diterima.
+                if job.contains(':') {
+                    // Pekerjaan lain (pdf, dokumentasi) bisa didaftarkan beberapa
+                    // saat setelah klien mengirim `watch_job`; langganan tetap diterima.
                     let room = state.hub.room(&job).await;
                     if let Some(index) = connection.jobs.iter().position(|item| item.job == job) {
                         connection.jobs.remove(index).forward.abort();
@@ -214,7 +214,7 @@ async fn handle(
                         tx,
                         ServerMessage::JobState {
                             job: job.clone(),
-                            kind: "pdf".to_string(),
+                            kind: job.split(':').next().unwrap_or("job").to_string(),
                             phase: "queued".to_string(),
                             total: 0,
                             ready: 0,

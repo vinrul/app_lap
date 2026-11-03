@@ -14,6 +14,7 @@ pub struct Config {
     pub allowed_hosts: Vec<String>,
     pub port: u16,
     pub chrome_path: String,
+    pub tesseract_path: String,
     pub secure_cookie: bool,
     pub polda_name: String,
     pub app_name: String,
@@ -63,6 +64,7 @@ impl Config {
             allowed_hosts: Vec::new(),
             port: 0,
             chrome_path: String::new(),
+            tesseract_path: String::new(),
             secure_cookie: false,
             polda_name: "POLDA BALI".into(),
             app_name: "Laporan Mingguan PBM".into(),
@@ -142,6 +144,8 @@ impl Config {
             allowed_hosts,
             port,
             chrome_path: discover_chrome(),
+            tesseract_path: env::var("LAPORAN_TESSERACT")
+                .unwrap_or_else(|_| "tesseract".to_string()),
             secure_cookie: env::var("LAPORAN_SECURE_COOKIE").as_deref() == Ok("true"),
             polda_name: env::var("LAPORAN_POLDA_NAME")
                 .unwrap_or_else(|_| "POLDA BALI".to_string())

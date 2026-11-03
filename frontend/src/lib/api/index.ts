@@ -6,6 +6,8 @@ import type {
   Dashboard,
   DesignSource,
   DesignTemplateView,
+  DocumentationResponse,
+  DocumentationImage,
   DraftView,
   ImportPreview,
   ImportView,
@@ -268,6 +270,25 @@ export const designApi = {
     request<LayoutView>(`/periods/${periodId}/design/templates/${templateId}/apply`, {
       method: 'POST',
       body: JSON.stringify({}),
+    }),
+}
+
+export const documentationApi = {
+  list: (periodId: string) =>
+    request<DocumentationResponse>(`/periods/${periodId}/documentation`),
+  images: (periodId: string, rowId: number) =>
+    request<DocumentationImage[]>(`/periods/${periodId}/documentation/rows/${rowId}`),
+  scan: (periodId: string) =>
+    request<{ started: boolean }>(`/periods/${periodId}/documentation/scan`, {
+      method: 'POST',
+    }),
+  rescan: (periodId: string) =>
+    request<{ started: boolean }>(`/periods/${periodId}/documentation/rescan`, {
+      method: 'POST',
+    }),
+  cancel: (periodId: string) =>
+    request<{ cancelled: boolean }>(`/periods/${periodId}/documentation/cancel`, {
+      method: 'POST',
     }),
 }
 

@@ -51,6 +51,8 @@ pub async fn run() -> anyhow::Result<()> {
         http,
     };
 
+    crate::modules::documentation::resume(&state).await;
+
     match evidence::resume_pending_downloads(
         &state.db,
         state.config.clone(),
