@@ -51,8 +51,6 @@ pub async fn run() -> anyhow::Result<()> {
         http,
     };
 
-    crate::modules::documentation::resume(&state).await;
-
     match evidence::resume_pending_downloads(
         &state.db,
         state.config.clone(),
@@ -83,6 +81,16 @@ pub async fn run() -> anyhow::Result<()> {
         "Aplikasi berjalan pada http://{}:{}",
         config.bind_addr, config.port
     );
+
+    // Pemindaian dokumentasi bisa memakan waktu pada database besar karena
+    // harus menghitung target per periode. Jalankan setelah listener siap agar
+    // port tidak tertahan.
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            crate::modules::documentation::resume(&state).await;
+        }
+    });
     if !config.bind_addr.is_loopback() {
         if config.allowed_hosts.is_empty() {
             tracing::warn!(

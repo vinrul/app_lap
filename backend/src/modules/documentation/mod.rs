@@ -365,6 +365,7 @@ async fn is_scanning(db: &SqlitePool, period_id: &str) -> bool {
 
 /// Memindai semua periode yang masih memiliki gambar terunduh namun belum dianalisis.
 pub async fn resume(state: &AppState) {
+    let started = std::time::Instant::now();
     match media::tesseract_version(&state.config).await {
         Ok(version) => tracing::info!(
             %version,
@@ -389,6 +390,7 @@ pub async fn resume(state: &AppState) {
     .fetch_all(&state.db)
     .await
     .unwrap_or_default();
+    let total = periods.len();
     for period_id in periods {
         if let Err(error) = start_scan(
             &state.db,
@@ -403,6 +405,11 @@ pub async fn resume(state: &AppState) {
             tracing::warn!(%error, %period_id, "gagal memulai analisis dokumentasi");
         }
     }
+    tracing::info!(
+        periods = total,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "analisis dokumentasi: pemeriksaan target awal selesai"
+    );
 }
 
 /// Dipanggil setelah unduhan bukti dukung selesai: pindai periode yang mencakup
