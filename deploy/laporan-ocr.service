@@ -1,0 +1,27 @@
+[Unit]
+Description=Laporan Mingguan PBM - sidecar PaddleOCR
+After=network.target
+
+[Service]
+Type=simple
+User=laporan
+Group=laporan
+WorkingDirectory=/opt/laporan/paddle-ocr
+EnvironmentFile=-/etc/laporan/laporan-ocr.env
+# --workers 1 wajib: satu proses memuat model sekali dan Paddle tidak dijamin
+# aman dipanggil paralel dari banyak proses.
+ExecStart=/opt/laporan/paddle-ocr/.venv/bin/uvicorn app:app \
+    --host 127.0.0.1 --port 4320 --workers 1 --timeout-keep-alive 30
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# OCR memakai CPU besar. Batasi agar server web tetap responsif.
+Nice=5
+CPUQuota=200%
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

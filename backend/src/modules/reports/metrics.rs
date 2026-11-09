@@ -450,6 +450,13 @@ fn build_narkoba(rows: &[&MetricRow]) -> NarkobaMetrics {
     }
 }
 
+/// Nama field jumlah pohon/bibit yang dipakai formulir QW1.5 versi lama dan baru.
+const GREEN_BIBIT_KEYS: &[&str] = &[
+    "Jumlah pohon yang ditanam (Jumlah)",
+    "Jumlah bibit pohon yang ditanam",
+    "Jumlah pohon yang ditanam",
+];
+
 fn build_green(rows: &[&MetricRow]) -> GreenMetrics {
     let subset: Vec<&MetricRow> = rows
         .iter()
@@ -457,7 +464,7 @@ fn build_green(rows: &[&MetricRow]) -> GreenMetrics {
         .filter(|row| row.kode.starts_with("QW1.5"))
         .collect();
 
-    let bibit = sum_numbers(&subset, &["Jumlah bibit pohon yang ditanam"]);
+    let bibit = sum_numbers(&subset, GREEN_BIBIT_KEYS);
     let area_m2 = sum_numbers(
         &subset,
         &["Pertimbangan pilihan lokasi (Luas area yang ditangani (m²))"],
@@ -475,7 +482,7 @@ fn build_green(rows: &[&MetricRow]) -> GreenMetrics {
     let penanaman = subset
         .iter()
         .filter(|row| {
-            number_for(row, &["Jumlah bibit pohon yang ditanam"]) > 0
+            number_for(row, GREEN_BIBIT_KEYS) > 0
                 || field(row, &["Kegiatan"])
                     .map(|value| value.to_ascii_lowercase().contains("tanam"))
                     .unwrap_or(false)
@@ -489,11 +496,7 @@ fn build_green(rows: &[&MetricRow]) -> GreenMetrics {
         kerja_bakti,
         penanaman,
         peserta,
-        by_polres: group_metrics(
-            &subset,
-            &["Jumlah peserta"],
-            &["Jumlah bibit pohon yang ditanam"],
-        ),
+        by_polres: group_metrics(&subset, &["Jumlah peserta"], GREEN_BIBIT_KEYS),
         by_kegiatan: count_by(
             &subset,
             |row| field(row, &["Kegiatan"]).unwrap_or_else(|| "Kegiatan hijau".to_string()),
@@ -919,11 +922,8 @@ fn row_summary(row: &MetricRow) -> RowSummary {
                 &["Pertimbangan pilihan lokasi (Perkiraan jumlah jemaat atau umat)"]
             ))
         )
-    } else if number_for(row, &["Jumlah bibit pohon yang ditanam"]) > 0 {
-        format!(
-            "{} bibit",
-            format_count(number_for(row, &["Jumlah bibit pohon yang ditanam"]))
-        )
+    } else if number_for(row, GREEN_BIBIT_KEYS) > 0 {
+        format!("{} bibit", format_count(number_for(row, GREEN_BIBIT_KEYS)))
     } else {
         field(
             row,

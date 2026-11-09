@@ -44,7 +44,8 @@
   let busy = $state(false)
 
   // Tab yang disembunyikan sementara. Hapus id dari daftar ini untuk menampilkan lagi.
-  const hiddenTabs = new Set(['overview', 'analysis'])
+  // `documentation` ikut disembunyikan karena pengecekan watermark dinonaktifkan sementara.
+  const hiddenTabs = new Set(['overview', 'analysis', 'documentation'])
   const reader = $derived(auth.user?.role === 'polres' || auth.user?.role === 'polda')
 
   const activeTab = $derived(

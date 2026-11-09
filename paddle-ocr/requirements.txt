@@ -1,0 +1,8 @@
+# Sidecar PaddleOCR. Pasang di virtualenv terpisah dari backend Rust.
+# Versi ini yang sudah diuji pada pilot (Windows, Python 3.13).
+paddleocr==3.7.0
+paddlepaddle==3.3.1
+fastapi>=0.115,<1
+uvicorn>=0.32,<1
+pillow>=10
+numpy>=1.24

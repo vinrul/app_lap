@@ -1,11 +1,13 @@
 //! Ekstraksi EXIF dan OCR untuk analisis bukti dukung gambar.
 
-use std::{collections::HashMap, path::Path, process::Stdio, time::Duration};
+use std::{collections::HashMap, path::Path, process::Stdio, sync::OnceLock, time::Duration};
 
+use base64::Engine as _;
 use chrono::NaiveDate;
 use image::{
     DynamicImage, GenericImageView, GrayImage, ImageFormat, Luma, RgbImage, imageops::FilterType,
 };
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 use crate::config::Config;
@@ -226,7 +228,16 @@ fn rationals(data: &[u8], offset: usize, little: bool) -> Option<f64> {
 /// teks) lebih baik untuk stempel kecil di sudut foto. Bila keduanya belum
 /// menemukan tanggal, jam, dan alamat, gambar dipraproses (crop bawah,
 /// perbesaran, masker merah) lalu di-OCR ulang.
-pub async fn ocr(config: &Config, path: &Path) -> Result<String, String> {
+///
+/// Setelah Tesseract, sidecar PaddleOCR dipanggil bila watermark masih belum
+/// lengkap atau tanggalnya berbeda dari tanggal laporan. Teks kedua mesin
+/// digabung agar kelebihan masing-masing saling menutupi.
+pub async fn ocr(
+    config: &Config,
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<NaiveDate>,
+) -> Result<String, String> {
     let mut texts = Vec::new();
     let mut errors = Vec::new();
     let mut complete = false;
@@ -277,11 +288,247 @@ pub async fn ocr(config: &Config, path: &Path) -> Result<String, String> {
         }
     }
 
-    let merged = merge_texts(&texts);
+    let mut merged = merge_texts(&texts);
+
+    if config.paddle_url.is_some() && needs_paddle(&merged, expected) {
+        match paddle_ocr(config, path, bytes).await {
+            Ok(text) => {
+                if !text.trim().is_empty() {
+                    // Teks Paddle ditaruh paling depan agar tanggal yang lebih
+                    // masuk akal dipakai lebih dulu oleh `find_date`.
+                    texts.insert(0, text);
+                    merged = merge_texts(&texts);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    file = %path.display(),
+                    %error,
+                    "OCR PaddleOCR gagal; memakai hasil Tesseract"
+                );
+                errors.push(format!("paddle: {error}"));
+            }
+        }
+    }
+
     if merged.trim().is_empty() && !errors.is_empty() {
         return Err(errors.join("; "));
     }
     Ok(merged)
+}
+
+/// Menentukan apakah hasil Tesseract perlu dilengkapi PaddleOCR.
+fn needs_paddle(text: &str, expected: Option<NaiveDate>) -> bool {
+    // Dokumen, papan jadwal, dan tangkapan layar tidak akan pernah lolos
+    // validasi sebagai foto kegiatan. PaddleOCR pada gambar seperti itu juga
+    // paling lambat (ratusan baris teks), jadi dilewati.
+    if super::looks_like_document(text) {
+        return false;
+    }
+    if !watermark_fields(text) {
+        return true;
+    }
+    // Tanggal yang berbeda dari tanggal laporan juga dicek ulang: bisa jadi
+    // Tesseract salah membaca hari/bulan/tahun. Selisih satu hari masih
+    // ditoleransi agar foto yang diambil malam sebelumnya tidak memicu OCR
+    // kedua.
+    const DATE_TOLERANCE_DAYS: i64 = 1;
+    match (expected, find_date(text)) {
+        (Some(expected), Some(found)) => (found - expected).num_days().abs() > DATE_TOLERANCE_DAYS,
+        _ => false,
+    }
+}
+
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
+#[derive(Serialize)]
+struct PaddleRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_base64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct PaddleLine {
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    score: f64,
+}
+
+#[derive(Deserialize)]
+struct PaddleResponse {
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    lines: Vec<PaddleLine>,
+    #[serde(default)]
+    seconds: f64,
+    #[serde(default)]
+    engine: String,
+    #[serde(default)]
+    version: String,
+}
+
+/// Meminta sidecar PaddleOCR membaca gambar. Bytes dikirim sebagai base64 agar
+/// sidecar tidak perlu berbagi berkas sementara dengan backend (systemd memakai
+/// `PrivateTmp`). Bila bytes kosong, path dipakai sebagai cadangan.
+async fn paddle_ocr(config: &Config, path: &Path, bytes: &[u8]) -> Result<String, String> {
+    let Some(base) = config.paddle_url.as_deref() else {
+        return Err("sidecar PaddleOCR tidak dikonfigurasi".to_string());
+    };
+    let path_text = path.to_string_lossy().to_string();
+    let (payload, source) = if bytes.is_empty() {
+        (
+            PaddleRequest {
+                image_base64: None,
+                path: Some(path_text.as_str()),
+            },
+            "path",
+        )
+    } else {
+        (
+            PaddleRequest {
+                image_base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+                path: None,
+            },
+            "base64",
+        )
+    };
+    let body = serde_json::to_vec(&payload)
+        .map_err(|error| format!("permintaan PaddleOCR tidak dapat disusun ({error})"))?;
+    let url = format!("{base}/ocr");
+    let response = tokio::time::timeout(Duration::from_secs(config.paddle_timeout_secs), async {
+        let response = http_client()
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await?;
+        let status = response.status();
+        let raw = response.bytes().await?;
+        Ok::<_, reqwest::Error>((status, raw))
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "PaddleOCR melewati batas waktu {} detik",
+            config.paddle_timeout_secs
+        )
+    })?
+    .map_err(|error| format!("PaddleOCR tidak dapat dihubungi di {base} ({error})"))?;
+    let (status, raw) = response;
+
+    if !status.is_success() {
+        let text = String::from_utf8_lossy(&raw);
+        let short: String = text.chars().take(200).collect();
+        return Err(format!(
+            "PaddleOCR membalas HTTP {}: {}",
+            status.as_u16(),
+            short.trim()
+        ));
+    }
+    let parsed: PaddleResponse = serde_json::from_slice(&raw)
+        .map_err(|error| format!("balasan PaddleOCR tidak valid ({error})"))?;
+    let average_score = if parsed.lines.is_empty() {
+        0.0
+    } else {
+        parsed.lines.iter().map(|line| line.score).sum::<f64>() / parsed.lines.len() as f64
+    };
+    tracing::debug!(
+        engine = %parsed.engine,
+        version = %parsed.version,
+        seconds = parsed.seconds,
+        lines = parsed.lines.len(),
+        average_score,
+        source,
+        file = %path.display(),
+        "OCR PaddleOCR selesai"
+    );
+    // `text` adalah sumber utama; `lines` dipakai bila sidecar versi lain hanya
+    // mengirim rincian baris.
+    if parsed.text.trim().is_empty() {
+        Ok(parsed
+            .lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"))
+    } else {
+        Ok(parsed.text)
+    }
+}
+
+#[derive(Deserialize)]
+struct PaddleHealth {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    engine: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// Keadaan sidecar PaddleOCR saat diperiksa backend.
+pub enum PaddleStatus {
+    Ready(String),
+    Loading,
+    Unavailable(String),
+}
+
+/// Memeriksa kesiapan sidecar sekali saat startup agar operator melihat bila
+/// model belum termuat atau alamatnya salah.
+pub async fn paddle_status(config: &Config) -> PaddleStatus {
+    let Some(base) = config.paddle_url.as_deref() else {
+        return PaddleStatus::Unavailable("LAPORAN_PADDLE_URL tidak diatur".to_string());
+    };
+    let response = tokio::time::timeout(Duration::from_secs(10), async {
+        let response = http_client().get(format!("{base}/health")).send().await?;
+        let status = response.status();
+        let raw = response.bytes().await?;
+        Ok::<_, reqwest::Error>((status, raw))
+    })
+    .await;
+    let (status, raw) = match response {
+        Err(_) => {
+            return PaddleStatus::Unavailable(
+                "PaddleOCR tidak menjawab dalam 10 detik".to_string(),
+            );
+        }
+        Ok(Err(error)) => {
+            return PaddleStatus::Unavailable(format!(
+                "PaddleOCR tidak dapat dihubungi di {base} ({error})"
+            ));
+        }
+        Ok(Ok(value)) => value,
+    };
+    if !status.is_success() {
+        return PaddleStatus::Unavailable(format!("PaddleOCR membalas HTTP {}", status.as_u16()));
+    }
+    let health: PaddleHealth = match serde_json::from_slice(&raw) {
+        Ok(health) => health,
+        Err(error) => {
+            return PaddleStatus::Unavailable(format!(
+                "balasan health PaddleOCR tidak valid ({error})"
+            ));
+        }
+    };
+    match health.status.as_str() {
+        "ok" => PaddleStatus::Ready(format!("{} {}", health.engine, health.version)),
+        "loading" => PaddleStatus::Loading,
+        _ => PaddleStatus::Unavailable(format!(
+            "PaddleOCR tidak siap: {}",
+            health
+                .error
+                .unwrap_or_else(|| "tanpa keterangan".to_string())
+        )),
+    }
 }
 
 fn watermark_fields(text: &str) -> bool {
@@ -598,7 +845,7 @@ pub fn meaningful(text: &str) -> bool {
 
 pub fn has_address(text: &str) -> bool {
     let lower = text.to_lowercase();
-    const KEYWORDS: [&str; 20] = [
+    const KEYWORDS: [&str; 21] = [
         "jl",
         "jalan",
         "desa",
@@ -619,27 +866,96 @@ pub fn has_address(text: &str) -> bool {
         "gg.",
         "lingkungan",
         "lkr.",
+        "bali",
     ];
     KEYWORDS.iter().any(|keyword| lower.contains(keyword))
 }
 
 pub fn has_time(text: &str) -> bool {
-    text.split_whitespace().any(|token| {
-        let cleaned = token.trim_matches(|character: char| {
-            !character.is_ascii_digit() && character != ':' && character != '.'
+    let mut run = String::new();
+    for character in text.chars() {
+        if character.is_ascii_digit() || matches!(character, ':' | '.' | ';' | '|') {
+            run.push(character);
+        } else {
+            if time_from_run(&run) {
+                return true;
+            }
+            run.clear();
+        }
+    }
+    if time_from_run(&run) {
+        return true;
+    }
+
+    // Sebagian watermark menulis jam tanpa pemisah, mis. "pukul 0713".
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    for (index, token) in tokens.iter().enumerate() {
+        let cleaned = token.trim_matches(|character: char| !character.is_ascii_digit());
+        if cleaned.len() != 4 && cleaned.len() != 6 {
+            continue;
+        }
+        let (Ok(hour), Ok(minute)) = (cleaned[0..2].parse::<u8>(), cleaned[2..4].parse::<u8>())
+        else {
+            continue;
+        };
+        if hour >= 24 || minute >= 60 {
+            continue;
+        }
+        let keyword = tokens[..index].iter().rev().take(2).any(|word| {
+            let word = word
+                .trim_matches(|character: char| !character.is_alphabetic())
+                .to_lowercase();
+            word == "pukul" || word == "jam"
         });
-        let parts: Vec<&str> = cleaned.split([':', '.']).collect();
-        parts.len() >= 2
-            && parts[0].parse::<u8>().is_ok_and(|hour| hour < 24)
-            && parts[1].parse::<u8>().is_ok_and(|minute| minute < 60)
-    })
+        if keyword {
+            return true;
+        }
+    }
+    false
+}
+
+/// Memeriksa satu deret angka/pemisah, mis. `10.18.22` di dalam `29Okt2026-10.18.22`.
+fn time_from_run(run: &str) -> bool {
+    let parts: Vec<&str> = run.split([':', '.', ';', '|']).collect();
+    parts.len() >= 2
+        && parts[0].len() <= 2
+        && parts[0].parse::<u8>().is_ok_and(|hour| hour < 24)
+        && parts[1].parse::<u8>().is_ok_and(|minute| minute < 60)
+}
+
+/// Menghapus spasi di sekitar pemisah tanggal agar `02 / 11 / 2026` terbaca
+/// sebagai satu tanggal.
+fn compact_date_separators(text: &str) -> String {
+    let characters: Vec<char> = text.chars().collect();
+    let is_separator = |value: &char| matches!(*value, '/' | '-' | '.');
+    let mut output = String::with_capacity(text.len());
+    for (index, character) in characters.iter().enumerate() {
+        if character.is_whitespace() {
+            let previous = characters[..index]
+                .iter()
+                .rev()
+                .find(|value| !value.is_whitespace());
+            let next = characters[index + 1..]
+                .iter()
+                .find(|value| !value.is_whitespace());
+            if previous.is_some_and(is_separator) || next.is_some_and(is_separator) {
+                continue;
+            }
+        }
+        output.push(*character);
+    }
+    output
 }
 
 /// Mencari tanggal pertama pada teks watermark: `dd/mm/yyyy`, `dd-mm-yy`,
 /// `dd.mm.yyyy`, `yyyy-mm-dd`, atau `dd NamaBulan yyyy` (Indonesia/Inggris).
 pub fn find_date(text: &str) -> Option<NaiveDate> {
-    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let compacted = compact_date_separators(text);
+    let tokens: Vec<&str> = compacted.split_whitespace().collect();
     for (index, token) in tokens.iter().enumerate() {
+        if let Some(date) = attached_month_date(token) {
+            return Some(date);
+        }
         let numeric = token.trim_matches(|character: char| {
             !character.is_ascii_digit() && character != '/' && character != '-' && character != '.'
         });
@@ -647,22 +963,13 @@ pub fn find_date(text: &str) -> Option<NaiveDate> {
             return Some(date);
         }
 
-        let Some(day) = token
-            .trim_matches(|character: char| !character.is_ascii_digit())
-            .parse::<u32>()
-            .ok()
-        else {
+        let Some(day) = day_number(token) else {
             continue;
         };
-        if !(1..=31).contains(&day) {
-            continue;
-        }
         let Some(month) = tokens.get(index + 1).and_then(|value| month_number(value)) else {
             continue;
         };
-        let Some(year) = tokens.get(index + 2).and_then(|value| {
-            parse_year(value.trim_matches(|character: char| !character.is_ascii_digit()))
-        }) else {
+        let Some(year) = month_year(&tokens, index + 2) else {
             continue;
         };
         if let Some(date) = NaiveDate::from_ymd_opt(year, month, day) {
@@ -680,10 +987,13 @@ fn numeric_date(token: &str) -> Option<NaiveDate> {
     if parts.len() != 3 {
         return None;
     }
-    // Pemisah titik dipakai juga oleh jam (`07.07.09`). Anggap tanggal hanya
-    // bila salah satu ujungnya berupa tahun empat digit.
+    // Pemisah titik dipakai juga oleh jam (`07.07.09`). Tanggal dua digit tahun
+    // hanya diterima bila bagian pertama jelas melebihi 12 (mis. `26.10.26`).
     if separator == '.' && parts[0].len() != 4 && parts[2].len() != 4 {
-        return None;
+        let day = parts[0].parse::<u32>().ok()?;
+        if day <= 12 {
+            return None;
+        }
     }
     let (year, month, day) = if parts[0].len() == 4 {
         (
@@ -701,6 +1011,58 @@ fn numeric_date(token: &str) -> Option<NaiveDate> {
     NaiveDate::from_ymd_opt(year, month, day)
 }
 
+/// Mencari tanggal yang menempel dengan nama bulan, mis. `29Okt2026`.
+fn attached_month_date(raw: &str) -> Option<NaiveDate> {
+    let token = raw.trim_matches(|character: char| !character.is_alphanumeric());
+    if token.len() < 5 {
+        return None;
+    }
+    let lower = token.to_lowercase();
+    for start in 0..lower.len() {
+        if !lower.is_char_boundary(start) {
+            continue;
+        }
+        for length in 3..=9 {
+            let end = start + length;
+            if end > lower.len() || !lower.is_char_boundary(end) {
+                continue;
+            }
+            let Some(month) = month_number(&lower[start..end]) else {
+                continue;
+            };
+            let prefix = &token[..start];
+            let suffix = &token[end..];
+            let day_digits: String = prefix
+                .chars()
+                .rev()
+                .take_while(|character| character.is_ascii_digit())
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            let Ok(day) = day_digits.parse::<u32>() else {
+                continue;
+            };
+            if !(1..=31).contains(&day) {
+                continue;
+            }
+            let year_digits: String = suffix
+                .chars()
+                .take_while(|character| character.is_ascii_digit())
+                .collect();
+            let year =
+                parse_year(&year_digits).or_else(|| year_digits.get(..2).and_then(parse_year));
+            let Some(year) = year else {
+                continue;
+            };
+            if let Some(date) = NaiveDate::from_ymd_opt(year, month, day) {
+                return Some(date);
+            }
+        }
+    }
+    None
+}
+
 fn parse_year(raw: &str) -> Option<i32> {
     let year = raw.parse::<i32>().ok()?;
     match raw.len() {
@@ -710,22 +1072,83 @@ fn parse_year(raw: &str) -> Option<i32> {
     }
 }
 
+/// Membaca angka hari, termasuk salah baca umum OCR seperti `DI` → `01` atau
+/// angka yang menempel pada kata lain seperti `Tuase27` → 27.
+fn day_number(raw: &str) -> Option<u32> {
+    let token = raw.trim_matches(|character: char| !character.is_alphanumeric());
+    if token.is_empty() {
+        return None;
+    }
+    if let Ok(day) = token.parse::<u32>() {
+        return (1..=31).contains(&day).then_some(day);
+    }
+    let mapped: String = token
+        .chars()
+        .map(|character| match character {
+            'O' | 'o' | 'D' | 'd' => '0',
+            'I' | 'i' | 'l' | '|' => '1',
+            other => other,
+        })
+        .collect();
+    if let Ok(day) = mapped.parse::<u32>() {
+        if (1..=31).contains(&day) {
+            return Some(day);
+        }
+    }
+    let start = token
+        .char_indices()
+        .rev()
+        .take_while(|(_, character)| character.is_ascii_digit())
+        .last()
+        .map(|(index, _)| index)?;
+    let day = token[start..].parse::<u32>().ok()?;
+    (1..=31).contains(&day).then_some(day)
+}
+
+/// Tahun pada tanggal bernama bulan. OCR kadang memecah `2026` menjadi `20`
+/// dan `26`; gabungkan bila token berikutnya juga dua digit.
+fn month_year(tokens: &[&str], index: usize) -> Option<i32> {
+    let raw = tokens
+        .get(index)?
+        .trim_matches(|character: char| !character.is_ascii_digit());
+    let year = parse_year(raw)?;
+    if raw.len() == 2 {
+        if let Some(next) = tokens.get(index + 1) {
+            let next_raw = next.trim_matches(|character: char| !character.is_ascii_digit());
+            if next_raw.len() == 2 {
+                if let Ok(combined) = format!("{raw}{next_raw}").parse::<i32>() {
+                    if (1900..=2100).contains(&combined) {
+                        return Some(combined);
+                    }
+                }
+            }
+        }
+    }
+    Some(year)
+}
+
 fn month_number(raw: &str) -> Option<u32> {
-    let key = raw
-        .trim_matches(|character: char| !character.is_alphabetic())
-        .to_lowercase();
+    let cleaned = raw.trim_matches(|character: char| !character.is_alphanumeric());
+    if cleaned.is_empty() {
+        return None;
+    }
+    let mut key = cleaned.to_lowercase();
+    // OCR kadang membaca huruf O sebagai angka nol, mis. "0kt".
+    if key.starts_with('0') {
+        key.replace_range(0..1, "o");
+    }
     match key.as_str() {
         "jan" | "januari" | "january" => Some(1),
-        "feb" | "februari" | "february" => Some(2),
+        "feb" | "peb" | "pebruari" | "februari" | "february" => Some(2),
         "mar" | "maret" | "march" => Some(3),
         "apr" | "april" => Some(4),
         "mei" | "may" => Some(5),
         "jun" | "juni" | "june" => Some(6),
         "jul" | "juli" | "july" => Some(7),
-        "agu" | "agt" | "agustus" | "aug" | "august" => Some(8),
+        "agu" | "agt" | "agust" | "agustus" | "aug" | "august" => Some(8),
         "sep" | "sept" | "september" => Some(9),
-        "okt" | "oktober" | "oct" | "october" => Some(10),
-        "nov" | "november" => Some(11),
+        "okt" | "okto" | "oktober" | "oct" | "october" => Some(10),
+        "nov" | "nop" | "nopember" | "november" => Some(11),
         "des" | "desember" | "dec" | "december" => Some(12),
         _ => None,
     }
@@ -739,7 +1162,7 @@ pub fn find_coords(text: &str) -> Option<(f64, f64)> {
     let mut numbers = Vec::new();
     let mut index = 0;
     while index < tokens.len() {
-        let Some((value, mut suffix)) = coordinate_number(tokens[index]) else {
+        let Some((value, mut suffix, decimals, degree)) = coordinate_number(tokens[index]) else {
             index += 1;
             continue;
         };
@@ -749,7 +1172,7 @@ pub fn find_coords(text: &str) -> Option<(f64, f64)> {
                 index += 1;
             }
         }
-        numbers.push((value, suffix));
+        numbers.push((value, suffix, decimals, degree));
         index += 1;
     }
 
@@ -761,7 +1184,9 @@ pub fn find_coords(text: &str) -> Option<(f64, f64)> {
         };
         let lat = apply_hemisphere(first.0, first.1);
         let lon = apply_hemisphere(second.0, second.1);
-        if lat.abs() <= 90.0 && lon.abs() <= 180.0 && (lat != 0.0 || lon != 0.0) {
+        let cued = first.1.is_some() || second.1.is_some() || first.3 || second.3;
+        let precise = first.2 >= 4 && second.2 >= 4;
+        if plausible_coordinates(lat, lon) && (cued || precise) {
             return Some((lat, lon));
         }
     }
@@ -781,14 +1206,23 @@ fn normalize_coordinate_separators(text: &str) -> String {
             && characters[index + 1].is_ascii_digit()
         {
             output.push('.');
-        } else {
-            output.push(*character);
+            continue;
+        }
+        output.push(*character);
+        // Pisahkan arah mata angin yang menempel pada koordinat berikutnya,
+        // mis. `8,5431S115,2142E` → `8.5431S 115.2142E`.
+        if matches!(*character, 'S' | 'N' | 'E' | 'W' | 's' | 'n' | 'e' | 'w')
+            && characters
+                .get(index + 1)
+                .is_some_and(|next| next.is_ascii_digit())
+        {
+            output.push(' ');
         }
     }
     output
 }
 
-fn coordinate_number(raw: &str) -> Option<(f64, Option<char>)> {
+fn coordinate_number(raw: &str) -> Option<(f64, Option<char>, usize, bool)> {
     let token = raw.trim_matches(|character: char| {
         character == ','
             || character == ';'
@@ -804,11 +1238,20 @@ fn coordinate_number(raw: &str) -> Option<(f64, Option<char>)> {
             && character != 'N'
             && character != 'E'
             && character != 'W'
+            && character != 's'
+            && character != 'n'
+            && character != 'e'
+            && character != 'w'
     });
     let (number, suffix) = match token.chars().last() {
-        Some(last @ ('S' | 'N' | 'E' | 'W')) => (&token[..token.len() - 1], Some(last)),
+        Some(last @ ('S' | 'N' | 'E' | 'W' | 's' | 'n' | 'e' | 'w')) => {
+            (&token[..token.len() - 1], Some(last.to_ascii_uppercase()))
+        }
         _ => (token, None),
     };
+    let number = number.trim_matches(|character: char| {
+        !character.is_ascii_digit() && character != '.' && character != '-'
+    });
     // Koordinat selalu memakai desimal; angka bulat seperti tahun diabaikan.
     if !number.contains('.') {
         return None;
@@ -817,7 +1260,8 @@ fn coordinate_number(raw: &str) -> Option<(f64, Option<char>)> {
     if !value.is_finite() || value.abs() > 180.0 {
         return None;
     }
-    Some((value, suffix))
+    let decimals = number.split('.').nth(1).map_or(0, str::len);
+    Some((value, suffix, decimals, raw.contains('°')))
 }
 
 fn hemisphere(raw: &str) -> Option<char> {
@@ -836,6 +1280,12 @@ fn apply_hemisphere(value: f64, hemisphere: Option<char>) -> f64 {
         Some('N' | 'E') => value.abs(),
         _ => value,
     }
+}
+
+/// Batas longgar wilayah Indonesia. Angka desimal acak dari latar foto tidak
+/// dianggap koordinat bila pasangannya tidak masuk rentang ini.
+fn plausible_coordinates(lat: f64, lon: f64) -> bool {
+    (-11.5..=6.5).contains(&lat) && (94.0..=142.0).contains(&lon)
 }
 
 pub fn haversine_meters(left: (f64, f64), right: (f64, f64)) -> f64 {
@@ -908,6 +1358,39 @@ mod tests {
         );
         assert_eq!(find_date("2026-10-26").unwrap().to_string(), "2026-10-26");
         assert_eq!(find_date("26.10.2026").unwrap().to_string(), "2026-10-26");
+        assert_eq!(find_date("26.10.26").unwrap().to_string(), "2026-10-26");
+        assert_eq!(
+            find_date("02 / 11 / 2026").unwrap().to_string(),
+            "2026-11-02"
+        );
+        assert_eq!(
+            find_date("Senin, 02 Nopember 2026").unwrap().to_string(),
+            "2026-11-02"
+        );
+        assert_eq!(
+            find_date("02 Pebruari 2026").unwrap().to_string(),
+            "2026-02-02"
+        );
+        assert_eq!(
+            find_date("Minggu, DI November 2026").unwrap().to_string(),
+            "2026-11-01"
+        );
+        assert_eq!(
+            find_date("29 Okt 20 26 10.46.32").unwrap().to_string(),
+            "2026-10-29"
+        );
+        assert_eq!(
+            find_date("Tuase27 Oct 2026").unwrap().to_string(),
+            "2026-10-27"
+        );
+        assert_eq!(
+            find_date("29Okt2026-10.18.22").unwrap().to_string(),
+            "2026-10-29"
+        );
+        assert_eq!(
+            find_date("26 0kt 2026 07.07.09").unwrap().to_string(),
+            "2026-10-26"
+        );
         assert!(find_date("8.6819744").is_none());
         assert!(find_date("07.07.09").is_none());
         assert!(find_date("26/13/2026").is_none());
@@ -917,6 +1400,13 @@ mod tests {
     fn parses_dot_time_separator() {
         assert!(has_time("26 Okt 2026 07.07.09"));
         assert!(has_time("26/10/26 07:01 AM"));
+        assert!(has_time("29Okt2026-10.18.22"));
+        assert!(has_time("07;13"));
+        assert!(has_time("07|13"));
+        assert!(has_time("pukul 0713"));
+        assert!(has_time("jam 071300"));
+        assert!(!has_time("0713"));
+        assert!(!has_time("kode 0713"));
         assert!(!has_time("8.6819744"));
         assert!(!has_time("26.10.2026"));
     }
@@ -931,6 +1421,10 @@ mod tests {
         assert!((lat + 8.5431).abs() < 1e-6, "lat: {lat}");
         assert!((lon - 115.2142).abs() < 1e-6, "lon: {lon}");
 
+        let (lat, lon) = find_coords("8,5431S115,2142E").unwrap();
+        assert!((lat + 8.5431).abs() < 1e-6, "lat: {lat}");
+        assert!((lon - 115.2142).abs() < 1e-6, "lon: {lon}");
+
         let (lat, lon) = find_coords("Lat -8.5410946 Long 115.3472174").unwrap();
         assert!((lat + 8.5410946).abs() < 1e-6, "lat: {lat}");
         assert!((lon - 115.3472174).abs() < 1e-6, "lon: {lon}");
@@ -941,6 +1435,12 @@ mod tests {
 
         assert!(find_coords("Kode Foto: EW8QY6P2HK4C3H").is_none());
         assert!(find_coords("Senin, 02 November 2026 07:13").is_none());
+        assert!(find_coords("8.0 19.0").is_none());
+        assert!(find_coords("0.0 4.0").is_none());
+        assert!(find_coords("0.1 120.0").is_none());
+        assert!(find_coords("0.10 120.00").is_none());
+        assert!(find_coords("-8.65S 115.22E").is_some());
+        assert!(find_coords("-8.65, 115.22").is_none());
     }
 
     #[test]
@@ -948,6 +1448,7 @@ mod tests {
         assert!(has_address("Kp. Toyapakeh, Kec. Nusa Penida"));
         assert!(has_address("Jalan Pendet, Kecamatan Abiansemal"));
         assert!(has_address("Gang Melati No. 3"));
+        assert!(has_address("Meliling, Tabanan, Bali"));
     }
 
     #[test]
@@ -1067,8 +1568,92 @@ mod tests {
     async fn ocr_error_mentions_both_language_attempts() {
         let mut config = Config::test_config();
         config.tesseract_path = "tesseract-tidak-terpasang".to_string();
-        let error = ocr(&config, Path::new("gambar.jpg")).await.unwrap_err();
+        let error = ocr(&config, Path::new("gambar.jpg"), &[], None)
+            .await
+            .unwrap_err();
         assert!(error.contains("ind+eng"), "pesan: {error}");
         assert!(error.contains("eng"), "pesan: {error}");
+    }
+
+    #[tokio::test]
+    async fn talks_to_paddle_sidecar_over_http() {
+        use axum::{Json, Router, routing::post};
+
+        async fn ocr_handler(Json(body): Json<serde_json::Value>) -> Json<serde_json::Value> {
+            assert!(
+                body.get("image_base64")
+                    .and_then(|value| value.as_str())
+                    .is_some(),
+                "permintaan harus membawa image_base64: {body}"
+            );
+            Json(serde_json::json!({
+                "text": "19 Okt 2026 07:19\nJalan Raya Darmasaba",
+                "lines": [{"text": "19 Okt 2026 07:19", "score": 0.9}],
+                "seconds": 0.1,
+                "engine": "PaddleOCR",
+                "version": "uji"
+            }))
+        }
+
+        async fn health_handler() -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "status": "ok",
+                "engine": "PaddleOCR",
+                "version": "uji",
+                "error": null
+            }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = Router::new()
+            .route("/ocr", post(ocr_handler))
+            .route("/health", axum::routing::get(health_handler));
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let mut config = Config::test_config();
+        config.paddle_url = Some(format!("http://{address}"));
+        let text = paddle_ocr(&config, Path::new("gambar.jpg"), b"bukan-gambar")
+            .await
+            .unwrap();
+        assert_eq!(text, "19 Okt 2026 07:19\nJalan Raya Darmasaba");
+
+        match paddle_status(&config).await {
+            PaddleStatus::Ready(info) => assert_eq!(info, "PaddleOCR uji"),
+            _ => panic!("sidecar seharusnya siap"),
+        }
+    }
+
+    #[test]
+    fn asks_paddle_only_when_tesseract_is_incomplete_or_date_is_suspicious() {
+        let expected = NaiveDate::from_ymd_opt(2026, 10, 19);
+        let complete = "19 Okt 2026 07:19\nJalan Raya Darmasaba";
+        assert!(!needs_paddle(complete, expected));
+        // Alamat belum ada.
+        assert!(needs_paddle("19 Okt 2026 07:19", expected));
+        // Tanggal jauh dari laporan (bulan salah baca).
+        assert!(needs_paddle(
+            complete,
+            Some(NaiveDate::from_ymd_opt(2026, 10, 29).unwrap())
+        ));
+        // Tahun salah baca.
+        assert!(needs_paddle(
+            "19 Okt 2020 07:19\nJalan Raya Darmasaba",
+            expected
+        ));
+        // Tanpa tanggal laporan, tahun tidak bisa dinilai.
+        assert!(!needs_paddle(complete, None));
+        // Selisih satu hari masih ditoleransi.
+        assert!(!needs_paddle(
+            complete,
+            Some(NaiveDate::from_ymd_opt(2026, 10, 20).unwrap())
+        ));
+        // Dokumen/papan jadwal tidak perlu OCR kedua.
+        assert!(!needs_paddle(
+            "JADWAL PIKET\nTANGGAL\nNAMA\nPANGKAT\nKETERANGAN",
+            expected
+        ));
     }
 }

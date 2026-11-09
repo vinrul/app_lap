@@ -810,6 +810,66 @@ export interface QuickWinDetail {
   activities: QuickWinActivity[]
 }
 
+export interface QwMapPoint {
+  kode: string
+  tanggal: string
+  satuan: string
+  polres: string
+  kegiatan: string
+  latitude: number
+  longitude: number
+}
+
+export interface QwMapResponse {
+  points: QwMapPoint[]
+  gatur_feedback: string[]
+  polidik_feedback: string[]
+  kumpul_feedback: string[]
+  kumpul_feedback_total: number
+  green_daily: PoliranDay[]
+  jumling_daily: PoliranDay[]
+  subuh_daily: PoliranDay[]
+  minggu_daily: PoliranDay[]
+  gatur_daily: PoliranDay[]
+  polidik_daily: PoliranDay[]
+  kumpul_daily: PoliranDay[]
+}
+
+export interface QwTimelineEntry {
+  tanggal: string
+  kode: string
+  executor: string
+  kegiatan: string
+  location: string
+  direct: boolean
+}
+
+export interface QwIssue {
+  tanggal: string
+  location: string
+  text: string
+}
+
+export interface LeadershipTimelineResponse {
+  entries: QwTimelineEntry[]
+  direct: number
+  represented: number
+  qw43: number
+  issues: QwIssue[]
+}
+
+export interface PoliranDay {
+  date: string
+  count: number
+}
+
+export interface PoliranSummaryResponse {
+  daily: PoliranDay[]
+  warga: number
+  mitra: number
+  activities: LabeledCount[]
+}
+
 export interface CoverageResponse {
   date_start: string
   date_end: string

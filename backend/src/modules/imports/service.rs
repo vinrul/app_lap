@@ -7,6 +7,8 @@ use sha2::{Digest, Sha256};
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, sqlite::SqliteRow};
 use uuid::Uuid;
 
+use chrono::{Days, NaiveDate};
+
 use crate::{
     config::Config,
     error::{ApiError, ApiResult},
@@ -17,17 +19,19 @@ use crate::{
             coverage::{self, Scope, UnitMode},
             evidence_store,
             models::{
-                CoverageResponse, EvidenceView, ImportPreview, ImportView, ImportedRow, ParsedRow,
-                QuickWinActivity, QuickWinCodeCoverage, QuickWinDetailResponse, RecordQuery,
-                RecordView, RecordsResponse, UnitDetailResponse,
+                CoverageResponse, EvidenceView, ImportPreview, ImportView, ImportedRow,
+                LeadershipTimelineResponse, ParsedRow, PoliranDay, PoliranSummaryResponse,
+                QuickWinActivity, QuickWinCodeCoverage, QuickWinDetailResponse, QwIssue,
+                QwMapPoint, QwMapResponse, QwTimelineEntry, RecordQuery, RecordView,
+                RecordsResponse, UnitDetailResponse,
             },
             parser, qw,
         },
         periods, reports,
     },
     shared::{
-        LabeledCount, audit, cache, extract_links, is_noise, parse_fields, satker_label,
-        unit_breakdown,
+        LabeledCount, audit, cache, extract_links, is_noise, parse_count, parse_fields,
+        satker_label, unit_breakdown,
     },
 };
 
@@ -520,6 +524,685 @@ fn apply_range(qb: &mut QueryBuilder<Sqlite>, start_date: &str, end_date: &str) 
     qb.push(" AND ");
     qb.push_bind(end_date.to_string());
     qb.push(") ");
+}
+
+/// Titik koordinat QW1.1/QW1.2/QW1.4 dan contoh suara warga untuk template desain.
+pub async fn qw_map_for_period(
+    db: &SqlitePool,
+    period_id: &str,
+    scope: &DataScope,
+) -> ApiResult<QwMapResponse> {
+    let (start, end, _) = periods::service::dates(db, period_id).await?;
+    let mut qb = QueryBuilder::<Sqlite>::new(ranked_cte());
+    apply_range(&mut qb, &start, &end);
+    qb.push(
+        " SELECT kode, tanggal, satuan, polres, kegiatan, latitude, longitude, parsed_json, isian_laporan, level, satker
+          FROM ranked WHERE rn = 1
+            AND (kode LIKE 'QW1.1%' OR kode LIKE 'QW1.2%' OR kode LIKE 'QW1.4%'
+              OR kode LIKE 'QW1.5%' OR kode LIKE 'QW1.6%' OR kode LIKE 'QW1.7%'
+              OR kode LIKE 'QW1.8%')",
+    );
+    match scope {
+        DataScope::All => {}
+        DataScope::None => {
+            qb.push(" AND 1 = 0");
+        }
+        DataScope::Polres(polres) => {
+            qb.push(" AND polres = ").push_bind(polres.clone());
+        }
+        DataScope::Polda { satker } => match satker {
+            Some(satker) => {
+                qb.push(" AND satker = ").push_bind(satker.clone());
+            }
+            None => {
+                qb.push(" AND level = 'Polda'");
+            }
+        },
+    }
+    qb.push(" ORDER BY tanggal, id");
+
+    let rows = qb.build().fetch_all(db).await.map_err(ApiError::internal)?;
+    let mut response = QwMapResponse::default();
+    let mut green_daily: BTreeMap<String, i64> = BTreeMap::new();
+    let mut jumling_daily: BTreeMap<String, i64> = BTreeMap::new();
+    let mut subuh_daily: BTreeMap<String, i64> = BTreeMap::new();
+    let mut minggu_daily: BTreeMap<String, i64> = BTreeMap::new();
+    let mut gatur_daily: BTreeMap<String, i64> = BTreeMap::new();
+    let mut polidik_daily: BTreeMap<String, i64> = BTreeMap::new();
+    let mut kumpul_daily: BTreeMap<String, i64> = BTreeMap::new();
+    if let (Ok(start_date), Ok(end_date)) = (
+        NaiveDate::parse_from_str(&start, "%Y-%m-%d"),
+        NaiveDate::parse_from_str(&end, "%Y-%m-%d"),
+    ) {
+        let mut current = start_date;
+        while current <= end_date {
+            let date = current.format("%Y-%m-%d").to_string();
+            green_daily.insert(date.clone(), 0);
+            jumling_daily.insert(date.clone(), 0);
+            subuh_daily.insert(date.clone(), 0);
+            minggu_daily.insert(date.clone(), 0);
+            gatur_daily.insert(date.clone(), 0);
+            polidik_daily.insert(date.clone(), 0);
+            kumpul_daily.insert(date, 0);
+            match current.checked_add_days(Days::new(1)) {
+                Some(next) => current = next,
+                None => break,
+            }
+        }
+    }
+    let mut seen_points: BTreeSet<(String, i64, i64)> = BTreeSet::new();
+    let mut gatur_feedback: Vec<(u8, String)> = Vec::new();
+    let mut polidik_feedback: Vec<(u8, String)> = Vec::new();
+    let mut kumpul_feedback: Vec<(u8, String)> = Vec::new();
+    let mut seen_gatur: BTreeSet<String> = BTreeSet::new();
+    let mut seen_polidik: BTreeSet<String> = BTreeSet::new();
+    let mut seen_kumpul: BTreeSet<String> = BTreeSet::new();
+
+    for row in rows {
+        let raw_kode: String = row.get("kode");
+        let kode = qw::normalize(&raw_kode);
+        if kode != "QW1.1"
+            && kode != "QW1.2"
+            && kode != "QW1.4"
+            && kode != "QW1.5"
+            && kode != "QW1.6"
+            && kode != "QW1.7"
+            && kode != "QW1.8"
+        {
+            continue;
+        }
+        if kode == "QW1.1" {
+            let tanggal: String = row.get("tanggal");
+            *gatur_daily.entry(tanggal).or_default() += 1;
+        }
+        if kode == "QW1.2" {
+            let tanggal: String = row.get("tanggal");
+            *polidik_daily.entry(tanggal).or_default() += 1;
+        }
+        if kode == "QW1.4" {
+            let tanggal: String = row.get("tanggal");
+            *kumpul_daily.entry(tanggal).or_default() += 1;
+        }
+        if kode == "QW1.5" {
+            let tanggal: String = row.get("tanggal");
+            *green_daily.entry(tanggal).or_default() += 1;
+        }
+        if kode == "QW1.6" {
+            let tanggal: String = row.get("tanggal");
+            *jumling_daily.entry(tanggal).or_default() += 1;
+        }
+        if kode == "QW1.7" {
+            let tanggal: String = row.get("tanggal");
+            *subuh_daily.entry(tanggal).or_default() += 1;
+        }
+        if kode == "QW1.8" {
+            let tanggal: String = row.get("tanggal");
+            *minggu_daily.entry(tanggal).or_default() += 1;
+        }
+        let latitude: Option<f64> = row.try_get("latitude").ok().flatten();
+        let longitude: Option<f64> = row.try_get("longitude").ok().flatten();
+        if let (Some(latitude), Some(longitude)) = (latitude, longitude) {
+            let key = (
+                kode.clone(),
+                (latitude * 1_000_000.0).round() as i64,
+                (longitude * 1_000_000.0).round() as i64,
+            );
+            if seen_points.insert(key) && response.points.len() < 2000 {
+                response.points.push(QwMapPoint {
+                    kode: kode.clone(),
+                    tanggal: row.get("tanggal"),
+                    satuan: row.get("satuan"),
+                    polres: row.get("polres"),
+                    kegiatan: row.get("kegiatan"),
+                    latitude,
+                    longitude,
+                });
+            }
+        }
+
+        let parsed: ParsedRow =
+            serde_json::from_str(&row.get::<String, _>("parsed_json")).unwrap_or_default();
+        let fields = if parsed.fields.is_empty() {
+            parse_fields(&row.get::<String, _>("isian_laporan"))
+        } else {
+            parsed.fields
+        };
+        for (key, value) in fields {
+            let lower_key = key.to_ascii_lowercase();
+            let is_feedback = [
+                "saran", "keluhan", "aspirasi", "masukan", "komplain", "harapan",
+            ]
+            .iter()
+            .any(|word| lower_key.contains(word));
+            if !is_feedback {
+                continue;
+            }
+            if [
+                "personel",
+                "polri",
+                "anggota",
+                "dokumentasi",
+                "link",
+                "status",
+            ]
+            .iter()
+            .any(|word| lower_key.contains(word))
+            {
+                continue;
+            }
+            let cleaned = value.split_whitespace().collect::<Vec<_>>().join(" ");
+            if is_noise(&cleaned) || cleaned.chars().count() < 12 {
+                continue;
+            }
+            let sentence: String = cleaned.chars().take(220).collect();
+            let identity = sentence.to_ascii_lowercase();
+            let lower_value = sentence.to_ascii_lowercase();
+            let label: String = row
+                .try_get::<String, _>("polres")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| row.try_get::<String, _>("satuan").ok())
+                .unwrap_or_default();
+            let summary = if label.trim().is_empty() {
+                sentence
+            } else {
+                format!("{label}: {sentence}")
+            };
+            if kode == "QW1.2" {
+                if !seen_polidik.insert(identity) {
+                    continue;
+                }
+                let school = ["sekolah", "siswa", "guru", "murid", "pelajar", "orang tua"]
+                    .iter()
+                    .any(|word| lower_key.contains(word) || lower_value.contains(word));
+                polidik_feedback.push((if school { 0 } else { 1 }, summary));
+            } else if kode == "QW1.4" {
+                response.kumpul_feedback_total += 1;
+                if !seen_kumpul.insert(identity) {
+                    continue;
+                }
+                let citizen = [
+                    "warga",
+                    "masyarakat",
+                    "desa",
+                    "banjar",
+                    "paguyuban",
+                    "nelayan",
+                    "ojek",
+                    "porter",
+                    "wisata",
+                    "pasar",
+                ]
+                .iter()
+                .any(|word| lower_key.contains(word) || lower_value.contains(word));
+                kumpul_feedback.push((if citizen { 0 } else { 1 }, summary));
+            } else if kode == "QW1.1" {
+                if !seen_gatur.insert(identity) {
+                    continue;
+                }
+                let citizen = [
+                    "warga",
+                    "masyarakat",
+                    "jalan",
+                    "lalu lintas",
+                    "macet",
+                    "helm",
+                    "knalpot",
+                ]
+                .iter()
+                .any(|word| lower_key.contains(word) || lower_value.contains(word));
+                gatur_feedback.push((if citizen { 0 } else { 1 }, summary));
+            }
+        }
+    }
+
+    response.gatur_feedback = pick_feedback(gatur_feedback, 3);
+    response.polidik_feedback = pick_feedback(polidik_feedback, 3);
+    response.kumpul_feedback = pick_feedback(kumpul_feedback, 60);
+    response.green_daily = green_daily
+        .into_iter()
+        .map(|(date, count)| PoliranDay { date, count })
+        .collect();
+    response.jumling_daily = jumling_daily
+        .into_iter()
+        .map(|(date, count)| PoliranDay { date, count })
+        .collect();
+    response.subuh_daily = subuh_daily
+        .into_iter()
+        .map(|(date, count)| PoliranDay { date, count })
+        .collect();
+    response.minggu_daily = minggu_daily
+        .into_iter()
+        .map(|(date, count)| PoliranDay { date, count })
+        .collect();
+    response.gatur_daily = gatur_daily
+        .into_iter()
+        .map(|(date, count)| PoliranDay { date, count })
+        .collect();
+    response.polidik_daily = polidik_daily
+        .into_iter()
+        .map(|(date, count)| PoliranDay { date, count })
+        .collect();
+    response.kumpul_daily = kumpul_daily
+        .into_iter()
+        .map(|(date, count)| PoliranDay { date, count })
+        .collect();
+    Ok(response)
+}
+
+fn pick_feedback(mut items: Vec<(u8, String)>, limit: usize) -> Vec<String> {
+    items.sort_by_key(|(priority, _)| *priority);
+    items
+        .into_iter()
+        .map(|(_, text)| text)
+        .take(limit)
+        .collect()
+}
+
+const MAIN_PIMPINAN_CODES: [&str; 8] = [
+    "QW1.1", "QW1.2", "QW1.3", "QW1.4", "QW1.5", "QW1.6", "QW1.7", "QW1.8",
+];
+
+/// Timeline kegiatan pimpinan Polda, hitungan kartu, dan isu forum pimpinan.
+pub async fn leadership_for_period(
+    db: &SqlitePool,
+    period_id: &str,
+    scope: &DataScope,
+) -> ApiResult<LeadershipTimelineResponse> {
+    let (start, end, _) = periods::service::dates(db, period_id).await?;
+    let mut qb = QueryBuilder::<Sqlite>::new(ranked_cte());
+    apply_range(&mut qb, &start, &end);
+    qb.push(
+        " SELECT kode, tanggal, pejabat_pelaksana, pelaksana, kegiatan, parsed_json, isian_laporan
+          FROM ranked WHERE rn = 1 AND level = 'Polda'",
+    );
+    match scope {
+        DataScope::All => {}
+        DataScope::None => {
+            qb.push(" AND 1 = 0");
+        }
+        DataScope::Polres(_) => {
+            qb.push(" AND 1 = 0");
+        }
+        DataScope::Polda { satker } => {
+            if let Some(satker) = satker {
+                qb.push(" AND satker = ").push_bind(satker.clone());
+            }
+        }
+    }
+    qb.push(" ORDER BY tanggal, id");
+
+    let rows = qb.build().fetch_all(db).await.map_err(ApiError::internal)?;
+    let mut entries: BTreeMap<(String, String), QwTimelineEntry> = BTreeMap::new();
+    let mut issues: Vec<QwIssue> = Vec::new();
+    let mut qw43 = 0_i64;
+
+    for row in rows {
+        let kode = qw::normalize(&row.get::<String, _>("kode"));
+        if kode == "QW4.3" {
+            qw43 += 1;
+        }
+        if !MAIN_PIMPINAN_CODES.contains(&kode.as_str()) {
+            continue;
+        }
+        let parsed: ParsedRow =
+            serde_json::from_str(&row.get::<String, _>("parsed_json")).unwrap_or_default();
+        let fields = if parsed.fields.is_empty() {
+            parse_fields(&row.get::<String, _>("isian_laporan"))
+        } else {
+            parsed.fields
+        };
+        let tanggal: String = row.get("tanggal");
+        let executor = short_executor(
+            &row.get::<String, _>("pejabat_pelaksana"),
+            &row.get::<String, _>("pelaksana"),
+        );
+        let direct = executor == "Kapolda";
+        let location = row_location(&fields);
+        let kegiatan = strip_parenthetical(&row.get::<String, _>("kegiatan"));
+        entries
+            .entry((tanggal.clone(), kode.clone()))
+            .or_insert_with(|| QwTimelineEntry {
+                tanggal: tanggal.clone(),
+                kode: kode.clone(),
+                executor,
+                kegiatan,
+                location: location.clone(),
+                direct,
+            });
+        if let Some(text) = issue_text(&fields) {
+            issues.push(QwIssue {
+                tanggal,
+                location,
+                text,
+            });
+        }
+    }
+
+    let mut entries: Vec<QwTimelineEntry> = entries.into_values().collect();
+    entries.sort_by(|left, right| {
+        left.tanggal
+            .cmp(&right.tanggal)
+            .then_with(|| left.kode.cmp(&right.kode))
+    });
+    entries.truncate(8);
+    let direct = entries.iter().filter(|entry| entry.direct).count() as i64;
+    let represented = entries.len() as i64 - direct;
+
+    let mut seen_issues: BTreeSet<String> = BTreeSet::new();
+    issues.retain(|issue| seen_issues.insert(issue.text.to_lowercase()));
+    issues.sort_by(|left, right| left.tanggal.cmp(&right.tanggal));
+    issues.truncate(4);
+
+    Ok(LeadershipTimelineResponse {
+        entries,
+        direct,
+        represented,
+        qw43,
+        issues,
+    })
+}
+
+fn row_location(fields: &BTreeMap<String, String>) -> String {
+    for (key, value) in fields {
+        let lower = key.to_ascii_lowercase();
+        if !["lokasi kegiatan", "nama lokasi", "tempat"]
+            .iter()
+            .any(|word| lower.contains(word))
+        {
+            continue;
+        }
+        if ["pertimbangan", "alasan", "pilihan", "uraian"]
+            .iter()
+            .any(|word| lower.contains(word))
+        {
+            continue;
+        }
+        let cleaned = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        if is_noise(&cleaned) {
+            continue;
+        }
+        let short = cleaned.split(" (").next().unwrap_or(&cleaned).trim();
+        if short.chars().any(char::is_alphabetic) {
+            return short.chars().take(90).collect();
+        }
+    }
+    String::new()
+}
+
+fn issue_text(fields: &BTreeMap<String, String>) -> Option<String> {
+    const COMPLAINT_WORDS: [&str; 18] = [
+        "keluhan",
+        "masalah",
+        "macet",
+        "pencurian",
+        "narkoba",
+        "miras",
+        "sampah",
+        "parkir",
+        "balap",
+        "knalpot",
+        "pju",
+        "cctv",
+        "judi",
+        "begal",
+        "minta",
+        "harap",
+        "kurang",
+        "belum",
+    ];
+    let mut best: Option<(i32, String)> = None;
+    for (key, value) in fields {
+        let lower_key = key.to_ascii_lowercase();
+        let has_feedback = [
+            "pendapat/masukan masyarakat",
+            "saran",
+            "keluhan",
+            "masukan",
+            "problem",
+        ]
+        .iter()
+        .any(|word| lower_key.contains(word));
+        if !has_feedback {
+            continue;
+        }
+        if [
+            "personel",
+            "polri",
+            "anggota",
+            "tindak lanjut",
+            "status",
+            "bentuk",
+            "disampaikan oleh",
+        ]
+        .iter()
+        .any(|word| lower_key.contains(word))
+        {
+            continue;
+        }
+        let cleaned = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        if is_noise(&cleaned) || cleaned.chars().count() < 20 {
+            continue;
+        }
+        let lower_value = cleaned.to_ascii_lowercase();
+        if lower_value.contains("0 saran atau keluhan")
+            || (lower_value.contains("nihil") && !lower_value.contains("tidak"))
+        {
+            continue;
+        }
+        let mut score = 0_i32;
+        if lower_key.contains("uraian") {
+            score += 4;
+        }
+        if lower_key.contains("pendapat/masukan") {
+            score += 2;
+        }
+        if COMPLAINT_WORDS
+            .iter()
+            .any(|word| lower_value.contains(word))
+        {
+            score += 2;
+        }
+        if lower_key.contains("tema") {
+            score -= 2;
+        }
+        if best.as_ref().is_none_or(|(previous, _)| score > *previous) {
+            best = Some((score, cleaned.chars().take(300).collect()));
+        }
+    }
+    best.map(|(_, text)| text)
+}
+
+fn strip_parenthetical(value: &str) -> String {
+    let mut output = String::new();
+    let mut depth = 0_u32;
+    for character in value.chars() {
+        match character {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => output.push(character),
+            _ => {}
+        }
+    }
+    output.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn short_executor(pejabat: &str, pelaksana: &str) -> String {
+    let raw = if !is_noise(pejabat) {
+        pejabat
+    } else if !is_noise(pelaksana) {
+        pelaksana
+    } else {
+        "Polda"
+    };
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("wakapolda") {
+        return "Wakapolda".to_string();
+    }
+    if lower.contains("kapolda") {
+        return "Kapolda".to_string();
+    }
+    if lower.contains("irwasda") {
+        return "Irwasda".to_string();
+    }
+    raw.split('/')
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .chars()
+        .take(40)
+        .collect()
+}
+
+/// Ringkasan Poliran (QW1.3): laporan harian, warga, mitra, dan bentuk kegiatan.
+pub async fn poliran_for_period(
+    db: &SqlitePool,
+    period_id: &str,
+    scope: &DataScope,
+) -> ApiResult<PoliranSummaryResponse> {
+    let (start, end, _) = periods::service::dates(db, period_id).await?;
+    let mut qb = QueryBuilder::<Sqlite>::new(ranked_cte());
+    apply_range(&mut qb, &start, &end);
+    qb.push(
+        " SELECT tanggal, parsed_json, isian_laporan FROM ranked
+          WHERE rn = 1 AND kode LIKE 'QW1.3%'",
+    );
+    match scope {
+        DataScope::All => {}
+        DataScope::None => {
+            qb.push(" AND 1 = 0");
+        }
+        DataScope::Polres(polres) => {
+            qb.push(" AND polres = ").push_bind(polres.clone());
+        }
+        DataScope::Polda { satker } => match satker {
+            Some(satker) => {
+                qb.push(" AND satker = ").push_bind(satker.clone());
+            }
+            None => {
+                qb.push(" AND level = 'Polda'");
+            }
+        },
+    }
+    qb.push(" ORDER BY tanggal, id");
+
+    let rows = qb.build().fetch_all(db).await.map_err(ApiError::internal)?;
+    let mut daily: BTreeMap<String, i64> = BTreeMap::new();
+    if let (Ok(start_date), Ok(end_date)) = (
+        NaiveDate::parse_from_str(&start, "%Y-%m-%d"),
+        NaiveDate::parse_from_str(&end, "%Y-%m-%d"),
+    ) {
+        let mut current = start_date;
+        while current <= end_date {
+            daily.insert(current.format("%Y-%m-%d").to_string(), 0);
+            match current.checked_add_days(Days::new(1)) {
+                Some(next) => current = next,
+                None => break,
+            }
+        }
+    }
+
+    let mut warga_total = 0_i64;
+    let mut training_total = 0_i64;
+    let mut mitra_values: BTreeSet<String> = BTreeSet::new();
+    let mut category_counts: BTreeMap<&'static str, i64> = BTreeMap::new();
+    let mut rows_total = 0_i64;
+
+    for row in rows {
+        let parsed: ParsedRow =
+            serde_json::from_str(&row.get::<String, _>("parsed_json")).unwrap_or_default();
+        let fields = if parsed.fields.is_empty() {
+            parse_fields(&row.get::<String, _>("isian_laporan"))
+        } else {
+            parsed.fields
+        };
+        let mut row_warga = 0_i64;
+        let mut row_training = 0_i64;
+        let mut pendataan = false;
+        let mut pelatihan = false;
+        let mut penyaluran = false;
+        let mut kemitraan = false;
+        let mut sosialisasi = false;
+        for (key, value) in &fields {
+            let lower = key.to_ascii_lowercase();
+            let cleaned = value.split_whitespace().collect::<Vec<_>>().join(" ");
+            if is_noise(&cleaned) {
+                continue;
+            }
+            if (lower.contains("mitra") || lower.contains("kemitraan"))
+                && !["alasan", "pertimbangan", "uraian", "bentuk"]
+                    .iter()
+                    .any(|word| lower.contains(word))
+            {
+                mitra_values.insert(cleaned.to_ascii_lowercase());
+            }
+            if lower.contains("warga") || (lower.contains("profil") && lower.contains("calon")) {
+                if let Some(number) = parse_count(value) {
+                    row_warga = row_warga.max(number);
+                }
+                pendataan = true;
+            }
+            if lower.contains("pelatihan") {
+                pelatihan = true;
+                if let Some(number) = parse_count(value) {
+                    row_training = row_training.max(number);
+                }
+            }
+            if lower.contains("penyaluran") || lower.contains("disalurkan") {
+                penyaluran = true;
+            }
+            if lower.contains("mitra") || lower.contains("kemitraan") {
+                kemitraan = true;
+            }
+            if lower.contains("sosialisasi") || lower.contains("edukasi") {
+                sosialisasi = true;
+            }
+        }
+        let tanggal: String = row.get("tanggal");
+        *daily.entry(tanggal).or_default() += 1;
+        rows_total += 1;
+        warga_total += row_warga;
+        training_total += row_training;
+        for (flag, label) in [
+            (pendataan, "Pendataan warga"),
+            (pelatihan, "Pelatihan kerja"),
+            (penyaluran, "Penyaluran kerja"),
+            (kemitraan, "Kemitraan dan koordinasi"),
+            (sosialisasi, "Sosialisasi dan edukasi"),
+        ] {
+            if flag {
+                *category_counts.entry(label).or_default() += 1;
+            }
+        }
+    }
+
+    let mut activities: Vec<LabeledCount> = category_counts
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(label, count)| LabeledCount::new(label, count))
+        .collect();
+    if activities.is_empty() && rows_total > 0 {
+        activities.push(LabeledCount::new("Kegiatan Poliran", rows_total));
+    }
+    activities.sort_by(|left, right| right.count.cmp(&left.count));
+    activities.truncate(6);
+
+    let daily = daily
+        .into_iter()
+        .map(|(date, count)| PoliranDay { date, count })
+        .collect::<Vec<_>>();
+    let warga = if warga_total > 0 {
+        warga_total
+    } else {
+        training_total
+    };
+
+    Ok(PoliranSummaryResponse {
+        daily,
+        warga,
+        mitra: mitra_values.len() as i64,
+        activities,
+    })
 }
 
 fn push_filters(qb: &mut QueryBuilder<Sqlite>, query: &RecordQuery) {

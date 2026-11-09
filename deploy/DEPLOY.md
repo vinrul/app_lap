@@ -125,6 +125,87 @@ sudo systemctl status laporan --no-pager
 journalctl -u laporan -f
 ```
 
+### PaddleOCR (opsional)
+
+Tesseract tetap dijalankan lebih dulu karena jauh lebih cepat. Sidecar PaddleOCR
+hanya dipanggil untuk gambar yang belum lengkap setelah Tesseract, atau yang
+tanggal pada watermark-nya berbeda dari tanggal laporan. Bila sidecar mati atau
+belum siap, analisis tetap berjalan dengan Tesseract.
+
+Prasyarat (Ubuntu/Debian):
+
+```bash
+sudo apt install -y python3-venv python3-pip libgomp1 libgl1 libglib2.0-0
+```
+
+Pasang berkas dan virtualenv terpisah:
+
+```bash
+sudo mkdir -p /opt/laporan/paddle-ocr
+sudo cp ~/app_lap/paddle-ocr/app.py ~/app_lap/paddle-ocr/requirements.txt /opt/laporan/paddle-ocr/
+sudo chown -R laporan:laporan /opt/laporan/paddle-ocr
+sudo -u laporan python3 -m venv /opt/laporan/paddle-ocr/.venv
+sudo -u laporan /opt/laporan/paddle-ocr/.venv/bin/pip install --upgrade pip
+sudo -u laporan /opt/laporan/paddle-ocr/.venv/bin/pip install -r /opt/laporan/paddle-ocr/requirements.txt
+```
+
+Bila Python bawaan VPS terlalu baru dan wheel `paddlepaddle` belum tersedia,
+pakai Python 3.12: `sudo apt install -y python3.12-venv` lalu
+`sudo -u laporan python3.12 -m venv /opt/laporan/paddle-ocr/.venv`.
+
+Unduh model sekali. Ukurannya sekitar 140 MB dan disimpan di
+`$HOME/.paddlex/official_models`:
+
+```bash
+sudo -u laporan env \
+  HOME=/home/laporan-data \
+  PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT=False \
+  /opt/laporan/paddle-ocr/.venv/bin/python -c \
+  "from paddleocr import PaddleOCR; PaddleOCR(lang='id', use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=True)"
+```
+
+`HOME` harus sama dengan nilai di `laporan-ocr.env` dan dapat ditulis user
+`laporan`. Bila `LAPORAN_DATA_DIR=/var/lib/laporan`, pakai `HOME=/var/lib/laporan`.
+Untuk VPS tanpa akses internet, jalankan perintah di atas di mesin lain lalu
+salin folder `~/.paddlex/official_models` ke lokasi yang sama di VPS.
+
+Pasang environment dan service:
+
+```bash
+sudo cp ~/app_lap/deploy/laporan-ocr.env.example /etc/laporan/laporan-ocr.env
+sudo nano /etc/laporan/laporan-ocr.env
+sudo chmod 600 /etc/laporan/laporan-ocr.env
+sudo cp ~/app_lap/deploy/laporan-ocr.service /etc/systemd/system/laporan-ocr.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now laporan-ocr
+journalctl -u laporan-ocr -f
+```
+
+Tunggu sampai model termuat, lalu pastikan healthcheck hijau:
+
+```bash
+curl -s http://127.0.0.1:4320/health
+# {"status":"ok","engine":"PaddleOCR","version":"3.7.0",...}
+```
+
+Aktifkan di backend, lalu restart:
+
+```bash
+# Di /etc/laporan/laporan.env, hapus tanda # pada baris ini:
+# LAPORAN_PADDLE_URL=http://127.0.0.1:4320
+sudo systemctl restart laporan
+journalctl -u laporan -n 30 --no-pager
+```
+
+Log backend harus memuat `sidecar PaddleOCR siap`. Setelah itu buka tab
+**Dokumentasi** dan klik **Pindai ulang** agar gambar berstatus cek manual
+dianalisis ulang dengan kedua mesin. Pemindaian berjalan di latar belakang dan
+bisa dilanjutkan setelah restart.
+
+Bila CPU VPS terbatas, turunkan `LAPORAN_PADDLE_MAX_SIDE` ke `1600`; bila
+watermark kecil sering tidak terbaca, naikkan ke `2560`. `CPUQuota=200%` pada
+unit service membatasi OCR agar server web tetap responsif.
+
 ## 7. Nginx dan TLS
 
 ```bash

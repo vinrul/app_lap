@@ -10,7 +10,7 @@
     ShieldCheck,
     Users,
   } from 'lucide-svelte'
-  import { importsApi } from '../../api'
+  import { importsApi, periodsApi } from '../../api'
   import { errorMessage } from '../../api/client'
   import type {
     CoverageProgram,
@@ -23,9 +23,10 @@
     QuickWinActivity,
     QuickWinDetail,
     RecordItem,
+    ReportMetrics,
     UnitBreakdown,
   } from '../../types'
-  import { formatDate, formatNumber } from '../../utils/format'
+  import { formatDate, formatNumber, formatShortDate } from '../../utils/format'
   import { qwGroupTitles } from '../../utils/constants'
   import { evidencePreview } from '../../stores/evidencePreview.svelte'
   import { auth } from '../../stores/auth.svelte'
@@ -42,6 +43,7 @@
   type ActivityScope = 'polres' | 'satker' | 'masyarakat'
 
   let data = $state<CoverageResponse | null>(null)
+  let metrics = $state<ReportMetrics | null>(null)
   let loading = $state(true)
   let error = $state('')
   let expandedGroup = $state<string | null>(null)
@@ -87,7 +89,12 @@
     loading = true
     error = ''
     try {
-      data = await importsApi.coverage(periodId, polresFilter || undefined)
+      const [coverageData, metricsData] = await Promise.all([
+        importsApi.coverage(periodId, polresFilter || undefined),
+        metrics ?? periodsApi.metrics(periodId).catch(() => null),
+      ])
+      data = coverageData
+      if (metricsData) metrics = metricsData
       if (!data.codes.some((item) => item.code === activeCode)) {
         activeCode = data.codes[0]?.code ?? ''
         activeGroup = data.codes[0]?.code.split('.')[0] ?? 'QW1'
@@ -111,6 +118,10 @@
       (total, group) => total + group.codes.filter((code) => code.rows > 0).length,
       0,
     ),
+  )
+  const maxDaily = $derived(Math.max(1, ...(metrics?.daily.map((item) => item.count) ?? [1])))
+  const quickWinsRows = $derived(
+    [...(metrics?.quick_wins ?? [])].sort((left, right) => right.count - left.count),
   )
   const activeGroupCodes = $derived(
     data?.codes ?? [],
@@ -640,6 +651,79 @@
         </article>
       {/each}
     </section>
+
+    {#if metrics}
+      <section class="card overflow-hidden">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">RINGKASAN LAPORAN MINGGUAN</span>
+            <h2 class="panel-title mt-0.5">Data untuk template laporan</h2>
+            <p class="mt-1 max-w-3xl text-[10px] leading-relaxed text-ink-muted">
+              Angka yang sama dipakai template desain Laporan Mingguan 8 Quick Wins dan panel Cakupan
+              pada tab Desain.
+            </p>
+          </div>
+          <span class="badge badge-neutral">{metrics.daily.length} hari</span>
+        </div>
+        <div class="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-4">
+          {#each [
+            { label: 'Laporan unik', value: formatNumber(metrics.total_rows), hint: 'setelah deduplikasi' },
+            { label: 'Duplikat dilewati', value: formatNumber(metrics.duplicate_rows), hint: 'tidak dihitung' },
+            { label: 'Rata-rata per hari', value: formatNumber(metrics.daily.length ? Math.round(metrics.total_rows / metrics.daily.length) : 0), hint: `${metrics.daily.length} hari dalam periode` },
+            { label: 'Amplifikasi media', value: formatNumber(metrics.media.total), hint: `${formatNumber(metrics.media.rows_with_media)} kegiatan` },
+          ] as item}
+            <article class="rounded-xl border border-line bg-stone-50/60 p-3.5">
+              <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">{item.label}</p>
+              <p class="mt-1 font-display text-xl text-forest-900">{item.value}</p>
+              <p class="mt-1 text-[10px] text-ink-muted">{item.hint}</p>
+            </article>
+          {/each}
+        </div>
+        <div class="grid gap-4 border-t border-line p-4 xl:grid-cols-2">
+          <div>
+            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Laporan unik per hari</p>
+            <div class="mt-2 space-y-1.5">
+              {#each metrics.daily as item (item.date)}
+                <div class="flex items-center gap-2 text-[11px]">
+                  <span class="w-24 shrink-0 text-ink-muted">{formatShortDate(item.date)}</span>
+                  <div class="h-2 flex-1 overflow-hidden rounded-full bg-stone-200">
+                    <div class="h-full rounded-full bg-forest-600" style={`width:${Math.round((item.count / maxDaily) * 100)}%`}></div>
+                  </div>
+                  <span class="w-14 shrink-0 text-right font-semibold text-ink">{formatNumber(item.count)}</span>
+                </div>
+              {:else}
+                <p class="text-[11px] text-ink-muted">Belum ada laporan harian.</p>
+              {/each}
+            </div>
+          </div>
+          <div>
+            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Quick Wins per kelompok</p>
+            <div class="mt-2 max-h-64 overflow-auto rounded-xl border border-line">
+              <table class="min-w-full text-left text-[11px]">
+                <thead class="sticky top-0 bg-stone-50 text-[9px] tracking-[0.08em] text-ink-muted uppercase">
+                  <tr>
+                    <th class="px-3 py-2">Kelompok</th>
+                    <th class="px-3 py-2 text-right">Laporan</th>
+                    <th class="px-3 py-2 text-right">Porsi</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-line">
+                  {#each quickWinsRows as item (item.label)}
+                    <tr class="hover:bg-stone-50/60">
+                      <td class="px-3 py-1.5 font-medium text-ink">{item.label}</td>
+                      <td class="px-3 py-1.5 text-right">{formatNumber(item.count)}</td>
+                      <td class="px-3 py-1.5 text-right text-ink-muted">{percent(item.count, metrics.total_rows)}%</td>
+                    </tr>
+                  {:else}
+                    <tr><td class="px-3 py-2 text-ink-muted" colspan="3">Belum ada data Quick Wins.</td></tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+    {/if}
 
     <section class="card overflow-hidden">
       <div class="panel-heading">

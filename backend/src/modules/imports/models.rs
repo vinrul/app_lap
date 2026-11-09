@@ -42,13 +42,26 @@ pub const REQUIRED_HEADERS: [&str; 7] = [
 ];
 
 /// Kolom tambahan yang opsional dan dipakai untuk mengambil tautan peta.
-pub const MAP_HEADERS: [&str; 6] = [
+pub const MAP_HEADERS: [&str; 10] = [
     "Tautan peta 1",
     "Tautan peta 2",
     "Tautan peta 3",
     "Tautan peta 4",
     "Tautan peta 5",
     "Tautan peta 6",
+    "Tautan peta 7",
+    "Tautan peta 8",
+    "Tautan peta 9",
+    "Tautan peta 10",
+];
+
+/// Alias header dari formulir versi baru: nama kolom berbeda tetapi maknanya sama.
+pub const HEADER_ALIASES: &[(&str, &[&str])] = &[
+    ("Tanggal", &["Tanggal kegiatan"]),
+    (
+        "Waktu kirim (WIB)",
+        &["Tanggal lapor (WIB)", "Tanggal lapor"],
+    ),
 ];
 
 /// Representasi terstruktur dari kolom `Isian laporan`.
@@ -232,6 +245,96 @@ pub struct RecordsResponse {
     pub statuses: Vec<LabeledCount>,
     pub polres: Vec<LabeledCount>,
     pub records: Vec<RecordView>,
+}
+
+/// Titik koordinat satu laporan QW1.1/QW1.2 untuk peta desain laporan.
+#[derive(Clone, Debug, Serialize)]
+pub struct QwMapPoint {
+    pub kode: String,
+    pub tanggal: String,
+    pub satuan: String,
+    pub polres: String,
+    pub kegiatan: String,
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
+/// Data peta dan contoh suara warga untuk halaman Gatur/Polidik/Kumpul Bersama.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct QwMapResponse {
+    pub points: Vec<QwMapPoint>,
+    /// Contoh saran/keluhan warga pada laporan Gatur Lalin (QW1.1).
+    pub gatur_feedback: Vec<String>,
+    /// Contoh saran/keluhan sekolah dan warga pada laporan Polidik (QW1.2).
+    pub polidik_feedback: Vec<String>,
+    /// Keluhan/saran unik warga pada laporan Kumpul Bersama (QW1.4).
+    pub kumpul_feedback: Vec<String>,
+    /// Jumlah isian saran/keluhan pada laporan Kumpul Bersama.
+    pub kumpul_feedback_total: i64,
+    /// Laporan harian QW1.5 (Green Policing), termasuk hari tanpa laporan.
+    pub green_daily: Vec<PoliranDay>,
+    /// Laporan harian QW1.6 (Jumat Keliling), termasuk hari tanpa laporan.
+    pub jumling_daily: Vec<PoliranDay>,
+    /// Laporan harian QW1.7 (Subuh Keliling), termasuk hari tanpa laporan.
+    pub subuh_daily: Vec<PoliranDay>,
+    /// Laporan harian QW1.8 (Minggu Kasih), termasuk hari tanpa laporan.
+    pub minggu_daily: Vec<PoliranDay>,
+    /// Laporan harian QW1.1 (Gatur Lalin), termasuk hari tanpa laporan.
+    pub gatur_daily: Vec<PoliranDay>,
+    /// Laporan harian QW1.2 (Polidik), termasuk hari tanpa laporan.
+    pub polidik_daily: Vec<PoliranDay>,
+    /// Laporan harian QW1.4 (Kumpul Bersama), termasuk hari tanpa laporan.
+    pub kumpul_daily: Vec<PoliranDay>,
+}
+
+/// Satu kegiatan pimpinan Polda untuk timeline halaman 4.
+#[derive(Clone, Debug, Serialize)]
+pub struct QwTimelineEntry {
+    pub tanggal: String,
+    pub kode: String,
+    pub executor: String,
+    pub kegiatan: String,
+    pub location: String,
+    /// True bila kegiatan dihadiri langsung Kapolda (bukan Wakapolda/pejabat lain).
+    pub direct: bool,
+}
+
+/// Isu/keluhan warga yang dicatat pada laporan tingkat Polda.
+#[derive(Clone, Debug, Serialize)]
+pub struct QwIssue {
+    pub tanggal: String,
+    pub location: String,
+    pub text: String,
+}
+
+/// Data halaman pimpinan: timeline, hitungan kartu, dan isu forum pimpinan.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct LeadershipTimelineResponse {
+    pub entries: Vec<QwTimelineEntry>,
+    pub direct: i64,
+    pub represented: i64,
+    /// Jumlah laporan QW4.3 (Respons Cepat Panggilan 110) tingkat Polda.
+    pub qw43: i64,
+    pub issues: Vec<QwIssue>,
+}
+
+/// Jumlah laporan satu hari untuk grafik harian Poliran.
+#[derive(Clone, Debug, Serialize)]
+pub struct PoliranDay {
+    pub date: String,
+    pub count: i64,
+}
+
+/// Ringkasan QW1.3 (Poliran) untuk halaman 5 template.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct PoliranSummaryResponse {
+    pub daily: Vec<PoliranDay>,
+    /// Warga yang didata/direkrut atau peserta pelatihan.
+    pub warga: i64,
+    /// Jumlah mitra kerja yang dijajaki.
+    pub mitra: i64,
+    /// Sebaran bentuk kegiatan Poliran.
+    pub activities: Vec<LabeledCount>,
 }
 
 #[derive(Debug, Serialize)]

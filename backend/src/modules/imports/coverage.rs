@@ -2828,6 +2828,68 @@ fn labeled_number(value: &str) -> Option<i64> {
 }
 
 /// Membangun kartu angka dan distribusi dari isian laporan satu sub-kode.
+/// Peran personel Jumat Keliling dari isian "Peran" (narasumber, jamaah, imam, pengamanan).
+fn personnel_role_counts(matching: &[&RecordView]) -> (Vec<LabeledCount>, i64) {
+    let order = ["Narasumber", "Jamaah", "Imam", "Pengamanan", "Lainnya"];
+    let mut counts: BTreeMap<&'static str, i64> = BTreeMap::new();
+    let mut filled = 0_i64;
+    for row in matching {
+        for (key, value) in &row.fields {
+            if !key.trim().eq_ignore_ascii_case("peran") {
+                continue;
+            }
+            let cleaned = value.split_whitespace().collect::<Vec<_>>().join(" ");
+            let without_prefix = cleaned
+                .strip_prefix("Lainnya:")
+                .or_else(|| cleaned.strip_prefix("lainnya:"))
+                .unwrap_or(&cleaned)
+                .trim();
+            if is_noise(without_prefix) {
+                continue;
+            }
+            let low = without_prefix.to_ascii_lowercase();
+            let role = if low.contains("narasumber")
+                || low.contains("nara sumber")
+                || low.contains("pemberi materi")
+                || low.contains("petugas penyuluhan")
+            {
+                "Narasumber"
+            } else if low.contains("imam") || low.contains("khatib") || low.contains("khotib") {
+                "Imam"
+            } else if low.contains("pengamanan")
+                || low.contains("pengaman")
+                || low.contains("keamanan")
+                || low.contains("pengaturan lalu lintas")
+                || low.contains("polisi")
+                || low.contains("polri")
+            {
+                "Pengamanan"
+            } else if low.contains("jamaah")
+                || low.contains("jemaah")
+                || low.contains("jemaat")
+                || low.contains("umat")
+            {
+                "Jamaah"
+            } else {
+                "Lainnya"
+            };
+            *counts.entry(role).or_default() += 1;
+            filled += 1;
+            break;
+        }
+    }
+    let values: Vec<LabeledCount> = order
+        .iter()
+        .filter_map(|role| {
+            counts
+                .get(*role)
+                .filter(|count| **count > 0)
+                .map(|count| LabeledCount::new(*role, *count))
+        })
+        .collect();
+    (values, filled)
+}
+
 fn build_code_cards(
     matching: &[&RecordView],
     code: &str,
@@ -3007,6 +3069,18 @@ fn build_code_cards(
             jemaat_filled,
             total,
         ));
+    }
+
+    if is_jumling || is_subuh || is_minggu {
+        let (roles, filled) = personnel_role_counts(matching);
+        if !roles.is_empty() {
+            breakdowns.push(CoverageBreakdown {
+                key: "peran-personel".to_string(),
+                label: "Peran personel".to_string(),
+                filled_rows: filled,
+                values: roles,
+            });
+        }
     }
 
     if has_ibadah_place {
@@ -6463,6 +6537,97 @@ mod tests {
                 .iter()
                 .any(|metric| metric.label.contains("Perkiraan jumlah jemaah"))
         );
+    }
+
+    #[test]
+    fn builds_qw16_personnel_roles_breakdown() {
+        let rows = vec![
+            row(
+                "QW1.6",
+                "Polres",
+                "Polres Badung",
+                &[("Peran", "Jamaah")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.6",
+                "Polres",
+                "Polres Badung",
+                &[("Peran", "Lainnya: Narasumber dengan tema kamtibmas")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.6",
+                "Polres",
+                "Polres Bangli",
+                &[("Peran", "Khatib")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.6",
+                "Polres",
+                "Polres Bangli",
+                &[("Peran", "Lainnya: Pengaturan lalu lintas")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.6",
+                "Polres",
+                "Polres Tabanan",
+                &[("Peran", "Lainnya: NIHIL")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+            row(
+                "QW1.6",
+                "Polres",
+                "Polres Tabanan",
+                &[("Peran", "Sosialisasi kamtibmas")],
+                0,
+                0,
+                0.0,
+                0,
+            ),
+        ];
+
+        let coverage = build_coverage("2026-10-20", "2026-10-29", &rows);
+        let code = coverage
+            .codes
+            .iter()
+            .find(|item| item.code == "QW1.6")
+            .unwrap();
+        let breakdown = code
+            .breakdowns
+            .iter()
+            .find(|item| item.key == "peran-personel")
+            .unwrap();
+        let count = |label: &str| {
+            breakdown
+                .values
+                .iter()
+                .find(|value| value.label == label)
+                .map(|value| value.count)
+        };
+        assert_eq!(count("Narasumber"), Some(1));
+        assert_eq!(count("Jamaah"), Some(1));
+        assert_eq!(count("Imam"), Some(1));
+        assert_eq!(count("Pengamanan"), Some(1));
+        assert_eq!(count("Lainnya"), Some(1));
+        assert_eq!(breakdown.filled_rows, 5);
     }
 
     #[test]

@@ -8,6 +8,11 @@ frontend/dist/
 frontend/dist-ssr/
 frontend/.svelte-kit/
 
+# Python sidecar PaddleOCR
+paddle-ocr/.venv/
+__pycache__/
+*.pyc
+
 # Runtime data: database, imported workbooks, generated reports
 data/
 /report-*.xlsx

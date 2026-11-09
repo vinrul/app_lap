@@ -39,7 +39,7 @@
     Undo2,
     Wifi,
   } from 'lucide-svelte'
-  import { designApi, importsApi, reportsApi } from '../../api'
+  import { designApi, importsApi, periodsApi, reportsApi } from '../../api'
   import { errorMessage } from '../../api/client'
   import type {
     CoverageCode,
@@ -55,10 +55,14 @@
     LayoutPage,
     LayoutPatch,
     LayoutView,
+    LeadershipTimelineResponse,
     PeriodDetail,
+    PoliranDay,
+    PoliranSummaryResponse,
     RealtimeServerMessage,
     ReportContent,
     ReportLayout,
+    ReportMetrics,
     ReportView,
     UploadedDesignImage,
   } from '../../types'
@@ -71,6 +75,8 @@
   import { CHART_PALETTE, createChartSvg } from '../../utils/chartSvg'
   import { createTableNode } from '../../utils/tableNode'
   import { applyLayoutPatch, diffLayout, mergeLocalIntoRemote } from '../../design/layoutPatch'
+  import { buildBaliMapFile } from '../../design/baliMap'
+  import { buildWeeklyReportTemplate } from '../../design/weeklyTemplate'
   import { realtime } from '../../realtime/socket'
   import {
     clearDesignDraft,
@@ -263,6 +269,7 @@
   let iconSearch = $state('')
   let iconCategory = $state('Semua')
   let coverage = $state<CoverageResponse | null>(null)
+  let metricsSnapshot = $state<ReportMetrics | null>(null)
   let cakupanExpanded = $state<string[]>([])
   let cakupanTarget = $state<CakupanNode | null>(null)
   let cakupanDialogOpen = $state(false)
@@ -802,15 +809,17 @@
   async function refreshSources(): Promise<void> {
     if (!hasImport) return
     try {
-      const [sourceList, coverageData] = await Promise.all([
+      const [sourceList, coverageData, metricsData] = await Promise.all([
         designApi.sources(periodId),
         importsApi.coverage(periodId).catch(() => null),
+        periodsApi.metrics(periodId).catch(() => null),
       ])
       sources = sourceList
       if (coverageData) {
         coverage = coverageData
         if (!cakupanExpanded.includes('cards')) cakupanExpanded = ['cards', ...cakupanExpanded]
       }
+      if (metricsData) metricsSnapshot = metricsData
       applyLayoutToDom()
       toast.success('Sumber data dimuat ulang.')
     } catch (caught) {
@@ -1334,6 +1343,7 @@
     redoStack = []
     sources = []
     coverage = null
+    metricsSnapshot = null
     checkedIds = []
     selectedTemplateId = ''
     zoomOverride = null
@@ -1351,18 +1361,21 @@
       return
     }
     try {
-      const [draft, layoutView, sourceList, templateList, coverageData] = await Promise.all([
-        reportsApi.getDraft(targetPeriod),
-        designApi.getLayout(targetPeriod),
-        designApi.sources(targetPeriod),
-        designApi.templates(),
-        importsApi.coverage(targetPeriod).catch(() => null),
-      ])
+      const [draft, layoutView, sourceList, templateList, coverageData, metricsData] =
+        await Promise.all([
+          reportsApi.getDraft(targetPeriod),
+          designApi.getLayout(targetPeriod),
+          designApi.sources(targetPeriod),
+          designApi.templates(),
+          importsApi.coverage(targetPeriod).catch(() => null),
+          periodsApi.metrics(targetPeriod).catch(() => null),
+        ])
       if (targetPeriod !== periodId) return
       content = { ...emptyContent, ...draft.content }
       sources = sourceList
       templates = templateList
       coverage = coverageData
+      metricsSnapshot = metricsData
       if (coverageData) cakupanExpanded = ['cards']
 
       const serverLayout = normalizeLayout(layoutView.layout)
@@ -2850,6 +2863,197 @@
     void refreshCanvasStructure()
     connectLive()
     scheduleAutosave()
+  }
+
+  async function applyWeeklyTemplate(fromChooser = false): Promise<void> {
+    if (!hasImport || templateBusy) return
+    if (!fromChooser) {
+      const confirmed = await dialog.confirm({
+        title: 'Terapkan template Laporan Mingguan?',
+        message:
+          'Template 15 halaman bergaya laporan mingguan akan menggantikan desain saat ini. Seluruh tulisan dan angka dibuat sebagai elemen yang dapat diedit. Perubahan bisa di-undo.',
+        confirmLabel: 'Terapkan template',
+      })
+      if (!confirmed) return
+      if (!(await flushAutosave())) return
+    }
+    templateBusy = true
+    error = ''
+    try {
+      const metricsData = metricsSnapshot ?? (await periodsApi.metrics(periodId))
+      metricsSnapshot = metricsData
+      let coverageData = coverage
+      if (!coverageData) {
+        coverageData = await importsApi.coverage(periodId).catch(() => null)
+        coverage = coverageData
+      }
+      let mapImageSrc = ''
+      let kumpulMapImageSrc = ''
+      let greenMapImageSrc = ''
+      let greenDaily: PoliranDay[] = []
+      let jumlingMapImageSrc = ''
+      let jumlingDaily: PoliranDay[] = []
+      let subuhMapImageSrc = ''
+      let subuhDaily: PoliranDay[] = []
+      let mingguMapImageSrc = ''
+      let mingguDaily: PoliranDay[] = []
+      let gaturDaily: PoliranDay[] = []
+      let polidikDaily: PoliranDay[] = []
+      let kumpulDaily: PoliranDay[] = []
+      let feedback: { gatur: string[]; polidik: string[] } = { gatur: [], polidik: [] }
+      let kumpulFeedback: string[] = []
+      let kumpulFeedbackTotal = 0
+      let leadership: LeadershipTimelineResponse | null = null
+      let poliran: PoliranSummaryResponse | null = null
+      try {
+        const [mapData, leadershipData, poliranData] = await Promise.all([
+          importsApi.qwMap(periodId),
+          importsApi.leadership(periodId),
+          importsApi.poliran(periodId).catch(() => null),
+        ])
+        leadership = leadershipData
+        poliran = poliranData
+        feedback = {
+          gatur: mapData.gatur_feedback ?? [],
+          polidik: mapData.polidik_feedback ?? [],
+        }
+        kumpulFeedback = mapData.kumpul_feedback ?? []
+        kumpulFeedbackTotal = mapData.kumpul_feedback_total ?? 0
+        greenDaily = mapData.green_daily ?? []
+        jumlingDaily = mapData.jumling_daily ?? []
+        subuhDaily = mapData.subuh_daily ?? []
+        mingguDaily = mapData.minggu_daily ?? []
+        gaturDaily = mapData.gatur_daily ?? []
+        polidikDaily = mapData.polidik_daily ?? []
+        kumpulDaily = mapData.kumpul_daily ?? []
+        const mapFile = await buildBaliMapFile(mapData.points ?? [])
+        if (mapFile) {
+          const uploaded = await designApi.uploadImage(periodId, mapFile)
+          mapImageSrc = `upload:${uploaded.id}`
+        }
+        const kumpulMapFile = await buildBaliMapFile(mapData.points ?? [], {
+          title: 'Peta Sebaran Kumpul Bersama',
+          series: [
+            {
+              code: 'QW1.4',
+              label: 'Kumpul Bersama (QW1.4)',
+              color: '#2f6db0',
+            },
+          ],
+        })
+        if (kumpulMapFile) {
+          const uploaded = await designApi.uploadImage(periodId, kumpulMapFile)
+          kumpulMapImageSrc = `upload:${uploaded.id}`
+        }
+        const greenMapFile = await buildBaliMapFile(mapData.points ?? [], {
+          title: 'Peta Sebaran Green Policing',
+          series: [
+            {
+              code: 'QW1.5',
+              label: 'Green Policing (QW1.5)',
+              color: '#3f765d',
+            },
+          ],
+        })
+        if (greenMapFile) {
+          const uploaded = await designApi.uploadImage(periodId, greenMapFile)
+          greenMapImageSrc = `upload:${uploaded.id}`
+        }
+        const jumlingMapFile = await buildBaliMapFile(mapData.points ?? [], {
+          title: 'Peta Sebaran Jumat Keliling',
+          series: [
+            {
+              code: 'QW1.6',
+              label: 'Jumat Keliling (QW1.6)',
+              color: '#b8894b',
+            },
+          ],
+        })
+        if (jumlingMapFile) {
+          const uploaded = await designApi.uploadImage(periodId, jumlingMapFile)
+          jumlingMapImageSrc = `upload:${uploaded.id}`
+        }
+        const subuhMapFile = await buildBaliMapFile(mapData.points ?? [], {
+          title: 'Peta Sebaran Subuh Keliling',
+          series: [
+            {
+              code: 'QW1.7',
+              label: 'Subuh Keliling (QW1.7)',
+              color: '#2f6db0',
+            },
+          ],
+        })
+        if (subuhMapFile) {
+          const uploaded = await designApi.uploadImage(periodId, subuhMapFile)
+          subuhMapImageSrc = `upload:${uploaded.id}`
+        }
+        const mingguMapFile = await buildBaliMapFile(mapData.points ?? [], {
+          title: 'Peta Sebaran Minggu Kasih',
+          series: [
+            {
+              code: 'QW1.8',
+              label: 'Minggu Kasih (QW1.8)',
+              color: '#9c6b3f',
+            },
+          ],
+        })
+        if (mingguMapFile) {
+          const uploaded = await designApi.uploadImage(periodId, mingguMapFile)
+          mingguMapImageSrc = `upload:${uploaded.id}`
+        }
+      } catch {
+        toast.show(
+          'Peta titik koordinat tidak dapat dibuat; template tetap diterapkan tanpa peta.',
+          'info',
+        )
+      }
+      const nextLayout = buildWeeklyReportTemplate({
+        metrics: metricsData,
+        coverage: coverageData,
+        detail,
+        mapImageSrc,
+        kumpulMapImageSrc,
+        greenMapImageSrc,
+        greenDaily,
+        jumlingMapImageSrc,
+        jumlingDaily,
+        subuhMapImageSrc,
+        subuhDaily,
+        mingguMapImageSrc,
+        mingguDaily,
+        gaturDaily,
+        polidikDaily,
+        kumpulDaily,
+        feedback,
+        kumpulFeedback,
+        kumpulFeedbackTotal,
+        leadership,
+        poliran,
+      })
+      if (!fromChooser) pushHistory()
+      layout = normalizeLayout(nextLayout)
+      currentPage = 1
+      selected = null
+      checkedIds = []
+      choosingTemplate = false
+      autosaveReady = true
+      autosaveState = 'idle'
+      autosaveError = ''
+      clearDesignDraft(periodId, draftOwner)
+      localDraftAt = null
+      draftUnavailable = false
+      applyLayoutToDom()
+      void refreshCanvasStructure()
+      connectLive()
+      scheduleAutosave()
+      toast.success('Template Laporan Mingguan diterapkan. Tulisan dan angka bisa diedit langsung.')
+    } catch (caught) {
+      const message = errorMessage(caught)
+      error = message
+      toast.error(message)
+    } finally {
+      templateBusy = false
+    }
   }
 
   async function useTemplateFromChooser(templateId: string) {
@@ -5541,6 +5745,22 @@
       </div>
 
       <div>
+        <div class="mb-4 rounded-2xl border border-gold-300 bg-gold-50/60 p-4">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="max-w-xl">
+              <span class="badge badge-progress">Template bawaan</span>
+              <h4 class="mt-2 font-display text-base font-semibold text-forest-900">Laporan Mingguan 8 Quick Wins</h4>
+              <p class="mt-1 text-[11px] leading-relaxed text-ink-muted">
+                Susunan 15 halaman mengikuti laporan mingguan: sampul, halaman per Quick Wins, aspirasi,
+                tindak lanjut, rekap Quick Wins lainnya, amplifikasi media, catatan, dan penutup. Angka
+                diambil dari periode dan impor ini; seluruh tulisan maupun angka dapat diedit di kanvas.
+              </p>
+            </div>
+            <Button size="sm" loading={templateBusy} onclick={() => void applyWeeklyTemplate(true)}>
+              Gunakan template
+            </Button>
+          </div>
+        </div>
         <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
           <div>
             <h3 class="text-xs font-bold tracking-[0.12em] text-ink-muted uppercase">Template desain</h3>
@@ -6678,6 +6898,39 @@
           <p class="text-[10px] leading-relaxed text-ink-muted">
             Tarik kartu cakupan, kelompok, sub-kode, polres, atau satker ke kanvas lalu pilih grafik, tabel, atau kartu. Tombol + menambahkan tanpa drag.
           </p>
+          {#if metricsSnapshot}
+            <div class="rounded-xl border border-gold-300 bg-gold-50/50 p-2.5">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-[9px] font-bold tracking-[0.1em] text-gold-700 uppercase">Ringkasan laporan mingguan</span>
+                <span class="badge badge-neutral">{metricsSnapshot.daily.length} hari</span>
+              </div>
+              <div class="mt-1.5 grid grid-cols-2 gap-1.5">
+                <div class="rounded-lg bg-white px-2 py-1.5">
+                  <span class="block text-[9px] tracking-wide text-ink-muted uppercase">Laporan unik</span>
+                  <strong class="text-sm text-forest-900">{formatNumber(metricsSnapshot.total_rows)}</strong>
+                </div>
+                <div class="rounded-lg bg-white px-2 py-1.5">
+                  <span class="block text-[9px] tracking-wide text-ink-muted uppercase">Polres aktif</span>
+                  <strong class="text-sm text-forest-900">{formatNumber(metricsSnapshot.by_polres.length)}</strong>
+                </div>
+                <div class="rounded-lg bg-white px-2 py-1.5">
+                  <span class="block text-[9px] tracking-wide text-ink-muted uppercase">Quick Wins</span>
+                  <strong class="text-sm text-forest-900">{formatNumber(metricsSnapshot.quick_wins.length)} kelompok</strong>
+                </div>
+                <div class="rounded-lg bg-white px-2 py-1.5">
+                  <span class="block text-[9px] tracking-wide text-ink-muted uppercase">Media</span>
+                  <strong class="text-sm text-forest-900">{formatNumber(metricsSnapshot.media.total)} tautan</strong>
+                </div>
+              </div>
+              <p class="mt-1.5 text-[10px] leading-relaxed text-ink-muted">
+                Data ini dipakai template Laporan Mingguan dan juga tampil di tab Cakupan.
+              </p>
+              <Button class="mt-2 w-full" variant="secondary" size="sm" loading={templateBusy}
+                onclick={() => void applyWeeklyTemplate()}>
+                <RefreshCw size={13} /> Terapkan template mingguan
+              </Button>
+            </div>
+          {/if}
           {#if !hasImport}
             <p class="text-xs text-ink-muted">Impor data terlebih dahulu untuk melihat cakupan.</p>
           {:else if !coverage}
@@ -7092,6 +7345,26 @@
             <span data-blank-start><Button variant="secondary" size="sm" onclick={startBlankDocument}><FilePlus2 size={13} /> Mulai blank</Button></span>
           {/if}
           <p class="text-[10px] leading-relaxed text-ink-muted">Dokumen blank tidak memakai blok laporan otomatis. Simpan sebagai template untuk dipakai lagi di periode berikutnya.</p>
+        </div>
+      </section>
+
+      <section class="card overflow-hidden">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">TEMPLATE LAPORAN</span>
+            <h2 class="panel-title mt-1">Laporan Mingguan 8 Quick Wins</h2>
+          </div>
+          <FileText size={18} class="text-gold-500" />
+        </div>
+        <div class="space-y-3 p-4">
+          <p class="text-[11px] leading-relaxed text-ink-muted">
+            Terapkan susunan 15 halaman: sampul, halaman per Quick Wins, aspirasi, tindak lanjut,
+            rekap Quick Wins lainnya, amplifikasi media, catatan, dan penutup. Angka mengikuti periode
+            dan impor saat diterapkan; seluruh tulisan dan angka dapat diedit langsung di kanvas.
+          </p>
+          <Button variant="secondary" size="sm" loading={templateBusy} onclick={() => void applyWeeklyTemplate()}>
+            <RefreshCw size={13} /> Terapkan template mingguan
+          </Button>
         </div>
       </section>
 

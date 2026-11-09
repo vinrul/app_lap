@@ -13,8 +13,8 @@ use crate::{
             evidence,
             models::{
                 AnalysisResponse, CoverageResponse, ImportPreview, ImportView,
-                QuickWinDetailResponse, RecordQuery, RecordView, RecordsResponse,
-                UnitDetailResponse,
+                LeadershipTimelineResponse, PoliranSummaryResponse, QuickWinDetailResponse,
+                QwMapResponse, RecordQuery, RecordView, RecordsResponse, UnitDetailResponse,
             },
             service,
         },
@@ -216,6 +216,36 @@ pub async fn analysis(
 ) -> ApiResult<Json<AnalysisResponse>> {
     Ok(Json(
         service::analysis_for_period(&state.db, &period_id, &user.data_scope()).await?,
+    ))
+}
+
+pub async fn qw_map(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+) -> ApiResult<Json<QwMapResponse>> {
+    Ok(Json(
+        service::qw_map_for_period(&state.db, &period_id, &user.data_scope()).await?,
+    ))
+}
+
+pub async fn leadership(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+) -> ApiResult<Json<LeadershipTimelineResponse>> {
+    Ok(Json(
+        service::leadership_for_period(&state.db, &period_id, &user.data_scope()).await?,
+    ))
+}
+
+pub async fn poliran(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+) -> ApiResult<Json<PoliranSummaryResponse>> {
+    Ok(Json(
+        service::poliran_for_period(&state.db, &period_id, &user.data_scope()).await?,
     ))
 }
 

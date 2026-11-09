@@ -9,7 +9,9 @@ use serde_json::{Map, Value};
 use crate::{
     modules::imports::{
         analysis,
-        models::{HEADERS, ImportPreview, ImportedRow, MAP_HEADERS, REQUIRED_HEADERS},
+        models::{
+            HEADER_ALIASES, HEADERS, ImportPreview, ImportedRow, MAP_HEADERS, REQUIRED_HEADERS,
+        },
         qw,
     },
     shared::{LabeledCount, extract_links, normalize_date, parse_fields},
@@ -258,7 +260,16 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
 fn build_header_map(headers: &[String]) -> BTreeMap<String, usize> {
     let mut map = BTreeMap::new();
     for (index, header) in headers.iter().enumerate() {
-        map.entry(normalize_header(header)).or_insert(index);
+        let normalized = normalize_header(header);
+        map.entry(normalized.clone()).or_insert(index);
+        for (canonical, aliases) in HEADER_ALIASES {
+            if aliases
+                .iter()
+                .any(|alias| normalize_header(alias) == normalized)
+            {
+                map.entry(normalize_header(canonical)).or_insert(index);
+            }
+        }
     }
     map
 }
@@ -422,6 +433,30 @@ mod tests {
         let header_map = build_header_map(&headers);
 
         assert!(missing_required_headers(&header_map).is_empty());
+    }
+
+    #[test]
+    fn accepts_new_form_date_headers() {
+        let headers = [
+            "Tanggal kegiatan",
+            "Tanggal lapor (WIB)",
+            "Satuan",
+            "Tingkat",
+            "Polres",
+            "Polsek",
+            "Kode",
+        ]
+        .iter()
+        .map(|header| header.to_string())
+        .collect::<Vec<_>>();
+        let header_map = build_header_map(&headers);
+
+        assert!(missing_required_headers(&header_map).is_empty());
+        assert_eq!(header_map.get(&normalize_header("Tanggal")), Some(&0));
+        assert_eq!(
+            header_map.get(&normalize_header("Waktu kirim (WIB)")),
+            Some(&1)
+        );
     }
 
     #[test]

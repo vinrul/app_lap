@@ -19,7 +19,10 @@ import type {
   NotificationList,
   Period,
   PeriodDetail,
+  LeadershipTimelineResponse,
+  PoliranSummaryResponse,
   QuickWinDetail,
+  QwMapResponse,
   RecordItem,
   RecordsResponse,
   PublicShareView,
@@ -126,6 +129,12 @@ export const importsApi = {
     request<AnalysisResponse>(`/periods/${periodId}/analysis`),
   coverage: (periodId: string, polres?: string) =>
     request<CoverageResponse>(`/periods/${periodId}/coverage${queryString({ polres })}`),
+  qwMap: (periodId: string) =>
+    request<QwMapResponse>(`/periods/${periodId}/qw-map`),
+  leadership: (periodId: string) =>
+    request<LeadershipTimelineResponse>(`/periods/${periodId}/leadership`),
+  poliran: (periodId: string) =>
+    request<PoliranSummaryResponse>(`/periods/${periodId}/poliran`),
   retryEvidence: (importId: string) =>
     request<{ queued: number }>(`/imports/${importId}/evidence/retry`, { method: 'POST' }),
   unitDetail: (periodId: string, scope: 'polres' | 'satker', label: string) =>

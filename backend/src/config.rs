@@ -15,6 +15,10 @@ pub struct Config {
     pub port: u16,
     pub chrome_path: String,
     pub tesseract_path: String,
+    /// Alamat sidecar PaddleOCR, misalnya `http://127.0.0.1:4320`. Bila kosong,
+    /// analisis dokumentasi hanya memakai Tesseract.
+    pub paddle_url: Option<String>,
+    pub paddle_timeout_secs: u64,
     pub secure_cookie: bool,
     pub polda_name: String,
     pub app_name: String,
@@ -38,6 +42,9 @@ impl std::fmt::Debug for Config {
             .field("allowed_hosts", &self.allowed_hosts)
             .field("port", &self.port)
             .field("chrome_path", &self.chrome_path)
+            .field("tesseract_path", &self.tesseract_path)
+            .field("paddle_url", &self.paddle_url)
+            .field("paddle_timeout_secs", &self.paddle_timeout_secs)
             .field("secure_cookie", &self.secure_cookie)
             .field("polda_name", &self.polda_name)
             .field("app_name", &self.app_name)
@@ -65,6 +72,8 @@ impl Config {
             port: 0,
             chrome_path: String::new(),
             tesseract_path: String::new(),
+            paddle_url: None,
+            paddle_timeout_secs: 120,
             secure_cookie: false,
             polda_name: "POLDA BALI".into(),
             app_name: "Laporan Mingguan PBM".into(),
@@ -136,6 +145,15 @@ impl Config {
                 )
             })
             .unwrap_or(true);
+        let paddle_url = env::var("LAPORAN_PADDLE_URL")
+            .ok()
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty());
+        let paddle_timeout_secs = env::var("LAPORAN_PADDLE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(120)
+            .clamp(10, 600);
 
         Ok(Self {
             data_dir,
@@ -146,6 +164,8 @@ impl Config {
             chrome_path: discover_chrome(),
             tesseract_path: env::var("LAPORAN_TESSERACT")
                 .unwrap_or_else(|_| "tesseract".to_string()),
+            paddle_url,
+            paddle_timeout_secs,
             secure_cookie: env::var("LAPORAN_SECURE_COOKIE").as_deref() == Ok("true"),
             polda_name: env::var("LAPORAN_POLDA_NAME")
                 .unwrap_or_else(|_| "POLDA BALI".to_string())
