@@ -20,6 +20,7 @@ import type {
   Period,
   PeriodDetail,
   LeadershipTimelineResponse,
+  AspirationsPageResponse,
   PoliranSummaryResponse,
   QuickWinDetail,
   QwMapResponse,
@@ -135,6 +136,8 @@ export const importsApi = {
     request<LeadershipTimelineResponse>(`/periods/${periodId}/leadership`),
   poliran: (periodId: string) =>
     request<PoliranSummaryResponse>(`/periods/${periodId}/poliran`),
+  aspirations: (periodId: string) =>
+    request<AspirationsPageResponse>(`/periods/${periodId}/aspirations`),
   retryEvidence: (importId: string) =>
     request<{ queued: number }>(`/imports/${importId}/evidence/retry`, { method: 'POST' }),
   unitDetail: (periodId: string, scope: 'polres' | 'satker', label: string) =>

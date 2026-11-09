@@ -19,11 +19,11 @@ use crate::{
             coverage::{self, Scope, UnitMode},
             evidence_store,
             models::{
-                CoverageResponse, EvidenceView, ImportPreview, ImportView, ImportedRow,
-                LeadershipTimelineResponse, ParsedRow, PoliranDay, PoliranSummaryResponse,
-                QuickWinActivity, QuickWinCodeCoverage, QuickWinDetailResponse, QwIssue,
-                QwMapPoint, QwMapResponse, QwTimelineEntry, RecordQuery, RecordView,
-                RecordsResponse, UnitDetailResponse,
+                AspirationThemeRow, AspirationsPageResponse, CoverageResponse, EvidenceView,
+                ImportPreview, ImportView, ImportedRow, LeadershipTimelineResponse, ParsedRow,
+                PoliranDay, PoliranSummaryResponse, QuickWinActivity, QuickWinCodeCoverage,
+                QuickWinDetailResponse, QwIssue, QwMapPoint, QwMapResponse, QwTimelineEntry,
+                RecordQuery, RecordView, RecordsResponse, UnitDetailResponse,
             },
             parser, qw,
         },
@@ -694,31 +694,37 @@ pub async fn qw_map_for_period(
             if is_noise(&cleaned) || cleaned.chars().count() < 12 {
                 continue;
             }
-            let sentence: String = cleaned.chars().take(220).collect();
-            let identity = sentence.to_ascii_lowercase();
-            let lower_value = sentence.to_ascii_lowercase();
-            let label: String = row
-                .try_get::<String, _>("polres")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .or_else(|| row.try_get::<String, _>("satuan").ok())
-                .unwrap_or_default();
-            let summary = if label.trim().is_empty() {
-                sentence
+            let lower_value = cleaned.to_ascii_lowercase();
+            let polres_value: String = row.try_get("polres").unwrap_or_default();
+            let polsek_value: String = row.try_get("polsek").unwrap_or_default();
+            let satuan_value: String = row.try_get("satuan").unwrap_or_default();
+            let label = if polres_value.trim().is_empty() {
+                satuan_value
             } else {
-                format!("{label}: {sentence}")
+                polres_value.clone()
             };
             if kode == "QW1.2" {
-                if !seen_polidik.insert(identity) {
-                    continue;
-                }
                 let school = ["sekolah", "siswa", "guru", "murid", "pelajar", "orang tua"]
                     .iter()
                     .any(|word| lower_key.contains(word) || lower_value.contains(word));
-                polidik_feedback.push((if school { 0 } else { 1 }, summary));
+                let Some((kind, point)) = feedback_point(&cleaned, &label, &polsek_value, 96)
+                else {
+                    continue;
+                };
+                if !seen_polidik.insert(point.to_ascii_lowercase()) {
+                    continue;
+                }
+                polidik_feedback.push((kind * 2 + if school { 0 } else { 1 }, point));
             } else if kode == "QW1.4" {
                 response.kumpul_feedback_total += 1;
-                if !seen_kumpul.insert(identity) {
+                let Some((kind, point)) = feedback_point(&cleaned, &label, &polsek_value, 130)
+                else {
+                    continue;
+                };
+                if !seen_kumpul.insert(point.to_ascii_lowercase()) {
+                    continue;
+                }
+                if kind != 0 {
                     continue;
                 }
                 let citizen = [
@@ -735,11 +741,8 @@ pub async fn qw_map_for_period(
                 ]
                 .iter()
                 .any(|word| lower_key.contains(word) || lower_value.contains(word));
-                kumpul_feedback.push((if citizen { 0 } else { 1 }, summary));
+                kumpul_feedback.push((if citizen { 0 } else { 1 }, point));
             } else if kode == "QW1.1" {
-                if !seen_gatur.insert(identity) {
-                    continue;
-                }
                 let citizen = [
                     "warga",
                     "masyarakat",
@@ -751,13 +754,20 @@ pub async fn qw_map_for_period(
                 ]
                 .iter()
                 .any(|word| lower_key.contains(word) || lower_value.contains(word));
-                gatur_feedback.push((if citizen { 0 } else { 1 }, summary));
+                let Some((kind, point)) = feedback_point(&cleaned, &label, &polsek_value, 96)
+                else {
+                    continue;
+                };
+                if !seen_gatur.insert(point.to_ascii_lowercase()) {
+                    continue;
+                }
+                gatur_feedback.push((kind * 2 + if citizen { 0 } else { 1 }, point));
             }
         }
     }
 
-    response.gatur_feedback = pick_feedback(gatur_feedback, 3);
-    response.polidik_feedback = pick_feedback(polidik_feedback, 3);
+    response.gatur_feedback = pick_feedback(gatur_feedback, 5);
+    response.polidik_feedback = pick_feedback(polidik_feedback, 5);
     response.kumpul_feedback = pick_feedback(kumpul_feedback, 60);
     response.green_daily = green_daily
         .into_iter()
@@ -797,6 +807,476 @@ fn pick_feedback(mut items: Vec<(u8, String)>, limit: usize) -> Vec<String> {
         .map(|(_, text)| text)
         .take(limit)
         .collect()
+}
+
+fn clean_feedback_text(value: &str) -> String {
+    let mut text = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some(close) = text.find(')') {
+        if close <= 3 && text[..close].chars().all(|ch| ch.is_ascii_digit()) {
+            text = text[close + 1..].trim().to_string();
+        }
+    }
+    if let Some(dot) = text.find('.') {
+        if dot <= 3 && text[..dot].chars().all(|ch| ch.is_ascii_digit()) {
+            text = text[dot + 1..].trim().to_string();
+        }
+    }
+    let lower = text.to_ascii_lowercase();
+    if let Some(position) = lower.find("saran atau keluhan") {
+        let rest = &text[position..];
+        text = match rest.find(". ") {
+            Some(dot) => rest[dot + 2..].trim().to_string(),
+            None => String::new(),
+        };
+    }
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("uraian ") || lower.starts_with("tanggapan ") {
+        if let Some(colon) = text.find(':') {
+            if colon <= 25 {
+                text = text[colon + 1..].trim().to_string();
+            }
+        }
+    }
+    let lower = text.to_ascii_lowercase();
+    if let Some(position) = lower.find("tindak lanjut") {
+        text.truncate(position);
+    }
+    if let Some(dot) = text.find('.') {
+        if dot <= 3 && text[..dot].chars().all(|ch| ch.is_ascii_digit()) {
+            text = text[dot + 1..].trim().to_string();
+        }
+    }
+    text.trim_matches(|ch: char| {
+        ch.is_whitespace() || matches!(ch, ')' | '.' | ',' | ';' | ':' | '-' | '|')
+    })
+    .to_string()
+}
+
+fn fix_feedback_typos(value: &str) -> String {
+    value
+        .replace("ditingkatkagar", "ditingkatkan agar")
+        .replace("ditingkat agar", "ditingkatkan agar")
+        .replace("kenalpot", "knalpot")
+        .replace("lalulintas", "lalu lintas")
+        .replace("displin", "disiplin")
+        .replace("termikasih", "terima kasih")
+        .replace("oenyuluhan", "penyuluhan")
+        .replace("penaganan", "penanganan")
+        .replace("berminant", "berminat")
+        .replace("menginggat", "mengingat")
+        .replace(" Berharap ", " berharap ")
+        .replace(" Kepada ", " kepada ")
+        .replace("Bulliying", "bullying")
+        .replace("kesekolah", "ke sekolah")
+        .replace("ploting", "plotting")
+        .replace(" di daerah ", " di ")
+        .replace("menggunakan kendaraan yang menggunakan ", "menggunakan ")
+}
+
+fn clean_feedback_point(value: &str) -> String {
+    let mut text = fix_feedback_typos(value)
+        .trim()
+        .trim_matches(|ch: char| {
+            ch.is_whitespace() || matches!(ch, '.' | ',' | ';' | ':' | '-' | '|')
+        })
+        .to_string();
+    if !text.chars().any(|ch| ch.is_lowercase()) {
+        text = text.to_lowercase();
+    }
+    loop {
+        let lower = text.to_ascii_lowercase();
+        let mut changed = false;
+        for word in [
+            "yang",
+            "di",
+            "ke",
+            "dari",
+            "untuk",
+            "agar",
+            "karena",
+            "dan",
+            "atau",
+            "serta",
+            "dengan",
+            "pada",
+            "oleh",
+            "kepada",
+            "dalam",
+            "sebagai",
+            "supaya",
+            "jika",
+            "apabila",
+            "terutama",
+            "khususnya",
+            "yaitu",
+            "adalah",
+            "wilayah",
+            "maupun",
+            "saat",
+            "ketika",
+            "bagi",
+            "secara",
+            "masih",
+            "akan",
+            "dapat",
+            "merasa",
+            "berpotensi",
+            "luar",
+            "tidak",
+            "kerja",
+            "sekolah",
+            "daerah",
+            "hal-hal",
+            "pukul",
+            "berangkat",
+            "jam",
+            "banyak",
+            "menggunakan",
+            "sekitar",
+        ] {
+            let suffix = format!(" {word}");
+            if lower.ends_with(&suffix) {
+                text = text[..text.len() - suffix.len()].trim().to_string();
+                changed = true;
+                break;
+            }
+        }
+        if !changed {
+            if let Some(index) = text.rfind(' ') {
+                let last = &text[index + 1..];
+                if !last.is_empty()
+                    && last
+                        .chars()
+                        .all(|ch| ch.is_ascii_digit() || ch == '.' || ch == ':')
+                {
+                    text.truncate(index);
+                    text = text.trim().to_string();
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut chars = text.chars();
+    if let Some(first) = chars.next() {
+        text = first.to_uppercase().collect::<String>() + chars.as_str();
+    }
+    text
+}
+
+fn shorten_feedback(value: &str, max_chars: usize) -> String {
+    let text = value.trim();
+    if text.chars().count() <= max_chars {
+        return clean_feedback_point(text);
+    }
+    let mut current = String::new();
+    let mut best = String::new();
+    for ch in text.chars() {
+        if current.chars().count() >= max_chars {
+            break;
+        }
+        current.push(ch);
+        let length = current.chars().count();
+        if ch == '?' && length >= 20 {
+            best = current.clone();
+            break;
+        }
+        if matches!(ch, '.' | ';') && length >= 25 {
+            best = current
+                .trim_end_matches(|item: char| item == '.' || item == ';')
+                .to_string();
+            break;
+        }
+        if ch == ',' && length >= 40 {
+            best = current.trim_end_matches(',').to_string();
+            break;
+        }
+    }
+    let mut result = if best.is_empty() { current } else { best };
+    if result.chars().count() >= max_chars {
+        if let Some(index) = result.rfind(' ') {
+            if result[..index].chars().count() >= 20 {
+                result.truncate(index);
+            }
+        }
+    }
+    clean_feedback_point(&result)
+}
+
+fn shorten_issue(value: &str, max_chars: usize) -> String {
+    let text = value.trim();
+    if text.chars().count() <= max_chars {
+        return clean_feedback_point(text);
+    }
+    let mut current = String::new();
+    let mut best = String::new();
+    for ch in text.chars() {
+        if current.chars().count() >= max_chars {
+            break;
+        }
+        current.push(ch);
+        let length = current.chars().count();
+        if ch == '?' && length >= 20 {
+            best = current.clone();
+            break;
+        }
+        if matches!(ch, '.' | ';') && length >= 40 {
+            best = current
+                .trim_end_matches(|item: char| item == '.' || item == ';')
+                .to_string();
+            break;
+        }
+    }
+    let mut result = if best.is_empty() { current } else { best };
+    if result.chars().count() >= max_chars {
+        if let Some(index) = result.rfind(' ') {
+            if result[..index].chars().count() >= 20 {
+                result.truncate(index);
+            }
+        }
+    }
+    clean_feedback_point(&result)
+}
+
+fn take_after(text: &str, marker: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let index = lower.find(marker)?;
+    Some(text[index + marker.len()..].trim().to_string())
+}
+
+fn strip_feedback_lead(value: &str) -> String {
+    let mut text = fix_feedback_typos(value.trim());
+    let lower = text.to_ascii_lowercase();
+    if let Some(rest) = take_after(&text, "intinya ") {
+        text = rest;
+    } else if let Some(index) = lower.find(" a.n ") {
+        if let Some(comma) = text[index..].find(',') {
+            text = text[index + comma + 1..].trim().to_string();
+        }
+    }
+    if let Some(rest) = take_after(&text, "atas nama ") {
+        let comma = rest.find(',');
+        text = match comma {
+            Some(position) => rest[position + 1..].trim().to_string(),
+            None => rest,
+        };
+    }
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("penyampaian dari ") {
+        if let Some(rest) = take_after(&text, " yaitu ") {
+            text = rest;
+        }
+    }
+    if let Some(rest) = take_after(&text, "masukan yang disampaikan oleh ") {
+        text = match rest.find(',') {
+            Some(position) => rest[position + 1..].trim().to_string(),
+            None => rest,
+        };
+    }
+    if let Some(rest) = take_after(&text, "pada intinya ") {
+        text = rest;
+    }
+    let lower = text.to_ascii_lowercase();
+    if let Some(index) = lower.find("menyampaikan") {
+        let after = text[index + "menyampaikan".len()..]
+            .trim_start_matches(|ch: char| ch.is_whitespace() || ch == ':' || ch == '-')
+            .to_string();
+        let after_lower = after.to_ascii_lowercase();
+        if !after_lower.starts_with("apresiasi")
+            && !after_lower.starts_with("terima kasih")
+            && !after_lower.starts_with("ucapan terima")
+            && !after_lower.starts_with("trimakasih")
+        {
+            if let Some(rest) = take_after(&after, "terkait ") {
+                text = rest;
+            } else if let Some(rest) = take_after(&after, "mengenai ") {
+                text = rest;
+            } else {
+                text = after;
+            }
+        }
+    }
+    let lower = text.to_ascii_lowercase();
+    const LEADS: &[&str] = &[
+        "bahwa ",
+        "agar ",
+        "keluhan dari masyarakat bahwa ",
+        "keluhan masyarakat bahwa ",
+        "adanya keluhan masyarakat, ",
+        "adanya keluhan masyarakat bahwa ",
+        "masyarakat mengeluhkan adanya ",
+        "masyarakat mengeluhkan ",
+        "masyarakat menyarankan agar ",
+        "masyarakat berharap agar ",
+        "masyarakat mengharapkan agar ",
+        "masyarakat meminta agar ",
+        "warga mengeluhkan ",
+        "warga menyarankan agar ",
+        "warga berharap ",
+        "warga meminta ",
+        "kepala sekolah menyarakan agar ",
+        "kepala sekolah menyarankan agar ",
+        "pihak sekolah melalui guru memberikan saran kepada pihak kepolisian dalam pelaksanaan kegiatan ",
+        "pihak sekolah memberikan saran agar ",
+        "pihak sekolah meminta kepada kepolisian untuk ",
+        "saran dari siswa ",
+        "siswa berharap ",
+        "siswa meminta ",
+        "guru meminta ",
+        "diharapkan agar ",
+        "diharapkan ",
+    ];
+    for lead in LEADS {
+        if lower.starts_with(lead) {
+            text = text[lead.len()..].trim().to_string();
+            break;
+        }
+    }
+    text
+}
+
+fn short_unit_name(value: &str) -> String {
+    let trimmed = value.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    for prefix in ["polresta ", "polres ", "polsek ", "polda ", "satker "] {
+        if lower.starts_with(prefix) {
+            return trimmed[prefix.len()..].trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn feedback_location(polres: &str, polsek: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for value in [polres, polsek] {
+        let short = short_unit_name(value);
+        if !short.is_empty() && !parts.iter().any(|item| item == &short) {
+            parts.push(short);
+        }
+    }
+    parts.join(", ")
+}
+
+fn feedback_is_appreciation(lower: &str) -> bool {
+    [
+        "terima kasih",
+        "terimakasih",
+        "trimakasih",
+        "ucapan terima",
+        "berterima kasih",
+        "apresiasi",
+        "menyambut positif",
+        "rasa aman",
+        "situasi aman",
+        "kondusif",
+        "nyaman",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+}
+
+fn feedback_has_complaint(lower: &str) -> bool {
+    [
+        "macet",
+        "kemacetan",
+        "knalpot",
+        "helm",
+        "parkir",
+        "spbu",
+        "antre",
+        "balap",
+        "tawuran",
+        "perundungan",
+        "bullying",
+        "narkoba",
+        "vape",
+        "rokok",
+        "judi",
+        "penipuan",
+        "begal",
+        "curanmor",
+        "maling",
+        "rawan",
+        "bahaya",
+        "genangan",
+        "banjir",
+        "pohon tumbang",
+        "lampu",
+        "penerangan",
+        "marka",
+        "rambu",
+        "lubang",
+        "rusak",
+        "keselamatan",
+        "kecelakaan",
+        "sampah",
+        "pungli",
+        "geng",
+        "menyeberang",
+        "penyeberangan",
+        "gangguan",
+        "beban",
+        "lebih cepat",
+        "lambat",
+        "keterlambatan",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+}
+
+fn feedback_point(
+    value: &str,
+    polres: &str,
+    polsek: &str,
+    max_chars: usize,
+) -> Option<(u8, String)> {
+    let cleaned = strip_feedback_lead(&clean_feedback_text(value));
+    let lower = cleaned.to_ascii_lowercase();
+    if cleaned.chars().count() < 20
+        || is_noise(&lower)
+        || matches!(
+            lower.as_str(),
+            "keluhan masyarakat"
+                | "saran masyarakat"
+                | "masukan masyarakat"
+                | "saran dan keluhan"
+                | "saran dan masukan"
+                | "masukan dan saran"
+                | "saran dan keluhan warga"
+                | "apresiasi"
+                | "saran"
+                | "keluhan"
+                | "masukan"
+                | "keluhan warga"
+                | "saran warga"
+        )
+        || lower.starts_with("turut hadir")
+        || lower.starts_with("hadir dalam")
+        || lower.contains("tidak ada sekolah")
+        || (lower.starts_with("adanya keluhan masyarakat") && cleaned.chars().count() < 45)
+    {
+        return None;
+    }
+    let appreciation = feedback_is_appreciation(&lower);
+    let complaint = feedback_has_complaint(&lower);
+    let point = shorten_feedback(&cleaned, max_chars);
+    let point = if point.ends_with("bahaya") && lower.contains("narkoba") {
+        format!("{point} narkoba")
+    } else {
+        point
+    };
+    if point.chars().count() < 20 {
+        return None;
+    }
+    let location = feedback_location(polres, polsek);
+    let summary = if location.is_empty() {
+        point
+    } else {
+        format!("{point} ({location})")
+    };
+    Some((if appreciation && !complaint { 1 } else { 0 }, summary))
 }
 
 const MAIN_PIMPINAN_CODES: [&str; 8] = [
@@ -866,14 +1346,19 @@ pub async fn leadership_for_period(
                 tanggal: tanggal.clone(),
                 kode: kode.clone(),
                 executor,
-                kegiatan,
+                kegiatan: kegiatan.clone(),
                 location: location.clone(),
                 direct,
             });
         if let Some(text) = issue_text(&fields) {
+            let issue_location = if location.trim().is_empty() {
+                kegiatan.clone()
+            } else {
+                location.clone()
+            };
             issues.push(QwIssue {
                 tanggal,
-                location,
+                location: issue_location,
                 text,
             });
         }
@@ -931,26 +1416,6 @@ fn row_location(fields: &BTreeMap<String, String>) -> String {
 }
 
 fn issue_text(fields: &BTreeMap<String, String>) -> Option<String> {
-    const COMPLAINT_WORDS: [&str; 18] = [
-        "keluhan",
-        "masalah",
-        "macet",
-        "pencurian",
-        "narkoba",
-        "miras",
-        "sampah",
-        "parkir",
-        "balap",
-        "knalpot",
-        "pju",
-        "cctv",
-        "judi",
-        "begal",
-        "minta",
-        "harap",
-        "kurang",
-        "belum",
-    ];
     let mut best: Option<(i32, String)> = None;
     for (key, value) in fields {
         let lower_key = key.to_ascii_lowercase();
@@ -980,34 +1445,52 @@ fn issue_text(fields: &BTreeMap<String, String>) -> Option<String> {
         {
             continue;
         }
-        let cleaned = value.split_whitespace().collect::<Vec<_>>().join(" ");
-        if is_noise(&cleaned) || cleaned.chars().count() < 20 {
-            continue;
-        }
+        let cleaned = strip_feedback_lead(&clean_feedback_text(value));
         let lower_value = cleaned.to_ascii_lowercase();
-        if lower_value.contains("0 saran atau keluhan")
-            || (lower_value.contains("nihil") && !lower_value.contains("tidak"))
+        if cleaned.chars().count() < 25
+            || is_noise(&lower_value)
+            || matches!(
+                lower_value.as_str(),
+                "keluhan masyarakat"
+                    | "saran masyarakat"
+                    | "masukan masyarakat"
+                    | "saran dan keluhan"
+                    | "saran dan masukan"
+                    | "masukan dan saran"
+                    | "saran dan keluhan warga"
+                    | "apresiasi"
+                    | "saran"
+                    | "keluhan"
+                    | "masukan"
+            )
+            || feedback_is_appreciation(&lower_value)
+            || lower_value.starts_with("turut hadir")
+            || lower_value.starts_with("hadir dalam")
         {
             continue;
         }
         let mut score = 0_i32;
         if lower_key.contains("uraian") {
-            score += 4;
+            score += 3;
         }
         if lower_key.contains("pendapat/masukan") {
             score += 2;
         }
-        if COMPLAINT_WORDS
-            .iter()
-            .any(|word| lower_value.contains(word))
-        {
-            score += 2;
+        if feedback_has_complaint(&lower_value) {
+            score += 4;
         }
         if lower_key.contains("tema") {
             score -= 2;
         }
+        if lower_key.contains("bentuk") {
+            score -= 2;
+        }
+        let summary = shorten_issue(&cleaned, 180);
+        if summary.chars().count() < 25 {
+            continue;
+        }
         if best.as_ref().is_none_or(|(previous, _)| score > *previous) {
-            best = Some((score, cleaned.chars().take(300).collect()));
+            best = Some((score, summary));
         }
     }
     best.map(|(_, text)| text)
@@ -1203,6 +1686,296 @@ pub async fn poliran_for_period(
         mitra: mitra_values.len() as i64,
         activities,
     })
+}
+
+struct AspirationThemeDef {
+    key: &'static str,
+    label: &'static str,
+    keywords: &'static [&'static str],
+}
+
+const ASPIRATION_THEME_DEFS: &[AspirationThemeDef] = &[
+    AspirationThemeDef {
+        key: "security",
+        label: "Pencucian, begal, keamanan malam",
+        keywords: &[
+            "curat",
+            "curas",
+            "curanmor",
+            "pencurian",
+            "begal",
+            "perampok",
+            "jambret",
+            "maling",
+            "keamanan malam",
+        ],
+    },
+    AspirationThemeDef {
+        key: "traffic",
+        label: "Macet, knalpot brong, balap liar",
+        keywords: &[
+            "macet",
+            "kemacetan",
+            "knalpot",
+            "brong",
+            "balap",
+            "parkir",
+            "lalu lintas",
+            "rambu",
+            "penerobos",
+        ],
+    },
+    AspirationThemeDef {
+        key: "drugs",
+        label: "Narkoba, vape dan rokok pelajar",
+        keywords: &["narkoba", "narkotika", "vape", "rokok", "obat terlarang"],
+    },
+    AspirationThemeDef {
+        key: "bullying",
+        label: "Perundungan dan geng pelajar",
+        keywords: &["perundungan", "bullying", "geng", "tawuran"],
+    },
+    AspirationThemeDef {
+        key: "waste",
+        label: "Sampah dan saluran air",
+        keywords: &[
+            "sampah",
+            "saluran air",
+            "drainase",
+            "selokan",
+            "banjir",
+            "kebersihan",
+        ],
+    },
+    AspirationThemeDef {
+        key: "online",
+        label: "Judi daring, hoaks dan penipuan",
+        keywords: &["judi", "hoaks", "penipuan", "scam", "pinjol"],
+    },
+    AspirationThemeDef {
+        key: "tourists",
+        label: "Wisatawan asing melanggar lalu lintas",
+        keywords: &["wisatawan", "turis", "asing"],
+    },
+    AspirationThemeDef {
+        key: "youth",
+        label: "Remaja kumpul malam dan miras",
+        keywords: &["remaja", "kumpul malam", "miras", "minuman keras"],
+    },
+    AspirationThemeDef {
+        key: "jobs",
+        label: "Lowongan, pelatihan kerja, UMKM",
+        keywords: &[
+            "lowongan",
+            "pelatihan",
+            "umkm",
+            "pengangguran",
+            "disalurkan kerja",
+        ],
+    },
+];
+
+/// Data halaman "Apa Kata Mereka": total masukan, matriks tema per program, dan wilayah terbanyak.
+pub async fn aspirations_for_period(
+    db: &SqlitePool,
+    period_id: &str,
+    scope: &DataScope,
+) -> ApiResult<AspirationsPageResponse> {
+    let (start, end, _) = periods::service::dates(db, period_id).await?;
+    let mut qb = QueryBuilder::<Sqlite>::new(ranked_cte());
+    apply_range(&mut qb, &start, &end);
+    qb.push(
+        " SELECT kode, tanggal, polres, level, parsed_json, isian_laporan FROM ranked
+          WHERE rn = 1 AND kode LIKE 'QW1.%'",
+    );
+    match scope {
+        DataScope::All => {}
+        DataScope::None => {
+            qb.push(" AND 1 = 0");
+        }
+        DataScope::Polres(polres) => {
+            qb.push(" AND polres = ").push_bind(polres.clone());
+        }
+        DataScope::Polda { satker } => match satker {
+            Some(satker) => {
+                qb.push(" AND satker = ").push_bind(satker.clone());
+            }
+            None => {
+                qb.push(" AND level = 'Polda'");
+            }
+        },
+    }
+    qb.push(" ORDER BY tanggal, id");
+
+    let rows = qb.build().fetch_all(db).await.map_err(ApiError::internal)?;
+    let mut total = 0_i64;
+    let mut polres_counts: BTreeMap<String, i64> = BTreeMap::new();
+    let mut counts = vec![0_i64; ASPIRATION_THEME_DEFS.len()];
+    let mut done = vec![0_i64; ASPIRATION_THEME_DEFS.len()];
+    let mut programs: Vec<BTreeSet<String>> = vec![BTreeSet::new(); ASPIRATION_THEME_DEFS.len()];
+
+    for row in rows {
+        let parsed: ParsedRow =
+            serde_json::from_str(&row.get::<String, _>("parsed_json")).unwrap_or_default();
+        let fields = if parsed.fields.is_empty() {
+            parse_fields(&row.get::<String, _>("isian_laporan"))
+        } else {
+            parsed.fields
+        };
+        let feedback = aspiration_feedback_text(&fields);
+        if feedback.is_empty() {
+            continue;
+        }
+        total += 1;
+        let polres: String = row.get("polres");
+        let polres = polres.trim();
+        if polres.to_ascii_lowercase().contains("polres") {
+            *polres_counts.entry(polres.to_string()).or_default() += 1;
+        }
+        let kode = qw::normalize(&row.get::<String, _>("kode"));
+        let level: String = row.get("level");
+        let mut row_programs: Vec<&'static str> = Vec::new();
+        if level.eq_ignore_ascii_case("polda") {
+            row_programs.push("polda");
+        }
+        if let Some(program) = aspiration_program(&kode) {
+            row_programs.push(program);
+        }
+        let text = feedback.to_ascii_lowercase();
+        let followed_up = aspiration_follow_up_done(&text);
+        for (index, def) in ASPIRATION_THEME_DEFS.iter().enumerate() {
+            if !def.keywords.iter().any(|keyword| text.contains(keyword)) {
+                continue;
+            }
+            counts[index] += 1;
+            if followed_up {
+                done[index] += 1;
+            }
+            for program in &row_programs {
+                programs[index].insert((*program).to_string());
+            }
+        }
+    }
+
+    let themes = ASPIRATION_THEME_DEFS
+        .iter()
+        .enumerate()
+        .map(|(index, def)| AspirationThemeRow {
+            key: def.key.to_string(),
+            label: def.label.to_string(),
+            count: counts[index],
+            programs: programs[index].iter().cloned().collect(),
+            follow_up: if counts[index] > 0 && done[index] * 2 >= counts[index] {
+                "done".to_string()
+            } else {
+                "running".to_string()
+            },
+        })
+        .collect();
+
+    let mut top_polres: Vec<LabeledCount> = polres_counts
+        .into_iter()
+        .map(|(label, count)| LabeledCount::new(label, count))
+        .collect();
+    top_polres.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    top_polres.truncate(3);
+
+    Ok(AspirationsPageResponse {
+        total,
+        themes,
+        top_polres,
+    })
+}
+
+fn aspiration_feedback_text(fields: &BTreeMap<String, String>) -> String {
+    let mut parts = Vec::new();
+    for (key, value) in fields {
+        let lower = key.to_ascii_lowercase();
+        if lower.contains("personel")
+            || lower.contains("polri")
+            || lower.contains("tindak lanjut")
+            || lower.contains("status")
+        {
+            continue;
+        }
+        let is_feedback = lower.contains("saran masukan")
+            || lower.contains("keluhan / kegelisahan masyarakat")
+            || (lower.contains("pendapat/masukan masyarakat") && lower.contains("uraian"));
+        if !is_feedback {
+            continue;
+        }
+        let cleaned = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        if cleaned.chars().count() < 12 || is_noise(&cleaned) {
+            continue;
+        }
+        if cleaned
+            .to_ascii_lowercase()
+            .contains("0 saran atau keluhan")
+        {
+            continue;
+        }
+        parts.push(cleaned);
+    }
+    parts.join(" ")
+}
+
+fn aspiration_program(kode: &str) -> Option<&'static str> {
+    match kode {
+        "QW1.1" | "QW1.2" => Some("gatur_polidik"),
+        "QW1.3" => Some("poliran"),
+        "QW1.4" => Some("kumpul"),
+        "QW1.5" => Some("green"),
+        "QW1.6" => Some("jumat"),
+        "QW1.7" => Some("subuh"),
+        "QW1.8" => Some("minggu"),
+        _ => None,
+    }
+}
+
+fn aspiration_follow_up_done(text: &str) -> bool {
+    if !text.contains("belum ditindaklanjuti") && !text.contains("belum selesai") {
+        let phrase = "saran atau keluhan";
+        if let Some(position) = text.find(phrase) {
+            let asked = trailing_number(&text[..position]);
+            let rest = &text[position + phrase.len()..];
+            if let Some(done_position) = rest.find("ditindaklanjuti") {
+                let completed = leading_number(&rest[..done_position]);
+                if let (Some(asked), Some(completed)) = (asked, completed) {
+                    if asked > 0 {
+                        return completed >= asked;
+                    }
+                }
+            }
+        }
+    }
+    [
+        "sudah ditindaklanjuti",
+        "telah ditindaklanjuti",
+        "selesai",
+        "ditangani",
+        "diterima",
+    ]
+    .iter()
+    .any(|word| text.contains(word))
+        && !text.contains("belum ditindaklanjuti")
+}
+
+fn trailing_number(text: &str) -> Option<i64> {
+    text.split(|character: char| !character.is_ascii_digit())
+        .filter(|token| !token.is_empty())
+        .next_back()
+        .and_then(|token| token.parse().ok())
+}
+
+fn leading_number(text: &str) -> Option<i64> {
+    text.split(|character: char| !character.is_ascii_digit())
+        .find(|token| !token.is_empty())
+        .and_then(|token| token.parse().ok())
 }
 
 fn push_filters(qb: &mut QueryBuilder<Sqlite>, query: &RecordQuery) {
@@ -1436,6 +2209,8 @@ fn record_from_row(row: &SqliteRow, evidence: &HashMap<i64, Vec<EvidenceView>>) 
     links.dedup();
 
     let stored_analysis = parsed.analysis;
+    let id: i64 = row.get("id");
+    let kode: String = row.get("kode");
     let analysis = if stored_analysis.personel == 0
         && stored_analysis.bibit == 0
         && stored_analysis.area_m2.abs() < f64::EPSILON
@@ -1443,13 +2218,11 @@ fn record_from_row(row: &SqliteRow, evidence: &HashMap<i64, Vec<EvidenceView>>) 
         && stored_analysis.latitude.is_none()
         && stored_analysis.map_url.is_empty()
     {
-        analysis::analyze(&fields, &isian_laporan, &bukti_dukung)
+        analysis::analyze(&kode, &fields, &isian_laporan, &bukti_dukung)
     } else {
         stored_analysis
     };
 
-    let id: i64 = row.get("id");
-    let kode: String = row.get("kode");
     let qw_title: String = row.get("qw_title");
     RecordView {
         id,
@@ -2205,6 +2978,20 @@ fn top_counts(map: BTreeMap<String, i64>, limit: usize) -> Vec<LabeledCount> {
 #[cfg(test)]
 mod tests {
     use crate::modules::auth::DataScope;
+
+    #[test]
+    fn aspiration_follow_up_reads_counts() {
+        assert!(super::aspiration_follow_up_done(
+            "1 saran atau keluhan, 1 ditindaklanjuti. tindak lanjut: diterima"
+        ));
+        assert!(!super::aspiration_follow_up_done(
+            "2 saran atau keluhan, 1 ditindaklanjuti."
+        ));
+        assert!(!super::aspiration_follow_up_done("belum ditindaklanjuti"));
+        assert_eq!(super::aspiration_program("QW1.2"), Some("gatur_polidik"));
+        assert_eq!(super::aspiration_program("QW1.8"), Some("minggu"));
+        assert_eq!(super::aspiration_program("QW1.10"), None);
+    }
 
     #[tokio::test]
     async fn analysis_breaks_down_satker_and_polres() {

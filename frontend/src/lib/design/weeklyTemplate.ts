@@ -8,6 +8,8 @@ import type {
   PeriodDetail,
   PoliranDay,
   PoliranSummaryResponse,
+  AspirationThemeRow,
+  AspirationsPageResponse,
   ReportLayout,
   ReportMetrics,
   QwTimelineEntry,
@@ -53,6 +55,8 @@ export interface WeeklyTemplateInput {
   polidikDaily?: PoliranDay[]
   /// Laporan harian QW1.4 untuk grafik halaman Kumpul Bersama.
   kumpulDaily?: PoliranDay[]
+  /// Data halaman "Apa Kata Mereka" (tema aspirasi dan wilayah terbanyak).
+  aspirations?: AspirationsPageResponse | null
   /// Contoh saran/keluhan yang sudah difilter backend untuk halaman Gatur/Polidik.
   feedback?: { gatur: string[]; polidik: string[] }
   /// Keluhan warga unik untuk halaman Kumpul Bersama.
@@ -143,6 +147,18 @@ function timelineLabel(value: string): string {
 function shorten(value: string, max: number): string {
   const text = value.trim()
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
+}
+
+function compactLocation(value: string, max = 48): string {
+  const parts = value
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+  const picked = parts.slice(0, 2).join(', ') || 'Forum Pimpinan Polda'
+  if (picked.length <= max) return picked
+  const cut = picked.slice(0, max)
+  const lastSpace = cut.lastIndexOf(' ')
+  return lastSpace > 20 ? cut.slice(0, lastSpace) : cut
 }
 
 function timelineCardText(entry: QwTimelineEntry): { title: string; location: string } {
@@ -242,6 +258,7 @@ interface TableOptions {
   borderColor?: string
   fontSize?: number
   align?: ('left' | 'center' | 'right' | '')[]
+  columnColors?: string[]
   z?: number
 }
 
@@ -380,6 +397,7 @@ function table(
       font_size: options.fontSize ?? 7.2,
       font_family: 'inter',
       table_column_aligns: aligns,
+      table_column_colors: options.columnColors ?? [],
       z: options.z ?? 10,
     }),
   )
@@ -580,6 +598,7 @@ interface Data {
   gaturDaily: PoliranDay[]
   polidikDaily: PoliranDay[]
   kumpulDaily: PoliranDay[]
+  aspirations: AspirationsPageResponse | null
   feedback: { gatur: string[]; polidik: string[] }
   kumpulFeedback: string[]
   kumpulFeedbackTotal: number
@@ -673,7 +692,7 @@ function outsideScheduleCount(data: Data, code: string): number {
   )
 }
 
-function randomUnique(items: string[] | undefined, limit: number): string[] {
+function uniqueFeedback(items: string[] | undefined, limit: number): string[] {
   const seen = new Set<string>()
   const unique: string[] = []
   for (const item of items ?? []) {
@@ -682,22 +701,25 @@ function randomUnique(items: string[] | undefined, limit: number): string[] {
     const key = text.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
-    unique.push(text.length > 150 ? `${text.slice(0, 149)}…` : text)
+    unique.push(text)
+    if (unique.length >= limit) break
   }
-  for (let index = unique.length - 1; index > 0; index -= 1) {
-    const swap = Math.floor(Math.random() * (index + 1))
-    ;[unique[index], unique[swap]] = [unique[swap], unique[index]]
-  }
-  return unique.slice(0, limit)
+  return unique
 }
 
 function feedbackLine(items: string[] | undefined, fallback: string): string {
-  const picked = (items ?? [])
-    .filter((item) => item.trim())
-    .slice(0, 2)
-    .map((item) => (item.length > 150 ? `${item.slice(0, 149)}…` : item))
-  if (!picked.length) return fallback
-  return picked.map((item, index) => `${index + 1}. ${item}`).join('\n')
+  const candidates = (items ?? []).map((item) => item.trim()).filter(Boolean)
+  if (!candidates.length) return fallback
+  const picked: string[] = []
+  let length = 0
+  for (const item of candidates) {
+    if (picked.length >= 4) break
+    if (picked.length >= 2 && length + item.length > 340) break
+    if (picked.length >= 3 && length + item.length > 300) break
+    picked.push(item)
+    length += item.length + 2
+  }
+  return picked.join('; ')
 }
 
 
@@ -950,7 +972,7 @@ function addFeedbackPanel(
     page,
     { x: box.x + 3, y: box.y + 7, width: box.width - 6, height: box.height - 9 },
     feedbackLine(items, fallback),
-    { size: 6.0, color: SOFT },
+    { size: 5.8, color: SOFT },
   )
 }
 
@@ -1122,22 +1144,22 @@ function buildGaturPolidik(data: Data): LayoutPage {
 
   addFeedbackPanel(
     page,
-    { x: 14, y: mapY + 81, width: 88, height: 21 },
+    { x: 14, y: mapY + 81, width: 88, height: 24 },
     'SUARA WARGA · GATUR',
     data.feedback.gatur,
     'Belum ada saran atau keluhan warga pada laporan QW1.1.',
   )
   addFeedbackPanel(
     page,
-    { x: 108, y: mapY + 81, width: 88, height: 21 },
-    'SARAN SEKOLAH · POLIDIK',
+    { x: 108, y: mapY + 81, width: 88, height: 24 },
+    'SUARA SEKOLAH · POLIDIK',
     data.feedback.polidik,
     'Belum ada saran atau keluhan sekolah pada laporan QW1.2.',
   )
 
   addBreakdownChart(
     page,
-    { x: 14, y: mapY + 106, width: 88, height: 35 },
+    { x: 14, y: mapY + 108, width: 88, height: 35 },
     'Alasan memilih titik',
     gaturProgram,
     ['alasan', 'pertimbangan'],
@@ -1145,7 +1167,7 @@ function buildGaturPolidik(data: Data): LayoutPage {
   )
   addBreakdownChart(
     page,
-    { x: 108, y: mapY + 106, width: 88, height: 35 },
+    { x: 108, y: mapY + 108, width: 88, height: 35 },
     'Cara bertindak',
     gaturProgram,
     ['cara bertindak', 'bertindak'],
@@ -1153,7 +1175,7 @@ function buildGaturPolidik(data: Data): LayoutPage {
   )
   addBreakdownChart(
     page,
-    { x: 14, y: mapY + 145, width: 88, height: 35 },
+    { x: 14, y: mapY + 147, width: 88, height: 35 },
     'Bentuk kegiatan Polidik',
     polidikProgram,
     ['bentuk kegiatan', 'bentuk'],
@@ -1161,7 +1183,7 @@ function buildGaturPolidik(data: Data): LayoutPage {
   )
   addBreakdownChart(
     page,
-    { x: 108, y: mapY + 145, width: 88, height: 35 },
+    { x: 108, y: mapY + 147, width: 88, height: 35 },
     'Tema materi Polidik',
     polidikProgram,
     ['tema materi', 'tema', 'materi'],
@@ -1296,7 +1318,7 @@ function buildKumpulBersama(data: Data): LayoutPage {
     { fontSize: 6.6, align: ['left', 'right'] },
   )
 
-  const complaints = randomUnique(data.kumpulFeedback, 6)
+  const complaints = uniqueFeedback(data.kumpulFeedback, 6)
   rect(page, { x: 14, y: lowerY + 52, width: 182, height: 45 }, { fill: PANEL, radius: 2, z: 2 })
   text(
     page,
@@ -1305,9 +1327,8 @@ function buildKumpulBersama(data: Data): LayoutPage {
     { size: 6.4, bold: true, color: FOREST },
   )
   if (complaints.length) {
-    const numbered = complaints.map((item, index) => `${index + 1}. ${item}`)
-    const left = numbered.slice(0, 3).join('\n')
-    const right = numbered.slice(3, 6).join('\n')
+    const left = complaints.slice(0, 3).join('; ')
+    const right = complaints.slice(3, 6).join('; ')
     text(page, { x: 17, y: lowerY + 59, width: 84, height: 35 }, left, {
       size: 6.0,
       color: SOFT,
@@ -1508,14 +1529,14 @@ function buildKapolda(data: Data): LayoutPage {
       text(
         page,
         { x: 32, y: y + 3, width: 158, height: 5 },
-        `${timelineLabel(issue.tanggal)}${issue.location ? ` · ${shorten(issue.location, 62)}` : ''}`,
-        { size: 7, bold: true, color: INK },
+        `${timelineLabel(issue.tanggal)} · ${compactLocation(issue.location)}`,
+        { size: 7.2, bold: true, color: INK },
       )
       text(
         page,
         { x: 32, y: y + 9, width: 158, height: 13 },
-        shorten(issue.text, 240),
-        { size: 6.2, color: SOFT },
+        issue.text,
+        { size: 6.4, color: SOFT },
       )
     })
   }
@@ -1927,7 +1948,7 @@ function buildWorship(
   const scheduledTotal = daily
     .filter((item) => weekdayIndex(item.date) === scheduledWeekday)
     .reduce((sum, item) => sum + item.count, 0)
-  const jamaah = metricTotal(programInfo, [jamaahKeyword]) || metrics.people
+  const jamaah = Math.max(metricTotal(programInfo, [jamaahKeyword]), metrics.people)
   const personel = metricTotal(programInfo, ['personel'])
   const roles = findBreakdown(programInfo, ['peran'])?.values ?? []
   const roleColors: Record<string, string> = {
@@ -1935,6 +1956,7 @@ function buildWorship(
     Jamaah: GOLD,
     Imam: '#2f6db0',
     Pengamanan: '#3f765d',
+    'Pengamanan, Lainnya': '#3f765d',
     Lainnya: '#6d7872',
   }
   const polresRows = [...metrics.by_polres]
@@ -2059,15 +2081,20 @@ function buildWorship(
 
   const rowTop = contentY + 69
   const chartHeight = 56
+  const roleTotal = roles.reduce((sum, item) => sum + item.count, 0)
+  const roleChart =
+    key === 'minggu_kasih' && roleTotal <= 0
+      ? [{ label: 'Pengamanan, Lainnya', count: 100 }]
+      : roles
   chart(
     page,
     { x: 14, y: rowTop, width: 88, height: chartHeight },
     'pie',
     'Peran personel',
-    roles.map((item) => shorten(item.label, 20)),
-    roles.map((item) => item.count),
+    roleChart.map((item) => shorten(item.label, 20)),
+    roleChart.map((item) => item.count),
     {
-      colors: roles.map(
+      colors: roleChart.map(
         (item, index) => roleColors[item.label] ?? PALETTE[index % PALETTE.length],
       ),
       showValues: true,
@@ -2120,104 +2147,608 @@ function buildWorship(
   return page
 }
 
-function buildAspirations(data: Data): LayoutPage {
-  const page = newPage(10)
+const followTitleByKey: Record<string, string> = {
+  security: 'Pencurian dan keamanan malam',
+  traffic: 'Lalu lintas jam kantor',
+  drugs: 'Narkoba, vape dan geng pelajar',
+  bullying: 'Perundungan pelajar',
+  waste: 'Sampah dan kebersihan',
+  online: 'Penipuan daring',
+  tourists: 'Wisatawan asing',
+  youth: 'Knalpot brong dan balap liar',
+  jobs: 'Lowongan kerja',
+}
+
+const followPlanByKey: Record<string, string> = {
+  security: 'Perkuat patroli malam di pasar, permukiman dan perbatasan kabupaten',
+  traffic: 'Tindak knalpot brong dan balap liar di jalur utama',
+  drugs: 'Petakan kawasan rawan narkoba bersama BNN dan sekolah',
+  bullying: 'Edukasi anti perundungan dan pemantauan geng pelajar di sekolah',
+  waste: 'Jadwalkan Green Policing rutin dan kerja bakti saluran air',
+  online: 'Perluas edukasi judi daring dan penipuan, dampingi korban',
+  tourists: 'Tertibkan wisatawan asing bersama desa adat dan pemandu',
+  youth: 'Razia miras dan patroli titik kumpul remaja',
+  jobs: 'Buka lowongan, pelatihan kerja dan pendampingan UMKM',
+}
+
+const dayMonthLongFormatter = new Intl.DateTimeFormat('id-ID', {
+  day: 'numeric',
+  month: 'long',
+})
+
+function aspirationFollowTitle(key: string, fallback: string): string {
+  return followTitleByKey[key] ?? fallback
+}
+
+function aspirationFollowPlan(theme: AspirationThemeRow): string {
+  return followPlanByKey[theme.key] ?? 'Tindak lanjuti aspirasi warga sesuai hasil forum dan laporan satuan'
+}
+
+function aspirationFollowDescription(
+  data: Data,
+  theme: AspirationThemeRow,
+  region: string,
+): string {
+  const kerjaBakti = data.metrics.green_policing?.kerja_bakti ?? 0
+  switch (theme.key) {
+    case 'security':
+      return `${fmt(codeRows(data, 'QW1.10'))} laporan Patroli Sabhara dan ${fmt(codeRows(data, 'QW1.9'))} Patroli Siaga Reserse; patroli diarahkan ke titik rawan di ${region}.`
+    case 'traffic':
+      return `${fmt(codeRows(data, 'QW1.1'))} laporan Gatur Pagi dan ${fmt(codeRows(data, 'QW1.2'))} kegiatan Polidik; kepadatan jam kantor dan knalpot brong menjadi keluhan utama di ${region}.`
+    case 'drugs':
+      return `${fmt(codeRows(data, 'QW1.2'))} kegiatan Polidik menyasar bahaya narkoba dan vape; kawasan rawan di ${region} perlu dipantau bersama sekolah.`
+    case 'bullying':
+      return `Edukasi anti perundungan masuk dalam ${fmt(codeRows(data, 'QW1.2'))} kegiatan Polidik; kasus pelajar perlu ditangani bersama sekolah dan orang tua.`
+    case 'waste':
+      return `Kerja bakti Green Policing di ${fmt(kerjaBakti || codeRows(data, 'QW1.5'))} lokasi; warga meminta penjadwalan rutin di ${region}.`
+    case 'online':
+      return `${fmt(codeRows(data, 'QW4.3'))} panggilan 110 dan ${fmt(codeRows(data, 'QW3.2'))} layanan aduan penipuan; edukasi judi daring dan penipuan masih perlu diperluas.`
+    case 'tourists':
+      return `${fmt(codeRows(data, 'QW1.6'))} kegiatan Jumat Keliling dan ${fmt(codeRows(data, 'QW1.8'))} Minggu Kasih menjangkau warga dan wisatawan di ${region}.`
+    case 'youth':
+      return `${fmt(codeRows(data, 'QW1.10'))} laporan patroli dan ${fmt(codeRows(data, 'QW1.9'))} Patroli Siaga Reserse; titik kumpul remaja dan balap liar perlu dipantau malam.`
+    case 'jobs':
+      return `${fmt(codeRows(data, 'QW1.3'))} laporan Poliran menyalurkan warga ke dunia kerja; pelatihan dan pendampingan UMKM masih dibutuhkan.`
+    default:
+      return `${fmt(theme.count)} isian warga menyebut ${theme.label.toLowerCase()}; tindak lanjut menyesuaikan hasil forum dan laporan satuan.`
+  }
+}
+
+function aspirationPlanLabel(end: string): string {
+  const date = new Date(`${end.slice(0, 10)}T12:00:00`)
+  if (Number.isNaN(date.getTime())) return 'BERIKUTNYA'
+  const finish = new Date(date)
+  finish.setDate(date.getDate() + 6)
+  const sameMonth =
+    date.getMonth() === finish.getMonth() && date.getFullYear() === finish.getFullYear()
+  const startLabel = sameMonth ? String(date.getDate()) : dayMonthLongFormatter.format(date)
+  return `${startLabel} – ${dayMonthLongFormatter.format(finish)}`.toUpperCase()
+}
+
+function aspirationActionNote(data: Data): string {
+  const extreme = codeRows(data, 'QW1.12')
+  const scientific = codeRows(data, 'QW8.4')
+  const pungli = codeRows(data, 'QW6.2')
+  const parts: string[] = []
+  parts.push(
+    extreme === 0
+      ? 'Belum ada laporan QW1.12 Pencegahan ekstremisme pada anak.'
+      : `Pencegahan ekstremisme pada anak (QW1.12) ${fmt(extreme)} laporan.`,
+  )
+  parts.push(
+    scientific === 0
+      ? 'Belum ada laporan QW8.4 Olah TKP ilmiah dan identifikasi korban.'
+      : `Olah TKP ilmiah (QW8.4) ${fmt(scientific)} laporan.`,
+  )
+  parts.push(
+    pungli === 0
+      ? 'Tidak ada anggota yang tercatat pungli (QW6.2).'
+      : `Copot Hari Itu Juga (QW6.2) ${fmt(pungli)} laporan.`,
+  )
+  const total = data.aspirations?.total ?? data.metrics.aspirations.total
+  parts.push(`Tercatat ${fmt(total)} isian aspirasi warga pada periode ini.`)
+  return parts.join(' ')
+}
+
+function buildAspirationFollowUp(data: Data): LayoutPage {
+  const page = newPage(11)
   addHeader(page, data.frame)
-  addFooter(page, data.frame, 10)
-  const aspirations = data.metrics.aspirations
-  const start = addSectionHeading(
-    page,
-    26,
-    'Aspirasi Warga',
-    'Apa Kata Mereka',
-    `Tercatat ${fmt(aspirations.total)} isian saran dan keluhan; ${fmt(aspirations.themes.length)} tema dan ${fmt(aspirations.statuses.length)} status tindak lanjut.`,
-  )
-  const nextY = addCards(page, start + 2, [
-    { label: 'Isian aspirasi', value: fmt(aspirations.total), unit: 'isian', detail: 'saran dan keluhan' },
-    { label: 'Tema', value: fmt(aspirations.themes.length), unit: 'tema', detail: 'diringkas dari isian' },
-    { label: 'Status', value: fmt(aspirations.statuses.length), unit: 'status', detail: 'tindak lanjut' },
-    { label: 'Kutipan', value: fmt(aspirations.quotes.length), unit: 'kutipan', detail: 'siap dipakai' },
-  ])
-  const themes = topLabeledRows(aspirations.themes, 10, 'Tema aspirasi', 'Jumlah')
-  chart(
-    page,
-    { x: 14, y: nextY + 4, width: 108, height: 66 },
-    'hbar',
-    'Tema aspirasi warga',
-    themes.rows.map((row) => row[0]),
-    themes.rows.map((row) => Number(row[1].replace(/\./g, ''))),
-    { showValues: true },
-  )
-  addPanelTitle(page, { x: 126, y: nextY + 4, width: 70, height: 10 }, 'Status tindak lanjut')
-  const statuses = topLabeledRows(aspirations.statuses, 8, 'Status', 'Jumlah')
-  table(page, { x: 126, y: nextY + 13, width: 70, height: 22 }, statuses.columns, statuses.rows, {
-    fontSize: 6.8,
-  })
-  addPanelTitle(page, { x: 126, y: nextY + 30, width: 70, height: 10 }, 'Sumber aspirasi')
-  const sources = topLabeledRows(aspirations.by_source, 5, 'Sumber', 'Jumlah')
-  table(page, { x: 126, y: nextY + 39, width: 70, height: 26 }, sources.columns, sources.rows, {
-    fontSize: 6.8,
-  })
-  addPanelTitle(page, { x: 14, y: nextY + 76, width: 182, height: 10 }, 'Kutipan aspirasi')
-  text(page, { x: 14, y: nextY + 86, width: 182, height: 62 }, quoteText(data, 6), {
-    size: 7.6,
-    color: SOFT,
-  })
-  rect(page, { x: 14, y: 262, width: 182, height: 12 }, { fill: PANEL, radius: 1.5, z: 2 })
+  addFooter(page, data.frame, 11)
+
+  const info = data.aspirations
+  const rawThemes: AspirationThemeRow[] = info?.themes?.length
+    ? info.themes
+    : data.metrics.aspirations.themes.map((item) => ({
+        key: '',
+        label: item.label,
+        count: item.count,
+        programs: [],
+        follow_up: 'running',
+      }))
+  const preferredOrder = [
+    'security',
+    'traffic',
+    'waste',
+    'drugs',
+    'online',
+    'youth',
+    'tourists',
+    'bullying',
+    'jobs',
+  ]
+  const themeByKey = new Map(rawThemes.map((theme) => [theme.key, theme]))
+  const preferredThemes = preferredOrder
+    .map((key) => themeByKey.get(key))
+    .filter((theme): theme is AspirationThemeRow => Boolean(theme) && (theme?.count ?? 0) > 0)
+  const remainingThemes = [...rawThemes]
+    .filter((theme) => theme.count > 0 && !preferredThemes.includes(theme))
+    .sort((left, right) => right.count - left.count)
+  const displayThemes = [...preferredThemes, ...remainingThemes].slice(0, 6)
+  const region = info?.top_polres?.[0]?.label ?? 'Polda Bali'
+  const total = info?.total ?? data.metrics.aspirations.total
+  const doneThemes = displayThemes.filter((theme) => theme.follow_up === 'done').length
+  const runningThemes = displayThemes.length - doneThemes
+
+  const subtitle =
+    'Tindak lanjut atas aspirasi warga yang tercatat pekan ini, dengan rencana yang akan dilaksanakan.'
   text(
     page,
-    { x: 17, y: 264.5, width: 176, height: 7 },
-    'Kutipan dan tema berasal dari isian laporan. Sunting teks pada kanvas untuk menyesuaikan narasi laporan.',
-    { size: 6.4, color: SOFT },
+    { x: 14, y: 26, width: 182, height: 5 },
+    `TINDAK LANJUT ASPIRASI · ${data.frame.shortPeriod.toUpperCase()}`,
+    { size: 6.6, bold: true, color: GOLD },
+  )
+  text(
+    page,
+    { x: 14, y: 30.8, width: 182, height: 11 },
+    'Tindak Lanjut Aspirasi Warga',
+    { size: 20, bold: true, family: 'montserrat', color: FOREST },
+  )
+  let subtitleY = 43
+  for (const line of chunk(subtitle.split(' '), 26)
+    .slice(0, 2)
+    .map((parts) => parts.join(' '))) {
+    text(page, { x: 14, y: subtitleY, width: 182, height: 4.5 }, line, {
+      size: 7.4,
+      italic: true,
+      color: SOFT,
+    })
+    subtitleY += 4.2
+  }
+
+  const plans = [...displayThemes]
+    .sort((left, right) => right.count - left.count)
+    .slice(0, 4)
+    .map((theme) => aspirationFollowPlan(theme))
+  const fallbackPlans = [
+    'Lengkapi cakupan Poliran dan Minggu Kasih di seluruh Polsek',
+    'Tetapkan kawasan rawan narkoba bersama BNN dan pemerintah daerah',
+    'Tindak knalpot brong dan balap liar di jalur utama',
+    'Tertibkan laporan berisi "NIHIL KEGIATAN" di luar hari jadwal',
+  ]
+  while (plans.length < 4) {
+    const candidate = fallbackPlans.find((plan) => !plans.includes(plan))
+    if (!candidate) break
+    plans.push(candidate)
+  }
+
+  const cardItems = [
+    {
+      value: fmt(doneThemes),
+      label: 'tema aspirasi sudah ditindaklanjuti',
+      fill: '#e7f2e6',
+      valueColor: '#2f7d4f',
+      labelColor: '#2f5d3f',
+    },
+    {
+      value: fmt(runningThemes),
+      label: 'tema masih berjalan',
+      fill: '#f9efe0',
+      valueColor: GOLD,
+      labelColor: '#7a5a30',
+    },
+    {
+      value: fmt(plans.length),
+      label: 'rencana pekan ini',
+      fill: '#f1f2f4',
+      valueColor: '#334155',
+      labelColor: '#4b5563',
+    },
+    {
+      value: fmt(total),
+      label: 'isian saran dan keluhan di aplikasi',
+      fill: '#f1f2f4',
+      valueColor: '#1f2937',
+      labelColor: '#4b5563',
+    },
+  ]
+  const cardWidth = 43
+  const cardGap = 2.67
+  cardItems.forEach((item, index) => {
+    card(
+      page,
+      { x: 14 + index * (cardWidth + cardGap), y: 54, width: cardWidth, height: 26 },
+      item.label,
+      item.value,
+      '',
+      '',
+      {
+        fill: item.fill,
+        accent: item.fill,
+        labelColor: item.labelColor,
+        valueColor: item.valueColor,
+        borderColor: item.fill,
+        template: 'icon_right',
+        labelSize: 6.6,
+        valueSize: 20,
+      },
+    )
+  })
+
+  text(
+    page,
+    { x: 14, y: 88, width: 182, height: 5 },
+    'TEMA ASPIRASI PEKAN INI',
+    { size: 6.6, bold: true, color: GOLD },
+  )
+
+  const rowX = 14
+  const rowWidth = 182
+  const rowHeight = 15.4
+  const rowGap = 1.4
+  displayThemes.forEach((theme, index) => {
+    const y = 94.5 + index * (rowHeight + rowGap)
+    const done = theme.follow_up === 'done'
+    rect(page, { x: rowX, y, width: rowWidth, height: rowHeight }, {
+      fill: '#f5f6f7',
+      radius: 1.5,
+      z: 2,
+    })
+    page.elements.push(
+      element('rect', { x: rowX + 3.4, y: y + 1.9, width: 11.6, height: 11.6 }, {
+        shape: 'ellipse',
+        fill: done ? '#3f9d4f' : GOLD,
+        border_width: 0,
+        z: 3,
+      }),
+    )
+    page.elements.push(
+      element('icon', { x: rowX + 5.4, y: y + 3.9, width: 7.6, height: 7.6 }, {
+        icon_name: done ? 'check' : 'clock',
+        icon_color: WHITE,
+        icon_stroke: done ? 3 : 2,
+        z: 4,
+      }),
+    )
+    text(
+      page,
+      { x: rowX + 18, y: y + 2.4, width: 140, height: 4.4 },
+      aspirationFollowTitle(theme.key, theme.label),
+      { size: 7.4, bold: true, color: FOREST },
+    )
+    text(
+      page,
+      { x: rowX + 18, y: y + 7.1, width: 139, height: 7.4 },
+      aspirationFollowDescription(data, theme, region),
+      { size: 6.35, color: SOFT },
+    )
+    text(
+      page,
+      { x: rowX + 160, y: y + 5.7, width: 18, height: 4 },
+      done ? 'SUDAH' : 'BERJALAN',
+      { size: 6.1, bold: true, color: done ? '#2f7d4f' : GOLD, align: 'right' },
+    )
+  })
+
+  text(
+    page,
+    { x: 14, y: 198.5, width: 182, height: 5 },
+    `RENCANA PEKAN ${aspirationPlanLabel(data.detail.period.end_date)}`,
+    { size: 6.6, bold: true, color: GOLD },
+  )
+
+  plans.forEach((plan, index) => {
+    const y = 204.5 + index * 9.5
+    rect(page, { x: 14, y, width: 182, height: 8.2 }, {
+      fill: '#f5f6f7',
+      radius: 1.4,
+      z: 2,
+    })
+    page.elements.push(
+      element('rect', { x: 17.2, y: y + 1.1, width: 6, height: 6 }, {
+        shape: 'ellipse',
+        fill: '#6b7f95',
+        border_width: 0,
+        z: 3,
+      }),
+    )
+    page.elements.push(
+      element('icon', { x: 18.5, y: y + 2.4, width: 3.4, height: 3.4 }, {
+        icon_name: 'clock',
+        icon_color: WHITE,
+        icon_stroke: 2.5,
+        z: 4,
+      }),
+    )
+    text(page, { x: 26, y: y + 1.7, width: 167, height: 5.4 }, plan, {
+      size: 7,
+      bold: true,
+      color: INK,
+    })
+  })
+
+  rect(page, { x: 14, y: 245.5, width: 182, height: 22 }, {
+    fill: '#fbf5e6',
+    borderColor: '#efe0bd',
+    borderWidth: 0.6,
+    radius: 1.5,
+    z: 2,
+  })
+  text(
+    page,
+    { x: 19, y: 249, width: 172, height: 4 },
+    'CATATAN RENCANA AKSI',
+    { size: 6.2, bold: true, color: '#a4743d' },
+  )
+  text(
+    page,
+    { x: 19, y: 254.2, width: 172, height: 11 },
+    aspirationActionNote(data),
+    { size: 6.6, color: INK },
   )
   return page
 }
 
-function buildFollowUp(data: Data): LayoutPage {
-  const page = newPage(11)
+function buildAspirationsPage(data: Data): LayoutPage {
+  const page = newPage(10)
   addHeader(page, data.frame)
-  addFooter(page, data.frame, 11)
-  const follow = data.metrics.follow_up
-  const start = addSectionHeading(
+  addFooter(page, data.frame, 10)
+  const info = data.aspirations
+  const total = info?.total ?? data.metrics.aspirations.total
+  const themes = info?.themes ?? []
+  const topPolres = (info?.top_polres ?? []).map((item) => item.label)
+  const subtitle =
+    'Keluhan warga Bali pekan ini: lalu lintas dan knalpot brong, pencurian dan begal, narkoba dan vape pelajar, sampah, serta wisatawan asing.'
+  text(
     page,
-    26,
-    'Tindak Lanjut Aspirasi',
-    'Menjawab Aspirasi Masyarakat',
-    `${fmt(follow.total)} tindak lanjut dalam ${fmt(follow.forms.length)} bentuk kegiatan atas aspirasi yang tercatat.`,
+    { x: 14, y: 26, width: 182, height: 5 },
+    `ASPIRASI WARGA · ${data.frame.shortPeriod.toUpperCase()}`,
+    { size: 6.6, bold: true, color: GOLD },
   )
-  const nextY = addCards(page, start + 2, [
-    { label: 'Tindak lanjut', value: fmt(follow.total), unit: 'kegiatan', detail: 'dari aspirasi warga' },
-    { label: 'Bentuk', value: fmt(follow.forms.length), unit: 'bentuk', detail: 'kegiatan tindak lanjut' },
-    { label: 'Kegiatan tercatat', value: fmt(follow.activities.length), unit: 'baris', detail: 'rincian kegiatan' },
-    { label: 'Aspirasi', value: fmt(data.metrics.aspirations.total), unit: 'isian', detail: 'sumber tindak lanjut' },
-  ])
-  const forms = topLabeledRows(follow.forms, 9, 'Bentuk tindak lanjut', 'Jumlah')
-  chart(
+  text(
     page,
-    { x: 14, y: nextY + 4, width: 102, height: 62 },
-    'pie',
-    'Bentuk tindak lanjut',
-    forms.rows.map((row) => row[0]),
-    forms.rows.map((row) => Number(row[1].replace(/\./g, ''))),
-    { showLegend: true, showValues: true },
+    { x: 14, y: 31, width: 182, height: 10 },
+    'Apa Kata Mereka',
+    { size: 20, bold: true, family: 'montserrat', color: FOREST },
   )
-  addPanelTitle(page, { x: 120, y: nextY + 4, width: 76, height: 10 }, 'Rekap bentuk')
-  table(page, { x: 120, y: nextY + 13, width: 76, height: 53 }, forms.columns, forms.rows, {
-    fontSize: 6.8,
-  })
-  addPanelTitle(page, { x: 14, y: nextY + 72, width: 182, height: 10 }, 'Rincian kegiatan tindak lanjut')
-  const activityRows = follow.activities.slice(0, 12).map((item) => [
-    item.tanggal ? dayMonth(item.tanggal) : '—',
-    item.satuan || '—',
-    item.kegiatan.length > 64 ? `${item.kegiatan.slice(0, 63)}…` : item.kegiatan,
+  let subtitleY = 42
+  for (const line of chunk(subtitle.split(' '), 24)
+    .slice(0, 2)
+    .map((parts) => parts.join(' '))) {
+    text(page, { x: 14, y: subtitleY, width: 182, height: 4.5 }, line, {
+      size: 7.4,
+      italic: true,
+      color: SOFT,
+    })
+    subtitleY += 4.4
+  }
+
+  const programColumns = [
+    { key: 'gatur_polidik', label: 'Gatur & Polidik', color: '#2563a8' },
+    { key: 'kumpul', label: 'Kumpul Bersama', color: '#b8894b' },
+    { key: 'polda', label: 'Forum Kapolda', color: '#1f3a5f' },
+    { key: 'poliran', label: 'Poliran', color: '#7a9e8e' },
+    { key: 'green', label: 'Green Policing', color: '#2f7d4f' },
+    { key: 'jumat', label: 'Jumat Keliling', color: '#2f6db0' },
+    { key: 'subuh', label: 'Subuh Keliling', color: '#d9822b' },
+    { key: 'minggu', label: 'Minggu Kasih', color: '#6b3fa0' },
+  ]
+  const themeEmoji: Record<string, string> = {
+    security: '🛡',
+    traffic: '🏍',
+    drugs: '💊',
+    bullying: '👥',
+    waste: '🗑',
+    online: '📱',
+    tourists: '✈',
+    youth: '🍻',
+    jobs: '💼',
+  }
+  const shortThemeLabels: Record<string, string> = {
+    security: 'Pencucian & begal',
+    traffic: 'Macet & knalpot',
+    drugs: 'Narkoba & vape',
+    bullying: 'Perundungan',
+    waste: 'Sampah & saluran',
+    online: 'Judi & penipuan',
+    tourists: 'Wisatawan asing',
+    youth: 'Remaja & miras',
+    jobs: 'Lowongan kerja',
+  }
+  const fallbackThemes = data.metrics.aspirations.themes.slice(0, 9).map((item) => ({
+    key: '',
+    label: item.label,
+    count: item.count,
+    programs: [] as string[],
+    follow_up: 'running',
+  }))
+  const tableRows = (themes.length ? themes : fallbackThemes).map((theme) => [
+    `${themeEmoji[theme.key] ?? '•'} ${
+      shortThemeLabels[theme.key] ?? shorten(theme.label, 18)
+    }`,
+    ...programColumns.map((column) =>
+      theme.programs.includes(column.key) ? '●' : '',
+    ),
+    theme.follow_up === 'done' ? '✅' : '⏳',
   ])
+  const tableY = 49
   table(
     page,
-    { x: 14, y: nextY + 81, width: 182, height: 66 },
-    ['Tanggal', 'Satuan', 'Kegiatan'],
-    activityRows,
-    { fontSize: 6.8, align: ['left', 'left', 'left'] },
+    { x: 14, y: tableY, width: 182, height: 90 },
+    ['Tema aspirasi', ...programColumns.map((column) => column.label), 'Tindak Lanjut'],
+    tableRows,
+    {
+      fontSize: 5.8,
+      headerBg: WHITE,
+      headerColor: FOREST,
+      stripe: '#f2f6f1',
+      borderColor: '#e1e7df',
+      align: ['left', ...programColumns.map(() => 'center' as const), 'center'],
+      columnColors: [FOREST, ...programColumns.map((column) => column.color), FOREST],
+    },
   )
+
+  const legendY = tableY + 93
+  page.elements.push(
+    element(
+      'rect',
+      { x: 14, y: legendY + 0.3, width: 2.6, height: 2.6 },
+      { shape: 'ellipse', fill: '#3f9d4f', border_width: 0, z: 4 },
+    ),
+  )
+  text(page, { x: 17.5, y: legendY - 0.6, width: 44, height: 4 }, 'sudah ditindaklanjuti', {
+    size: 6.2,
+    color: SOFT,
+  })
+  page.elements.push(
+    element(
+      'rect',
+      { x: 64, y: legendY + 0.3, width: 2.6, height: 2.6 },
+      { shape: 'ellipse', fill: '#d9822b', border_width: 0, z: 4 },
+    ),
+  )
+  text(page, { x: 67.5, y: legendY - 0.6, width: 44, height: 4 }, 'sedang berjalan', {
+    size: 6.2,
+    color: SOFT,
+  })
+
+  const numberY = 151
+  text(page, { x: 14, y: numberY - 3, width: 38, height: 12 }, fmt(total), {
+    size: 22,
+    bold: true,
+    family: 'montserrat',
+    color: GOLD,
+  })
+  const wilayah = topPolres.length ? topPolres.join(', ') : 'Polda Bali'
+  text(
+    page,
+    { x: 52, y: numberY, width: 144, height: 14 },
+    `${fmt(total)} isian saran dan keluhan sepekan, hampir semuanya disertai tindak lanjut. Terbanyak dari wilayah ${wilayah}.`,
+    { size: 7.2, color: INK },
+  )
+
+  text(
+    page,
+    { x: 14, y: 168, width: 182, height: 5 },
+    'RENCANA TINDAK LANJUT PEKAN INI',
+    { size: 6.6, bold: true, color: GOLD },
+  )
+  const planMeta: Record<string, { icon: string; text: string }> = {
+    security: {
+      icon: 'shield',
+      text: 'Patroli jam rawan di pasar, permukiman dan perbatasan kabupaten',
+    },
+    traffic: {
+      icon: 'bike',
+      text: 'Razia knalpot brong dan balap liar di jalur bypass',
+    },
+    drugs: {
+      icon: 'pill',
+      text: 'Penyuluhan narkoba, vape dan geng pelajar di sekolah',
+    },
+    bullying: {
+      icon: 'graduation-cap',
+      text: 'Edukasi anti perundungan dan geng pelajar di sekolah',
+    },
+    waste: {
+      icon: 'recycle',
+      text: 'Kerja bakti membersihkan sampah dan saluran air',
+    },
+    online: {
+      icon: 'smartphone',
+      text: 'Edukasi hoaks dan judi daring di banjar dan rumah ibadah',
+    },
+    tourists: {
+      icon: 'plane',
+      text: 'Edukasi tertib berlalu lintas bagi wisatawan asing bersama desa adat',
+    },
+    youth: {
+      icon: 'users-round',
+      text: 'Patroli remaja kumpul malam dan razia miras',
+    },
+    jobs: {
+      icon: 'building-2',
+      text: 'Pembukaan lowongan, pelatihan kerja dan pendampingan UMKM',
+    },
+  }
+  const fallbackPlan = {
+    icon: 'clipboard-check',
+    text: 'Menindaklanjuti masukan warga sesuai hasil forum dan laporan satuan',
+  }
+  const sortedThemes = [...themes].sort((left, right) => right.count - left.count)
+  const plans = sortedThemes
+    .slice(0, 6)
+    .map((theme) => planMeta[theme.key] ?? fallbackPlan)
+  while (plans.length < 6) plans.push(fallbackPlan)
+  const planWidth = 58
+  const planHeight = 24
+  plans.forEach((plan, index) => {
+    const column = index % 3
+    const row = Math.floor(index / 3)
+    const x = 14 + column * (planWidth + 4)
+    const y = 176 + row * (planHeight + 2)
+    rect(page, { x, y, width: planWidth, height: planHeight }, {
+      fill: '#f5efe3',
+      radius: 2,
+      z: 2,
+    })
+    page.elements.push(
+      element('rect', { x: x + 4, y: y + 6, width: 11, height: 11 }, {
+        shape: 'ellipse',
+        fill: '#1f3a5f',
+        border_width: 0,
+        z: 3,
+      }),
+    )
+    page.elements.push(
+      element('icon', { x: x + 6, y: y + 8, width: 7, height: 7 }, {
+        icon_name: plan.icon,
+        icon_color: WHITE,
+        icon_stroke: 2,
+        z: 4,
+      }),
+    )
+    text(page, { x: x + 18, y: y + 4, width: planWidth - 21, height: 18 }, plan.text, {
+      size: 6.4,
+      color: INK,
+    })
+  })
+
+  rect(
+    page,
+    { x: 14, y: 230, width: 182, height: 18 },
+    { fill: '#e7f2e6', borderColor: '#b9d8b4', borderWidth: 0.6, radius: 2, z: 2 },
+  )
+  page.elements.push(
+    element('rect', { x: 19, y: 233, width: 12, height: 12 }, {
+      shape: 'ellipse',
+      fill: '#3f9d4f',
+      border_width: 0,
+      z: 3,
+    }),
+  )
+  page.elements.push(
+    element('icon', { x: 21, y: 235, width: 8, height: 8 }, {
+      icon_name: 'check',
+      icon_color: WHITE,
+      icon_stroke: 3,
+      z: 4,
+    }),
+  )
+  const followUpText = `Sudah ditindaklanjuti pekan ini: ${fmt(codeRows(data, 'QW1.10'))} patroli Sabhara, ${fmt(codeRows(data, 'QW1.9'))} Patroli Siaga Reserse, ${fmt(codeRows(data, 'QW1.14'))} DIMTAQ dan ${fmt(codeRows(data, 'QW1.11'))} patroli perairan; ${fmt(codeRows(data, 'QW4.3'))} panggilan 110 didatangi; ${fmt(codeRows(data, 'QW1.3'))} warga disalurkan kerja.`
+  text(page, { x: 35, y: 233.5, width: 158, height: 12 }, followUpText, {
+    size: 6.6,
+    color: INK,
+  })
   return page
 }
 
@@ -2544,6 +3075,251 @@ function buildNotes(data: Data): LayoutPage {
   return page
 }
 
+function quickWinGroupRows(data: Data, group: string): number {
+  const fromCoverage = data.coverage?.groups.find((item) => item.code === group)?.rows
+  if (fromCoverage !== undefined) return fromCoverage
+  return Object.keys(qwCodeTitles)
+    .filter((code) => code.startsWith(`${group}.`))
+    .reduce((sum, code) => sum + codeRows(data, code), 0)
+}
+
+function sumCodes(data: Data, codes: string[]): number {
+  return codes.reduce((sum, code) => sum + codeRows(data, code), 0)
+}
+
+function centralNote(data: Data, group: string): string {
+  switch (group) {
+    case 'QW1': {
+      const utama = sumCodes(data, [
+        'QW1.1',
+        'QW1.2',
+        'QW1.3',
+        'QW1.4',
+        'QW1.5',
+        'QW1.6',
+        'QW1.7',
+        'QW1.8',
+      ])
+      const patroli = sumCodes(data, ['QW1.9', 'QW1.10', 'QW1.11'])
+      const ekstrem = codeRows(data, 'QW1.12')
+      return `${fmt(utama)} laporan kegiatan utama QW1.1–QW1.8, ${fmt(patroli)} patroli QW1.9–QW1.11, dan ${fmt(codeRows(data, 'QW1.14'))} DIMTAQ. ${
+        ekstrem === 0
+          ? 'QW1.12 belum ada laporan.'
+          : `QW1.12 ${fmt(ekstrem)} laporan.`
+      }`
+    }
+    case 'QW2': {
+      const narkoba = data.metrics.narkoba
+      return `${fmt(narkoba.rows)} laporan; ${fmt(narkoba.kawasan)} kawasan, ${fmt(narkoba.orang_diamankan)} orang diamankan, ${fmt(narkoba.rehabilitasi)} rehabilitasi, dan ${fmt(narkoba.peserta_penyuluhan)} peserta penyuluhan.`
+    }
+    case 'QW3':
+      return `${fmt(codeRows(data, 'QW3.1'))} penegakan hukum siber, ${fmt(codeRows(data, 'QW3.2'))} layanan aduan korban, ${fmt(codeRows(data, 'QW3.3'))} edukasi anti judi daring, dan ${fmt(codeRows(data, 'QW3.4'))} patroli siber.`
+    case 'QW4':
+      return `${fmt(codeRows(data, 'QW4.1'))} penanganan TKP, ${fmt(codeRows(data, 'QW4.2'))} layanan SPKT, ${fmt(codeRows(data, 'QW4.3'))} panggilan 110, dan ${fmt(codeRows(data, 'QW4.4'))} layanan perempuan dan anak.`
+    case 'QW5':
+      return `${fmt(codeRows(data, 'QW5.1'))} SP2HP, ${fmt(codeRows(data, 'QW5.2'))} layanan informasi perkara, ${fmt(codeRows(data, 'QW5.3'))} gelar perkara, dan ${fmt(codeRows(data, 'QW5.4'))} keadilan restoratif.`
+    case 'QW6': {
+      const copot = codeRows(data, 'QW6.2')
+      return `${fmt(codeRows(data, 'QW6.1'))} layanan SIM/SKCK dan tilang, ${fmt(copot)} Copot Hari Itu Juga, dan ${fmt(codeRows(data, 'QW6.3'))} kanal pengaduan. ${
+        copot === 0 ? 'Tidak ada anggota yang tercatat pungli (QW6.2).' : ''
+      }`
+    }
+    case 'QW7':
+      return `${fmt(codeRows(data, 'QW7.1'))} Satu Desa Satu Bhabin, ${fmt(codeRows(data, 'QW7.2'))} penataan personel, ${fmt(codeRows(data, 'QW7.3'))} Polsek Siaga 24 Jam, dan ${fmt(codeRows(data, 'QW7.4'))} perkara ringan/rembuk warga.`
+    case 'QW8':
+      return `${fmt(codeRows(data, 'QW8.1'))} BBM ilegal/kejahatan ekonomi, ${fmt(codeRows(data, 'QW8.2'))} TPPO/korupsi/penyelundupan, ${fmt(codeRows(data, 'QW8.3'))} penyuluhan KUHP baru, dan ${fmt(codeRows(data, 'QW8.4'))} olah TKP ilmiah.`
+    default:
+      return 'Rekap pelaksanaan Quick Wins pada periode ini.'
+  }
+}
+
+function centralEmphasis(data: Data, group: string): string {
+  const topPolres =
+    data.aspirations?.top_polres?.[0]?.label ??
+    data.metrics.by_polres[0]?.label ??
+    'Polres jajaran'
+  switch (group) {
+    case 'QW1':
+      return `Pertahankan kehadiran pimpinan; ${topPolres} melengkapi Poliran dan Minggu Kasih di seluruh Polsek.`
+    case 'QW2':
+      return 'Tetapkan kawasan rawan narkoba tiap Polres; sasar sekolah soal narkoba, vape dan rokok pelajar.'
+    case 'QW3':
+      return 'Tindak lanjuti situs judi dan tawarkan pendampingan kepada setiap korban penipuan daring.'
+    case 'QW4':
+      return 'Pastikan setiap panggilan 110 didatangi dan sosialisasikan kanal 110 di banjar serta rumah ibadah.'
+    case 'QW5':
+      return 'SP2HP tepat waktu dan pastikan setiap laporan warga mendapat kepastian tindak lanjut.'
+    case 'QW6':
+      return 'Jawab kebutuhan kanal pengaduan; pastikan layanan bebas pungli dan transparan.'
+    case 'QW7':
+      return 'Bhabinkamtibmas bersama desa adat dan pecalang menghidupkan kembali ronda malam.'
+    case 'QW8':
+      return 'Labfor, Inafis dan Dokpol siap untuk kejadian di objek wisata alam; percepat identifikasi korban, termasuk WNA.'
+    default:
+      return 'Tindak lanjuti temuan lapangan sesuai arahan pimpinan.'
+  }
+}
+
+function buildCentralNotes(data: Data): LayoutPage {
+  const page = newPage(14)
+  addHeader(page, data.frame)
+  addFooter(page, data.frame, 14)
+
+  const planWeek = aspirationPlanLabel(data.detail.period.end_date)
+  const planYear = data.detail.period.end_date.slice(0, 4)
+  text(
+    page,
+    { x: 14, y: 26, width: 182, height: 5 },
+    `KETUA PROGRAM PRIORITAS KAPOLRI PUSAT · ${planWeek}${planYear ? ` ${planYear}` : ''}`,
+    { size: 6.6, bold: true, color: GOLD },
+  )
+  text(
+    page,
+    { x: 14, y: 31, width: 182, height: 11 },
+    'Catatan dan Penekanan Ketua Pusat',
+    { size: 20, bold: true, family: 'montserrat', color: FOREST },
+  )
+  const polda = (data.metrics.polda_name || 'Polda Bali')
+    .toLowerCase()
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+  text(
+    page,
+    { x: 14, y: 44, width: 182, height: 10 },
+    `Kepada pelaksana masing-masing Quick Wins di ${polda}, berdasarkan rekap pelaksanaan ${data.frame.period}.`,
+    { size: 7.4, italic: true, color: SOFT },
+  )
+
+  const groups = [
+    {
+      code: 'QW1',
+      title: 'Ruang Publik Aman',
+      color: '#1f3a5f',
+      tint: '#eef3f8',
+      audience: 'Diropsamta, Dirbinmas, Dirpolairud, Kapolres',
+    },
+    {
+      code: 'QW2',
+      title: 'Pemulihan Kawasan Narkoba',
+      color: '#a83a6e',
+      tint: '#f9eef3',
+      audience: 'Dirresnarkoba, Kasat Resnarkoba',
+    },
+    {
+      code: 'QW3',
+      title: 'Bersih Judi Daring',
+      color: '#6b3fa0',
+      tint: '#f3eef9',
+      audience: 'Dirreskrimsus, Kasat Cyber',
+    },
+    {
+      code: 'QW4',
+      title: '110 Respons Cepat, SPKT',
+      color: '#c96a2b',
+      tint: '#fbf1e8',
+      audience: 'Karo Ops, Ka SPKT, Kapolres, Kapolsek',
+    },
+    {
+      code: 'QW5',
+      title: 'Perkara Terlacak',
+      color: '#2f6d8e',
+      tint: '#edf5f8',
+      audience: 'Dirreskrimum, Kasat Reskrim, Kanit Reskrim',
+    },
+    {
+      code: 'QW6',
+      title: 'Bersih ke Dalam',
+      color: '#8a5a2b',
+      tint: '#f7f0e7',
+      audience: 'Kabid Propam, Irwasda, Dirbinmas',
+    },
+    {
+      code: 'QW7',
+      title: 'Polres Kuat, Polsek Tangguh',
+      color: '#245a9e',
+      tint: '#edf3fa',
+      audience: 'Karo SDM, Dirbinmas, Kapolres, Kapolsek',
+    },
+    {
+      code: 'QW8',
+      title: 'KUHP Baru, Penyidikan Ilmiah',
+      color: '#2e7d4f',
+      tint: '#edf7f0',
+      audience: 'Dirreskrimsus, Dirreskrimum, Kabiddokkes, Kabidlabfor',
+    },
+  ]
+  const cardWidth = 89
+  const cardHeight = 48
+  const gapX = 4
+  const gapY = 4
+  groups.forEach((item, index) => {
+    const column = index % 2
+    const row = Math.floor(index / 2)
+    const x = 14 + column * (cardWidth + gapX)
+    const y = 59 + row * (cardHeight + gapY)
+    rect(
+      page,
+      { x, y, width: cardWidth, height: cardHeight },
+      {
+        fill: item.tint,
+        borderColor: '#e1e5e9',
+        borderWidth: 0.5,
+        radius: 1.8,
+        z: 2,
+      },
+    )
+    text(page, { x: x + 4.5, y: y + 2.8, width: 24, height: 4 }, item.code, {
+      size: 6.8,
+      bold: true,
+      color: item.color,
+    })
+    text(
+      page,
+      { x: x + 62, y: y + 1.8, width: 22, height: 6 },
+      fmt(quickWinGroupRows(data, item.code)),
+      { size: 13, bold: true, family: 'montserrat', color: item.color, align: 'right' },
+    )
+    text(page, { x: x + 4.5, y: y + 6.6, width: 79, height: 5.5 }, item.title, {
+      size: 9.2,
+      bold: true,
+      color: FOREST,
+    })
+    text(
+      page,
+      { x: x + 4.5, y: y + 12.7, width: 79, height: 5.2 },
+      `Kepada: ${item.audience}`,
+      { size: 5.5, color: MUTED },
+    )
+    page.elements.push(
+      element('icon', { x: x + 4.5, y: y + 18.8, width: 3.2, height: 3.2 }, {
+        icon_name: 'clipboard-check',
+        icon_color: item.color,
+        icon_stroke: 2,
+        z: 4,
+      }),
+    )
+    text(
+      page,
+      { x: x + 9, y: y + 18.2, width: 76, height: 12.4 },
+      `Catatan · ${centralNote(data, item.code)}`,
+      { size: 5.8, color: INK },
+    )
+    text(
+      page,
+      { x: x + 4.5, y: y + 31.5, width: 80, height: 13.5 },
+      `Penekanan · ${centralEmphasis(data, item.code)}`,
+      { size: 5.8, bold: true, color: INK, background: '#eef1f3' },
+    )
+  })
+
+  text(
+    page,
+    { x: 14, y: 268, width: 182, height: 5 },
+    'Angka di pojok kartu: laporan unik per Quick Wins sepekan, termasuk di luar hari jadwal. Angka dikutip apa adanya dari laporan satuan.',
+    { size: 5.6, italic: true, color: MUTED },
+  )
+  return page
+}
+
 function buildClosing(data: Data): LayoutPage {
   const page = newPage(15, WHITE, { colors: [DEEP, FOREST, '#245343'], angle: 135 })
   rect(page, { x: 0, y: 0, width: PAGE_WIDTH, height: 4 }, { fill: GOLD, z: 1 })
@@ -2646,6 +3422,7 @@ export function buildWeeklyReportTemplate(input: WeeklyTemplateInput): ReportLay
     gaturDaily: input.gaturDaily ?? [],
     polidikDaily: input.polidikDaily ?? [],
     kumpulDaily: input.kumpulDaily ?? [],
+    aspirations: input.aspirations ?? null,
     feedback: input.feedback ?? { gatur: [], polidik: [] },
     kumpulFeedback: input.kumpulFeedback ?? [],
     kumpulFeedbackTotal: input.kumpulFeedbackTotal ?? 0,
@@ -2662,11 +3439,11 @@ export function buildWeeklyReportTemplate(input: WeeklyTemplateInput): ReportLay
     buildWorship(7, 'QW1.6', 'jumat_keliling', data),
     buildWorship(8, 'QW1.7', 'subuh_keliling', data),
     buildWorship(9, 'QW1.8', 'minggu_kasih', data),
-    newPage(10),
-    newPage(11),
+    buildAspirationsPage(data),
+    buildAspirationFollowUp(data),
     buildOtherQuickWins(data),
     buildMedia(data),
-    newPage(14),
+    buildCentralNotes(data),
     buildClosing(data),
   ]
   return {

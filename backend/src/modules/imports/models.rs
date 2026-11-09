@@ -337,6 +337,26 @@ pub struct PoliranSummaryResponse {
     pub activities: Vec<LabeledCount>,
 }
 
+/// Satu baris tema aspirasi warga beserta program yang menampungnya.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct AspirationThemeRow {
+    pub key: String,
+    pub label: String,
+    pub count: i64,
+    /// Kode program yang memiliki masukan bertema ini (mis. `QW1.1`, `polda`).
+    pub programs: Vec<String>,
+    /// `done` bila mayoritas sudah ditindaklanjuti, `running` bila masih berjalan.
+    pub follow_up: String,
+}
+
+/// Data halaman "Apa Kata Mereka": matriks tema aspirasi dan wilayah terbanyak.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct AspirationsPageResponse {
+    pub total: i64,
+    pub themes: Vec<AspirationThemeRow>,
+    pub top_polres: Vec<LabeledCount>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AnalysisResponse {
     pub date_start: String,

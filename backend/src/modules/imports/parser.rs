@@ -176,7 +176,7 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
         } else {
             format!("{}\n{}", values[17], map_text)
         };
-        let row_analysis = analysis::analyze(&fields, &analysis_text, &values[15]);
+        let row_analysis = analysis::analyze(&values[7], &fields, &analysis_text, &values[15]);
         if row_analysis.latitude.is_some() && row_analysis.longitude.is_some() {
             rows_with_coordinates += 1;
         }

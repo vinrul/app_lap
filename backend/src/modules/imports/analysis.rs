@@ -4,6 +4,7 @@ use crate::modules::imports::models::RowAnalysis;
 use crate::shared::parse_count;
 
 pub fn analyze(
+    code: &str,
     fields: &BTreeMap<String, String>,
     isian_laporan: &str,
     bukti_dukung: &str,
@@ -62,6 +63,9 @@ pub fn analyze(
     }
 
     let combined = format!("{isian_laporan}\n{bukti_dukung}");
+    if is_religious_code(code) {
+        analysis.jamaah = analysis.jamaah.max(jamaah_from_text(&combined));
+    }
     if map_url.is_empty() {
         map_url = find_map_url(&combined).unwrap_or_default();
     }
@@ -81,6 +85,108 @@ pub fn analyze(
 
 fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
+}
+
+fn is_religious_code(code: &str) -> bool {
+    let code = code.trim().to_ascii_uppercase();
+    code.starts_with("QW1.6") || code.starts_with("QW1.7") || code.starts_with("QW1.8")
+}
+
+/// Membaca angka jemaah/jemaat dari teks bebas laporan, misalnya
+/// `Jemaah= 50`, `Jamaah : 150`, `jemaah kurang lebih 500`, atau
+/// `Jemaat. Hadir dalam kegiatan : (28`. Nilai terbesar per baris dipakai
+/// agar penyebutan berulang tidak terhitung ganda.
+pub(crate) fn jamaah_from_text(text: &str) -> i64 {
+    let lower = text.to_ascii_lowercase();
+    let mut best = 0_i64;
+    for keyword in ["jemaah", "jamaah", "jemaat", "umat"] {
+        let mut cursor = 0;
+        while let Some(found) = lower[cursor..].find(keyword) {
+            let start = cursor + found;
+            let end = start + keyword.len();
+            cursor = end;
+            if !is_word_boundary(&lower, start, end) {
+                continue;
+            }
+            let limit = safe_char_boundary(&lower, end, 45);
+            let mut window_end = limit;
+            if let Some(offset) = lower[end..limit].find(|ch| ch == '\n' || ch == ';') {
+                window_end = end + offset;
+            }
+            let window = &lower[end..window_end];
+            let Some(token) = number_tokens(window).into_iter().next() else {
+                continue;
+            };
+            if token.decimals > 0 {
+                continue;
+            }
+            let between = &window[..token.start];
+            if contains_any(
+                between,
+                &[
+                    "tanggal",
+                    "tgl",
+                    "hari",
+                    "pukul",
+                    "personel",
+                    "personil",
+                    "polri",
+                    "anggota",
+                    "didampingi",
+                    "pengamanan",
+                    "jalan",
+                    "nomor",
+                    " rt",
+                    " rw",
+                ],
+            ) {
+                continue;
+            }
+            let accepted = between.contains('=')
+                || between.contains(':')
+                || contains_any(
+                    between,
+                    &[
+                        "kurang lebih",
+                        "sebanyak",
+                        "berjumlah",
+                        "jumlah",
+                        "hadir",
+                        "masjid",
+                        "gereja",
+                        "pura",
+                    ],
+                )
+                || between.trim().is_empty();
+            if !accepted {
+                continue;
+            }
+            let value = token.value as i64;
+            if (0..=100_000).contains(&value) {
+                best = best.max(value);
+            }
+        }
+    }
+    best
+}
+
+fn is_word_boundary(text: &str, start: usize, end: usize) -> bool {
+    let bytes = text.as_bytes();
+    let before = start == 0 || !(bytes[start - 1] as char).is_ascii_alphanumeric();
+    let after = end >= bytes.len() || !(bytes[end] as char).is_ascii_alphanumeric();
+    before && after
+}
+
+fn safe_char_boundary(text: &str, start: usize, max_bytes: usize) -> usize {
+    let mut end = (start + max_bytes).min(text.len());
+    while end > start && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
 }
 
 fn is_url(value: &str) -> bool {
@@ -322,6 +428,7 @@ mod tests {
             ("Jumlah jemaah".to_string(), "120".to_string()),
         ]);
         let analysis = analyze(
+            "QW1.8",
             &fields,
             "Tautan peta 1: https://www.google.com/maps?q=-8.570384,115.410378",
             "",
@@ -333,5 +440,33 @@ mod tests {
         assert_eq!(analysis.latitude, Some(-8.570384));
         assert_eq!(analysis.longitude, Some(115.410378));
         assert!(analysis.map_url.contains("google.com/maps"));
+    }
+
+    #[test]
+    fn extracts_jamaah_from_free_text() {
+        assert_eq!(jamaah_from_text("Jemaah= 50"), 50);
+        assert_eq!(jamaah_from_text("Jamaah : 150 orang"), 150);
+        assert_eq!(jamaah_from_text("jemaah kurang lebih 500"), 500);
+        assert_eq!(
+            jamaah_from_text("Jemaat. Hadir dalam kegitan : (28 orang)"),
+            28
+        );
+        assert_eq!(jamaah_from_text("Umat/masyarakat  : 30"), 30);
+        assert_eq!(jamaah_from_text("Jumat Keliling"), 0);
+        assert_eq!(jamaah_from_text("Jemaat Imanuel, Jalan Anggrek No 31"), 0);
+        assert_eq!(
+            jamaah_from_text("jemaat agar memanfaatkan layanan call center 110"),
+            0
+        );
+    }
+
+    #[test]
+    fn reads_jamaah_text_only_for_religious_programs() {
+        let empty = BTreeMap::new();
+        assert_eq!(analyze("QW1.7", &empty, "Jamaah : 51", "").jamaah, 51);
+        assert_eq!(
+            analyze("QW7.1", &empty, "Jemaat kurang lebih 200", "").jamaah,
+            0
+        );
     }
 }

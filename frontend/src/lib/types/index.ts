@@ -870,6 +870,20 @@ export interface PoliranSummaryResponse {
   activities: LabeledCount[]
 }
 
+export interface AspirationThemeRow {
+  key: string
+  label: string
+  count: number
+  programs: string[]
+  follow_up: 'done' | 'running' | string
+}
+
+export interface AspirationsPageResponse {
+  total: number
+  themes: AspirationThemeRow[]
+  top_polres: LabeledCount[]
+}
+
 export interface CoverageResponse {
   date_start: string
   date_end: string

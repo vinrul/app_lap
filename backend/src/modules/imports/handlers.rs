@@ -12,9 +12,10 @@ use crate::{
         imports::{
             evidence,
             models::{
-                AnalysisResponse, CoverageResponse, ImportPreview, ImportView,
-                LeadershipTimelineResponse, PoliranSummaryResponse, QuickWinDetailResponse,
-                QwMapResponse, RecordQuery, RecordView, RecordsResponse, UnitDetailResponse,
+                AnalysisResponse, AspirationsPageResponse, CoverageResponse, ImportPreview,
+                ImportView, LeadershipTimelineResponse, PoliranSummaryResponse,
+                QuickWinDetailResponse, QwMapResponse, RecordQuery, RecordView, RecordsResponse,
+                UnitDetailResponse,
             },
             service,
         },
@@ -246,6 +247,16 @@ pub async fn poliran(
 ) -> ApiResult<Json<PoliranSummaryResponse>> {
     Ok(Json(
         service::poliran_for_period(&state.db, &period_id, &user.data_scope()).await?,
+    ))
+}
+
+pub async fn aspirations(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+) -> ApiResult<Json<AspirationsPageResponse>> {
+    Ok(Json(
+        service::aspirations_for_period(&state.db, &period_id, &user.data_scope()).await?,
     ))
 }
 

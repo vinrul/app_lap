@@ -42,6 +42,7 @@ struct MetricRow {
     latitude: Option<f64>,
     longitude: Option<f64>,
     fields: BTreeMap<String, String>,
+    isian_laporan: String,
     links: Vec<String>,
 }
 
@@ -106,6 +107,7 @@ pub fn metrics_from_rows(
             latitude: row.latitude,
             longitude: row.longitude,
             fields: row.fields,
+            isian_laporan: row.isian_laporan,
             links: row.links,
         })
         .collect();
@@ -170,7 +172,14 @@ fn build(
     let personel_total: i64 = all.iter().map(|row| row.personel_count).sum();
     let bibit_total: i64 = all.iter().map(|row| row.bibit_count).sum();
     let area_total: f64 = all.iter().map(|row| row.area_m2).sum();
-    let jamaah_total: i64 = all.iter().map(|row| row.jamaah_count).sum();
+    let jamaah_total: i64 = all
+        .iter()
+        .map(|row| {
+            let text_count =
+                crate::modules::imports::analysis::jamaah_from_text(&row.isian_laporan);
+            row.jamaah_count.max(text_count)
+        })
+        .sum();
     let rows_with_coordinates = all
         .iter()
         .filter(|row| row.latitude.is_some() && row.longitude.is_some())
@@ -512,7 +521,15 @@ fn build_religious(rows: &[&MetricRow], code: &str, people_keys: &[&str]) -> Rel
         .filter(|row| row.kode.starts_with(code))
         .collect();
 
-    let people = sum_numbers(&subset, people_keys);
+    let people = subset
+        .iter()
+        .map(|row| {
+            let field_people = number_for(row, people_keys);
+            let text_people =
+                crate::modules::imports::analysis::jamaah_from_text(&row.isian_laporan);
+            row.jamaah_count.max(field_people).max(text_people)
+        })
+        .sum::<i64>();
     let locations = unique_count(&subset, |row| row_location(row));
     let polres = unique_count(&subset, |row| row.polres.clone());
     let polsek = unique_count(&subset, |row| row.polsek.clone());

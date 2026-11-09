@@ -4722,11 +4722,16 @@ fn sum_sample(row: &RecordView, source: SumSource) -> (f64, bool) {
                 || area_field_answered(row)
                 || row.area_m2 > 0.0,
         ),
-        SumSource::Jamaah => (
-            row.jamaah_count as f64,
-            field_contains_answered(row, &["jemaah", "jemaat", "jamaah", "umat"], &[])
-                || row.jamaah_count > 0,
-        ),
+        SumSource::Jamaah => {
+            let text_count =
+                crate::modules::imports::analysis::jamaah_from_text(&row.isian_laporan);
+            let value = row.jamaah_count.max(text_count);
+            (
+                value as f64,
+                field_contains_answered(row, &["jemaah", "jemaat", "jamaah", "umat"], &[])
+                    || value > 0,
+            )
+        }
         SumSource::NarkobaOrang => (
             number_for(row, NARKOBA_ORANG_KEYS),
             any_answered(row, NARKOBA_ORANG_KEYS),

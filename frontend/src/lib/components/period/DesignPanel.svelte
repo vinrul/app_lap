@@ -56,6 +56,7 @@
     LayoutPatch,
     LayoutView,
     LeadershipTimelineResponse,
+    AspirationsPageResponse,
     PeriodDetail,
     PoliranDay,
     PoliranSummaryResponse,
@@ -96,6 +97,9 @@
   import CardEditorDialog from './CardEditorDialog.svelte'
   import ChartEditorDialog from './ChartEditorDialog.svelte'
   import TableEditorDialog from './TableEditorDialog.svelte'
+  import TextEditorDialog from './TextEditorDialog.svelte'
+  import ShapeEditorDialog from './ShapeEditorDialog.svelte'
+  import IconEditorDialog from './IconEditorDialog.svelte'
   import MediaLibrary from './MediaLibrary.svelte'
   import ShareReportDialog from './ShareReportDialog.svelte'
 
@@ -253,6 +257,9 @@
   let chartEditorTarget = $state<{ page: number; id: string } | null>(null)
   let cardEditorTarget = $state<{ page: number; id: string } | null>(null)
   let tableEditorTarget = $state<{ page: number; id: string } | null>(null)
+  let textEditorTarget = $state<{ page: number; id: string } | null>(null)
+  let shapeEditorTarget = $state<{ page: number; id: string } | null>(null)
+  let iconEditorTarget = $state<{ page: number; id: string } | null>(null)
   let clipboard = $state<LayoutElement | null>(null)
   let checkedIds = $state<string[]>([])
   let history = $state<ReportLayout[]>([])
@@ -490,6 +497,30 @@
     if (!target) return ''
     const binding = getElement(target.page, target.id)?.binding
     return binding ? (sourceFor(binding)?.label ?? binding) : ''
+  })
+
+  const textEditorElement = $derived.by(() => {
+    const target = textEditorTarget
+    if (!target) return null
+    const element = getElement(target.page, target.id)
+    if (!element || element.type !== 'text') return null
+    return { ...element }
+  })
+
+  const shapeEditorElement = $derived.by(() => {
+    const target = shapeEditorTarget
+    if (!target) return null
+    const element = getElement(target.page, target.id)
+    if (!element || element.type !== 'rect') return null
+    return { ...element }
+  })
+
+  const iconEditorElement = $derived.by(() => {
+    const target = iconEditorTarget
+    if (!target) return null
+    const element = getElement(target.page, target.id)
+    if (!element || element.type !== 'icon') return null
+    return { ...element }
   })
   const rectNoFill = $derived(
     activeElement?.type === 'rect' && isTransparentColor(activeElement.fill),
@@ -2905,14 +2936,17 @@
       let kumpulFeedbackTotal = 0
       let leadership: LeadershipTimelineResponse | null = null
       let poliran: PoliranSummaryResponse | null = null
+      let aspirationsData: AspirationsPageResponse | null = null
       try {
-        const [mapData, leadershipData, poliranData] = await Promise.all([
+        const [mapData, leadershipData, poliranData, aspirationsPage] = await Promise.all([
           importsApi.qwMap(periodId),
           importsApi.leadership(periodId),
           importsApi.poliran(periodId).catch(() => null),
+          importsApi.aspirations(periodId).catch(() => null),
         ])
         leadership = leadershipData
         poliran = poliranData
+        aspirationsData = aspirationsPage
         feedback = {
           gatur: mapData.gatur_feedback ?? [],
           polidik: mapData.polidik_feedback ?? [],
@@ -3029,6 +3063,7 @@
         kumpulFeedbackTotal,
         leadership,
         poliran,
+        aspirations: aspirationsData,
       })
       if (!fromChooser) pushHistory()
       layout = normalizeLayout(nextLayout)
@@ -4586,6 +4621,163 @@
     toast.success('Tabel diperbarui.')
   }
 
+  function openTextEditor(): void {
+    if (!selected || selected.kind !== 'element') return
+    const element = getElement(selected.page, selected.id)
+    if (!element || element.type !== 'text') return
+    textEditorTarget = { page: selected.page, id: selected.id }
+  }
+
+  function contextEditText(): void {
+    const menu = contextMenu
+    if (!menu || menu.kind !== 'element' || !menu.id) return
+    const element = getElement(menu.page, menu.id)
+    if (!element || element.type !== 'text') {
+      closeContextMenu()
+      return
+    }
+    selected = { kind: 'element', page: menu.page, id: menu.id }
+    textEditorTarget = { page: menu.page, id: menu.id }
+    closeContextMenu()
+  }
+
+  function saveTextEditor(patch: Partial<LayoutElement>): void {
+    const target = textEditorTarget
+    if (!target) return
+    const element = getElement(target.page, target.id)
+    if (!element) {
+      textEditorTarget = null
+      return
+    }
+    pushHistory()
+    Object.assign(element, patch)
+    clampElement(element)
+    applyLayoutToDom()
+    textEditorTarget = null
+    toast.success('Teks diperbarui.')
+  }
+
+  function openShapeEditor(): void {
+    if (!selected || selected.kind !== 'element') return
+    const element = getElement(selected.page, selected.id)
+    if (!element || element.type !== 'rect') return
+    shapeEditorTarget = { page: selected.page, id: selected.id }
+  }
+
+  function contextEditShape(): void {
+    const menu = contextMenu
+    if (!menu || menu.kind !== 'element' || !menu.id) return
+    const element = getElement(menu.page, menu.id)
+    if (!element || element.type !== 'rect') {
+      closeContextMenu()
+      return
+    }
+    selected = { kind: 'element', page: menu.page, id: menu.id }
+    shapeEditorTarget = { page: menu.page, id: menu.id }
+    closeContextMenu()
+  }
+
+  function saveShapeEditor(patch: Partial<LayoutElement>): void {
+    const target = shapeEditorTarget
+    if (!target) return
+    const element = getElement(target.page, target.id)
+    if (!element) {
+      shapeEditorTarget = null
+      return
+    }
+    pushHistory()
+    Object.assign(element, patch)
+    clampElement(element)
+    applyLayoutToDom()
+    shapeEditorTarget = null
+    toast.success('Bentuk diperbarui.')
+  }
+
+  function openIconEditor(): void {
+    if (!selected || selected.kind !== 'element') return
+    const element = getElement(selected.page, selected.id)
+    if (!element || element.type !== 'icon') return
+    iconEditorTarget = { page: selected.page, id: selected.id }
+  }
+
+  function contextEditIcon(): void {
+    const menu = contextMenu
+    if (!menu || menu.kind !== 'element' || !menu.id) return
+    const element = getElement(menu.page, menu.id)
+    if (!element || element.type !== 'icon') {
+      closeContextMenu()
+      return
+    }
+    selected = { kind: 'element', page: menu.page, id: menu.id }
+    iconEditorTarget = { page: menu.page, id: menu.id }
+    closeContextMenu()
+  }
+
+  function saveIconEditor(patch: Partial<LayoutElement>): void {
+    const target = iconEditorTarget
+    if (!target) return
+    const element = getElement(target.page, target.id)
+    if (!element) {
+      iconEditorTarget = null
+      return
+    }
+    pushHistory()
+    Object.assign(element, patch)
+    clampElement(element)
+    applyLayoutToDom()
+    iconEditorTarget = null
+    toast.success('Ikon diperbarui.')
+  }
+
+  function editorLabelFor(element: LayoutElement): string {
+    switch (element.type) {
+      case 'chart':
+        return 'Edit grafik'
+      case 'card':
+        return 'Edit kartu'
+      case 'table':
+        return 'Edit tabel'
+      case 'text':
+        return 'Edit teks'
+      case 'rect':
+        return 'Edit bentuk'
+      case 'icon':
+        return 'Edit ikon'
+      default:
+        return 'Edit objek'
+    }
+  }
+
+  function contextEditElement(): void {
+    const element = contextElement
+    if (!element) {
+      closeContextMenu()
+      return
+    }
+    switch (element.type) {
+      case 'chart':
+        contextEditChart()
+        return
+      case 'card':
+        contextEditCard()
+        return
+      case 'table':
+        contextEditTable()
+        return
+      case 'text':
+        contextEditText()
+        return
+      case 'rect':
+        contextEditShape()
+        return
+      case 'icon':
+        contextEditIcon()
+        return
+      default:
+        closeContextMenu()
+    }
+  }
+
   function openMediaLibrary() {
     mediaTarget = 'new'
     mediaOpen = true
@@ -6066,6 +6258,14 @@
             </div>
 
             {#if activeElement.type === 'text'}
+              <div class="rounded-xl border border-forest-200 bg-forest-50/70 p-3.5">
+                <p class="text-[11px] leading-relaxed text-forest-800">
+                  Atur isi teks, font, warna, perataan, dan latar lewat editor teks.
+                </p>
+                <Button variant="primary" size="sm" class="mt-2.5 w-full" onclick={openTextEditor}>
+                  <SlidersHorizontal size={14} /> Buka editor teks
+                </Button>
+              </div>
               <label class="block">
                 <span class="label">Teks</span>
                 <textarea bind:this={textAreaEl} class="textarea text-xs" rows="4" value={activeElement.text ?? ''}
@@ -6143,6 +6343,14 @@
                   onchange={(event) => updateElement({ background: (event.currentTarget as HTMLInputElement).value }, true)} />
               </label>
             {:else if activeElement.type === 'rect'}
+              <div class="rounded-xl border border-forest-200 bg-forest-50/70 p-3.5">
+                <p class="text-[11px] leading-relaxed text-forest-800">
+                  Atur jenis bentuk, isi atau gradien, garis tepi, dan sudut lewat editor bentuk.
+                </p>
+                <Button variant="primary" size="sm" class="mt-2.5 w-full" onclick={openShapeEditor}>
+                  <SlidersHorizontal size={14} /> Buka editor bentuk
+                </Button>
+              </div>
               <div>
                 <span class="label">Bentuk</span>
                 <div class="mt-1 grid grid-cols-4 gap-1.5">
@@ -6269,6 +6477,14 @@
               </div>
               <p class="text-[10px] leading-relaxed text-ink-muted">Tanpa isi membuat latar transparan. Tanpa garis menyembunyikan garis tepi tanpa menghapus warna dan tebalnya.</p>
             {:else if activeElement.type === 'icon'}
+              <div class="rounded-xl border border-forest-200 bg-forest-50/70 p-3.5">
+                <p class="text-[11px] leading-relaxed text-forest-800">
+                  Pilih ikon, warna, dan ketebalan garis lewat editor ikon.
+                </p>
+                <Button variant="primary" size="sm" class="mt-2.5 w-full" onclick={openIconEditor}>
+                  <SlidersHorizontal size={14} /> Buka editor ikon
+                </Button>
+              </div>
               <div class="flex items-center gap-3 rounded-xl border border-line p-3">
                 <span class="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-forest-50 text-forest-800">
                   <svg class="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -7513,6 +7729,30 @@
     />
   {/if}
 
+  {#if textEditorTarget && textEditorElement}
+    <TextEditorDialog
+      element={textEditorElement}
+      onclose={() => (textEditorTarget = null)}
+      onsave={saveTextEditor}
+    />
+  {/if}
+
+  {#if shapeEditorTarget && shapeEditorElement}
+    <ShapeEditorDialog
+      element={shapeEditorElement}
+      onclose={() => (shapeEditorTarget = null)}
+      onsave={saveShapeEditor}
+    />
+  {/if}
+
+  {#if iconEditorTarget && iconEditorElement}
+    <IconEditorDialog
+      element={iconEditorElement}
+      onclose={() => (iconEditorTarget = null)}
+      onsave={saveIconEditor}
+    />
+  {/if}
+
   {#if contextMenu}
     <div use:portal>
       <div
@@ -7523,9 +7763,9 @@
       >
         {#if contextMenu.kind === 'element' && contextElement}
           <p class="truncate px-3 pt-1 pb-1.5 text-[9px] font-bold tracking-[0.16em] text-ink-muted uppercase">{elementLabel(contextElement)}</p>
-          {#if contextElement.type === 'chart' || contextElement.type === 'card' || contextElement.type === 'table'}
-            <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-forest-800 hover:bg-forest-50" onclick={contextElement.type === 'chart' ? contextEditChart : contextElement.type === 'card' ? contextEditCard : contextEditTable}>
-              <SlidersHorizontal size={14} class="shrink-0" /> {contextElement.type === 'chart' ? 'Edit grafik' : contextElement.type === 'card' ? 'Edit kartu' : 'Edit tabel'}
+          {#if contextElement.type !== 'image'}
+            <button type="button" role="menuitem" class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-forest-800 hover:bg-forest-50" onclick={contextEditElement}>
+              <SlidersHorizontal size={14} class="shrink-0" /> {editorLabelFor(contextElement)}
             </button>
             <div class="my-1 h-px bg-line"></div>
           {/if}
