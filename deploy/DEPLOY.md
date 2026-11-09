@@ -78,6 +78,7 @@ cargo build --release --locked
 sudo rm -rf /opt/laporan/laporan_mingguan
 sudo cp target/release/laporan_mingguan /opt/laporan/laporan_mingguan
 sudo chmod 755 /opt/laporan/laporan_mingguan
+sudo systemctl restart laporan
 ```
 
 Frontend memakai hash routing dan disajikan langsung oleh backend, jadi tidak perlu aturan SPA fallback di Nginx.

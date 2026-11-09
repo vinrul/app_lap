@@ -6,7 +6,9 @@ use uuid::Uuid;
 pub const PAGE_WIDTH_MM: f64 = 210.0;
 pub const PAGE_HEIGHT_MM: f64 = 297.0;
 pub const PAGE_COUNT: usize = 9;
-const MAX_ELEMENTS_PER_PAGE: usize = 80;
+// Halaman terpadat pada template mingguan sudah memakai 80 elemen. Beri ruang
+// untuk teks, bentuk, dan duplikasi buatan pengguna tanpa terbuang saat simpan.
+const MAX_ELEMENTS_PER_PAGE: usize = 200;
 const MAX_TEXT_CHARS: usize = 5000;
 const MAX_GRADIENT_COLORS: usize = 8;
 pub const MAX_BLANK_PAGES: usize = 30;
@@ -1525,6 +1527,33 @@ mod tests {
         .sanitize();
         assert_eq!(limited.pages.len(), MAX_BLANK_PAGES);
         assert_eq!(limited.pages[MAX_BLANK_PAGES - 1].page, MAX_BLANK_PAGES);
+    }
+
+    #[test]
+    fn keeps_more_than_eighty_elements_per_page() {
+        let elements = (0..120)
+            .map(|index| LayoutElement {
+                id: format!("teks-{index}"),
+                kind: "text".into(),
+                text: format!("Baris {index}"),
+                ..Default::default()
+            })
+            .collect();
+        let layout = ReportLayout {
+            version: 1,
+            mode: "blank".into(),
+            orientation: "portrait".into(),
+            pages: vec![PageLayout {
+                page: 1,
+                elements,
+                ..PageLayout::default()
+            }],
+        }
+        .sanitize();
+
+        let page = &layout.pages[0];
+        assert_eq!(page.elements.len(), 120);
+        assert_eq!(page.elements.last().unwrap().id, "teks-119");
     }
 
     #[test]
