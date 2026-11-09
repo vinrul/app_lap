@@ -68,6 +68,15 @@ export const startOfWeek = (date: Date): Date => {
   return copy
 }
 
+// Minggu laporan berjalan Selasa sampai Senin.
+export const startOfReportWeek = (date: Date): Date => {
+  const copy = new Date(date)
+  const offset = (copy.getDay() + 5) % 7
+  copy.setDate(copy.getDate() - offset)
+  copy.setHours(12, 0, 0, 0)
+  return copy
+}
+
 export const addDays = (date: Date, days: number): Date => {
   const copy = new Date(date)
   copy.setDate(copy.getDate() + days)

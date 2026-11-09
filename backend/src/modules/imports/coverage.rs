@@ -2890,6 +2890,86 @@ fn personnel_role_counts(matching: &[&RecordView]) -> (Vec<LabeledCount>, i64) {
     (values, filled)
 }
 
+fn polidik_form_counts(values: &[String]) -> Vec<LabeledCount> {
+    let mut counts: BTreeMap<&'static str, i64> = BTreeMap::new();
+    for value in values {
+        let lower = value.to_ascii_lowercase();
+        let mut matched = false;
+        if lower.contains("penyuluhan") || lower.contains("sosialisasi") {
+            *counts.entry("Penyuluhan").or_default() += 1;
+            matched = true;
+        }
+        if lower.contains("ceramah") {
+            *counts.entry("Ceramah").or_default() += 1;
+            matched = true;
+        }
+        if lower.contains("upacara") || lower.contains("irup") || lower.contains("pembina") {
+            *counts.entry("Pembina upacara").or_default() += 1;
+            matched = true;
+        }
+        if !matched {
+            *counts.entry("Lainnya").or_default() += 1;
+        }
+    }
+    sorted_labeled(counts)
+}
+
+fn polidik_material_counts(values: &[String]) -> Vec<LabeledCount> {
+    let mut counts: BTreeMap<&'static str, i64> = BTreeMap::new();
+    for value in values {
+        let lower = value.to_ascii_lowercase();
+        let mut matched = false;
+        for (label, words) in [
+            ("Perundungan", &["perundungan", "bullying"][..]),
+            ("Narkoba", &["narkoba", "narkotika"][..]),
+            ("Perkelahian pelajar", &["perkelahian", "tawuran"][..]),
+            (
+                "Lalu lintas",
+                &[
+                    "lalu lintas",
+                    "lalulintas",
+                    "berlalu lintas",
+                    "tertib lalu lintas",
+                ][..],
+            ),
+            ("Kenakalan remaja", &["kenakalan remaja"][..]),
+            ("Vape dan rokok", &["vape", "rokok"][..]),
+            (
+                "Judi dan penipuan online",
+                &["judi", "penipuan", "pinjol", "hoaks"][..],
+            ),
+            (
+                "Disiplin dan karakter",
+                &["disiplin", "karakter", "ikrar pelajar"][..],
+            ),
+        ] {
+            if words.iter().any(|word| lower.contains(word)) {
+                *counts.entry(label).or_default() += 1;
+                matched = true;
+            }
+        }
+        if !matched {
+            *counts.entry("Lainnya").or_default() += 1;
+        }
+    }
+    sorted_labeled(counts)
+}
+
+fn sorted_labeled(counts: BTreeMap<&'static str, i64>) -> Vec<LabeledCount> {
+    let mut items: Vec<LabeledCount> = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(label, count)| LabeledCount::new(label, count))
+        .collect();
+    items.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    items
+}
+
 fn build_code_cards(
     matching: &[&RecordView],
     code: &str,
@@ -3326,6 +3406,33 @@ fn build_code_cards(
 
     for (key, values) in entries {
         let lower = key.to_ascii_lowercase();
+
+        // QW1.2 mencatat bentuk kegiatan dan materi sebagai teks bebas dengan
+        // banyak variasi; kelompokkan agar tetap dapat ditampilkan sebagai grafik.
+        if code == "QW1.2" && lower.contains("bentuk kegiatan") {
+            let items = polidik_form_counts(&values);
+            if !items.is_empty() && breakdowns.len() < 6 {
+                breakdowns.push(CoverageBreakdown {
+                    key: "bentuk-kegiatan-polidik".to_string(),
+                    label: "Bentuk kegiatan Polidik".to_string(),
+                    filled_rows: values.len() as i64,
+                    values: items,
+                });
+            }
+            continue;
+        }
+        if code == "QW1.2" && lower.contains("materi") {
+            let items = polidik_material_counts(&values);
+            if !items.is_empty() && breakdowns.len() < 6 {
+                breakdowns.push(CoverageBreakdown {
+                    key: "tema-materi-polidik".to_string(),
+                    label: "Tema materi Polidik".to_string(),
+                    filled_rows: values.len() as i64,
+                    values: items,
+                });
+            }
+            continue;
+        }
 
         // Field personel sudah diringkas pada kartu "Personel/peserta terlibat".
         if personnel_label(&key).is_some() {
@@ -7643,5 +7750,51 @@ mod tests {
             .unwrap();
         assert_eq!(qw14.day, "Rabu");
         assert_eq!(qw14.expected_dates, vec!["2026-10-21"]);
+    }
+
+    #[test]
+    fn groups_polidik_activity_forms() {
+        let values = vec![
+            "Penyuluhan".to_string(),
+            "Ceramah; Penyuluhan".to_string(),
+            "Lainnya: sosialisasi kamtibmas".to_string(),
+            "Pembina upacara (irup)".to_string(),
+            "Lainnya: tatap muka dengan guru".to_string(),
+        ];
+        let items = polidik_form_counts(&values);
+        let count = |label: &str| {
+            items
+                .iter()
+                .find(|item| item.label == label)
+                .map(|item| item.count)
+                .unwrap_or(0)
+        };
+        assert_eq!(count("Penyuluhan"), 3);
+        assert_eq!(count("Ceramah"), 1);
+        assert_eq!(count("Pembina upacara"), 1);
+        assert_eq!(count("Lainnya"), 1);
+    }
+
+    #[test]
+    fn groups_polidik_material_topics() {
+        let values = vec![
+            "Tema pekan ini: perundungan (bullying).".to_string(),
+            "Narkoba dan Bullying".to_string(),
+            "Kenakalan remaja, Perundungan, Bahaya Narkoba dan Tertib berlalulintas".to_string(),
+            "Kepedulian dan saling menghargai".to_string(),
+        ];
+        let items = polidik_material_counts(&values);
+        let count = |label: &str| {
+            items
+                .iter()
+                .find(|item| item.label == label)
+                .map(|item| item.count)
+                .unwrap_or(0)
+        };
+        assert_eq!(count("Perundungan"), 3);
+        assert_eq!(count("Narkoba"), 2);
+        assert_eq!(count("Kenakalan remaja"), 1);
+        assert_eq!(count("Lalu lintas"), 1);
+        assert_eq!(count("Lainnya"), 1);
     }
 }

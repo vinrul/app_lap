@@ -4,7 +4,7 @@
   import { periodsApi } from '../../api'
   import { errorMessage } from '../../api/client'
   import type { Period } from '../../types'
-  import { addDays, formatDate, formatRange, startOfWeek, toIsoDate } from '../../utils/format'
+  import { addDays, formatDate, formatRange, startOfReportWeek, toIsoDate } from '../../utils/format'
   import { navigate } from '../../stores/router.svelte'
   import { toast } from '../../stores/toast.svelte'
   import Modal from '../ui/Modal.svelte'
@@ -28,10 +28,11 @@
   const initialPeriod = untrack(() => period)
   const editing = initialPeriod !== null
   const today = new Date()
+  const weekStart = startOfReportWeek(today)
   let periodType = $state<PeriodType>(initialPeriod?.period_type ?? 'range')
   let dailyDate = $state(initialPeriod?.start_date ?? toIsoDate(today))
-  let startDate = $state(initialPeriod?.start_date ?? toIsoDate(startOfWeek(today)))
-  let endDate = $state(initialPeriod?.end_date ?? toIsoDate(addDays(startOfWeek(today), 6)))
+  let startDate = $state(initialPeriod?.start_date ?? toIsoDate(weekStart))
+  let endDate = $state(initialPeriod?.end_date ?? toIsoDate(addDays(weekStart, 6)))
   let monthValue = $state(
     initialPeriod
       ? initialPeriod.start_date.slice(0, 7)
@@ -68,9 +69,9 @@
 
   function applyRangePreset(kind: 'this' | 'last' | 'weekend') {
     const base = new Date()
-    let start = startOfWeek(base)
+    let start = startOfReportWeek(base)
     if (kind === 'last') start = addDays(start, -7)
-    if (kind === 'weekend') start = addDays(start, 4)
+    if (kind === 'weekend') start = addDays(start, 3)
     const end = kind === 'weekend' ? addDays(start, 2) : addDays(start, 6)
     startDate = toIsoDate(start)
     endDate = toIsoDate(end)
@@ -164,8 +165,8 @@
       </div>
     {:else}
       <div class="flex flex-wrap gap-2">
-        <button type="button" class="btn btn-secondary btn-sm" onclick={() => applyRangePreset('this')}>Minggu ini</button>
-        <button type="button" class="btn btn-secondary btn-sm" onclick={() => applyRangePreset('last')}>Minggu lalu</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick={() => applyRangePreset('this')}>Selasa–Senin ini</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick={() => applyRangePreset('last')}>Selasa–Senin lalu</button>
         <button type="button" class="btn btn-secondary btn-sm" onclick={() => applyRangePreset('weekend')}>Jumat–Minggu</button>
       </div>
       <div class="grid gap-4 sm:grid-cols-2">
@@ -178,6 +179,7 @@
           <input id="period-end" type="date" class="input" bind:value={endDate} required />
         </div>
       </div>
+      <p class="hint">Minggu laporan berjalan Selasa sampai Senin. Preset “Selasa–Senin ini” mengikuti tanggal hari ini.</p>
     {/if}
 
     <div>
