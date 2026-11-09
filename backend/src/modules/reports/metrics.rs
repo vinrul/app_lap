@@ -466,6 +466,68 @@ const GREEN_BIBIT_KEYS: &[&str] = &[
     "Jumlah pohon yang ditanam",
 ];
 
+/// Formulir QW1.5 baru memakai "Bentuk kegiatan"; versi lama memakai "Kegiatan".
+const GREEN_ACTIVITY_KEYS: &[&str] = &["Bentuk kegiatan", "Kegiatan"];
+
+fn green_activity(fields: &BTreeMap<String, String>) -> Option<String> {
+    for key in GREEN_ACTIVITY_KEYS {
+        if let Some(value) = fields.get(*key) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    fields
+        .iter()
+        .find(|(key, value)| {
+            let key = key.trim();
+            GREEN_ACTIVITY_KEYS
+                .iter()
+                .any(|wanted| key.eq_ignore_ascii_case(wanted))
+                && !value.trim().is_empty()
+        })
+        .map(|(_, value)| value.trim().to_string())
+}
+
+fn count_green_forms(activities: &[String]) -> Vec<LabeledCount> {
+    let mut counts: BTreeMap<&'static str, i64> = BTreeMap::new();
+    for activity in activities {
+        let lower = activity.to_ascii_lowercase();
+        let mut matched = false;
+        if lower.contains("kerja bakti") {
+            *counts.entry("Kerja bakti").or_default() += 1;
+            matched = true;
+        }
+        if lower.contains("tanam") {
+            *counts.entry("Tanam pohon").or_default() += 1;
+            matched = true;
+        }
+        if lower.contains("sosialisasi") || lower.contains("penyuluhan") {
+            *counts.entry("Sosialisasi").or_default() += 1;
+            matched = true;
+        }
+        if !matched {
+            *counts.entry("Lainnya").or_default() += 1;
+        }
+    }
+    let mut items: Vec<LabeledCount> = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(label, count)| LabeledCount {
+            label: label.to_string(),
+            count,
+        })
+        .collect();
+    items.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    items
+}
+
 fn build_green(rows: &[&MetricRow]) -> GreenMetrics {
     let subset: Vec<&MetricRow> = rows
         .iter()
@@ -483,7 +545,7 @@ fn build_green(rows: &[&MetricRow]) -> GreenMetrics {
     let kerja_bakti = subset
         .iter()
         .filter(|row| {
-            field(row, &["Kegiatan"])
+            green_activity(&row.fields)
                 .map(|value| value.to_ascii_lowercase().contains("kerja bakti"))
                 .unwrap_or(false)
         })
@@ -492,11 +554,15 @@ fn build_green(rows: &[&MetricRow]) -> GreenMetrics {
         .iter()
         .filter(|row| {
             number_for(row, GREEN_BIBIT_KEYS) > 0
-                || field(row, &["Kegiatan"])
+                || green_activity(&row.fields)
                     .map(|value| value.to_ascii_lowercase().contains("tanam"))
                     .unwrap_or(false)
         })
         .count() as i64;
+    let activities: Vec<String> = subset
+        .iter()
+        .filter_map(|row| green_activity(&row.fields))
+        .collect();
 
     GreenMetrics {
         rows: subset.len() as i64,
@@ -506,11 +572,7 @@ fn build_green(rows: &[&MetricRow]) -> GreenMetrics {
         penanaman,
         peserta,
         by_polres: group_metrics(&subset, &["Jumlah peserta"], GREEN_BIBIT_KEYS),
-        by_kegiatan: count_by(
-            &subset,
-            |row| field(row, &["Kegiatan"]).unwrap_or_else(|| "Kegiatan hijau".to_string()),
-            10,
-        ),
+        by_kegiatan: count_green_forms(&activities),
     }
 }
 
@@ -1089,7 +1151,49 @@ impl Counter {
 
 #[cfg(test)]
 mod tests {
-    use super::{channel_of, host_of, is_documentation_link};
+    use super::{channel_of, count_green_forms, green_activity, host_of, is_documentation_link};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn reads_green_activity_from_form_field() {
+        let fields = BTreeMap::from([
+            ("Lokasi kegiatan".to_string(), "Pantai".to_string()),
+            (
+                "Bentuk kegiatan".to_string(),
+                "Kerja bakti kebersihan".to_string(),
+            ),
+        ]);
+        assert_eq!(
+            green_activity(&fields).as_deref(),
+            Some("Kerja bakti kebersihan")
+        );
+
+        let legacy = BTreeMap::from([("Kegiatan".to_string(), "Tanam pohon".to_string())]);
+        assert_eq!(green_activity(&legacy).as_deref(), Some("Tanam pohon"));
+    }
+
+    #[test]
+    fn groups_green_activity_forms() {
+        let activities = vec![
+            "Kerja bakti kebersihan".to_string(),
+            "Tanam pohon; Kerja bakti kebersihan".to_string(),
+            "Lainnya: sosialisasi dan kerja bakti kebersihan".to_string(),
+            "Sosialisasi; Tanam pohon; Kerja bakti kebersihan".to_string(),
+            "Lainnya: penebaran benih ikan nila".to_string(),
+        ];
+        let items = count_green_forms(&activities);
+        let count = |label: &str| {
+            items
+                .iter()
+                .find(|item| item.label == label)
+                .map(|item| item.count)
+                .unwrap_or(0)
+        };
+        assert_eq!(count("Kerja bakti"), 4);
+        assert_eq!(count("Tanam pohon"), 2);
+        assert_eq!(count("Sosialisasi"), 2);
+        assert_eq!(count("Lainnya"), 1);
+    }
 
     #[test]
     fn classifies_links() {
