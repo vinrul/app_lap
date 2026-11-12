@@ -7,6 +7,8 @@ Aplikasi lokal untuk mengubah export Excel **Quick Wins / Qins Polri** menjadi l
 - Impor workbook `.xlsx` sheet `Data` dengan pemetaan kolom berdasarkan nama header. Kolom wajib: `Tanggal`/`Tanggal kegiatan`, `Waktu kirim (WIB)`/`Tanggal lapor (WIB)`, `Satuan`, `Tingkat`, `Polres`, `Polsek`, dan `Kode`; kolom lain opsional. Tautan peta 1–10 ikut dibaca bila tersedia.
 - Import berdiri sendiri di menu **Import data**, tidak lagi menempel pada satu periode. Satu berkas dapat dipakai oleh banyak periode.
 - Validasi berkas, tanggal, duplikasi dalam berkas, dan pratinjau sebelum penyimpanan; duplikasi lintas berkas dibuang otomatis saat periode dibaca (kunci: tanggal, waktu kirim, satuan, tingkat, polres, polsek, dan kode).
+- Deteksi indikasi laporan otomatis pada tahap **Periksa isi file**: satuan yang mengirim banyak laporan dalam hitungan menit beserta rentang waktu, rata-rata detik per laporan, kegiatan, dan nomor baris; serta materi yang identik dipakai lintas satuan. Hasilnya berupa indikasi untuk diperiksa, bukan penilaian otomatis. Indikasi yang sama dihitung ulang dari data tersimpan dan tampil di tab **Cakupan** periode, termasuk saat difilter per polres; klik kartu input cepat untuk membuka tabel rincian baris, dan klik kartu materi identik untuk melihat daftar satuan serta rincian barisnya.
+- Tabel dan grafik per polres pada template memuat seluruh polres yang ada di periode (tidak lagi dibatasi 10/12). Daftar panjang otomatis dibagi ke beberapa kolom tabel agar tetap berada di area halaman; pengguna dapat memperbesar atau menata ulang kotak tabel di tab Desain.
 - Periode harian (pilih tanggal), mingguan/rentang (pilih rentang tanggal), atau bulanan (pilih bulan dan tahun). Hierarki pelaksana diturunkan otomatis: Polres/Polsek kosong berarti Polda/satker Polda, Polsek kosong berarti Polres/satker Polres.
 - Nama, jenis, dan tanggal periode dapat diperbarui tanpa membuat ulang periode; metrik periode langsung mengikuti import yang mencakup rentang baru. Periode yang tidak lagi aktif dapat diarsipkan — data impor, desain, dan dokumen tetap tersimpan — lalu dipulihkan kapan saja dari tab **Arsip** di menu Periode. Periode yang diarsipkan tidak muncul di daftar aktif maupun ringkasan dasbor.
 - Analisis otomatis dari `Isian laporan`: jumlah personel, bibit, luas area, jemaah, titik koordinat, dan tautan peta; tersedia sebagai kartu ringkas, tren harian, dan sebaran kelompok/kode/tingkat/unit.
@@ -81,7 +83,7 @@ Secara default aplikasi hanya mendengarkan koneksi loopback. Frontend dibangun o
 ## Alur laporan
 
 1. Masuk dengan akun admin/operator.
-2. Buka menu **Import data**, unggah workbook `.xlsx`, periksa pratinjau (baris valid, duplikat, tautan bukti, analisis), lalu simpan. File dengan isi identik (hash SHA-256 sama) ditolak agar tidak terjadi import ganda; admin dapat menghapus import lama dari daftar **Berkas tersimpan**.
+2. Buka menu **Import data**, unggah workbook `.xlsx`, periksa pratinjau (baris valid, duplikat, tautan bukti, analisis, serta indikasi input cepat/materi identik), lalu simpan. File dengan isi identik (hash SHA-256 sama) ditolak agar tidak terjadi import ganda; admin dapat menghapus import lama dari daftar **Berkas tersimpan**.
 3. Buat periode pada menu **Periode** dan pilih jenisnya: harian, mingguan/rentang, atau bulanan. Periode otomatis mengambil baris dari seluruh import yang mencakup rentang tanggalnya. Nama dan tanggal periode dapat diubah lewat tombol **Edit**, sedangkan periode lama dapat diarsipkan dan dipulihkan dari tab **Arsip**.
 4. Buka tab **Ringkasan** untuk memeriksa metrik, berkas impor, duplikat, dan sebaran wilayah.
 5. Buka tab **Analisis** untuk personel, bibit, luas, jemaah, koordinat, tren harian, serta sebaran kode/unit. Tab **Data** memuat daftar baris beserta bukti dukung.
@@ -217,8 +219,11 @@ Tutup aplikasi sebelum membuat cadangan konsisten. Salin seluruh direktori `data
 | `LAPORAN_TESSERACT` | `tesseract` | Path executable Tesseract untuk analisis dokumentasi |
 | `LAPORAN_PADDLE_URL` | kosong | Alamat sidecar PaddleOCR, misalnya `http://127.0.0.1:4320`; kosong berarti hanya Tesseract |
 | `LAPORAN_PADDLE_TIMEOUT_SECS` | `120` | Batas waktu satu permintaan OCR ke sidecar PaddleOCR |
-| `LAPORAN_POLDA_NAME` | `POLDA BALI` | Nama polda pada laporan |
+| `LAPORAN_POLDA_NAME` | `POLDA BALI` | Nama polda pada laporan dan judul aplikasi |
 | `LAPORAN_APP_NAME` | `Laporan Mingguan PBM` | Nama aplikasi |
+| `LAPORAN_TIMEZONE_LABEL` | `WITA` | Label zona waktu pada antarmuka (mis. `WIB` untuk Polda Jateng) |
+| `LAPORAN_MAP_REGION` | `bali` | Profil peta laporan: `bali` atau `jateng` |
+| `LAPORAN_LOGO_PATH` | kosong | Path logo instansi untuk web dan PDF; bila kosong dipakai `<LAPORAN_DATA_DIR>/logo.png` lalu logo bawaan |
 | `LAPORAN_MAX_UPLOAD_MB` | `32` | Batas ukuran workbook |
 | `LAPORAN_SESSION_HOURS` | `12` | Masa berlaku sesi login |
 | `LAPORAN_GOOGLE_DRIVE_API_KEY` | kosong | API key untuk membaca folder Google Drive publik |

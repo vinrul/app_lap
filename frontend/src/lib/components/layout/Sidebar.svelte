@@ -78,12 +78,12 @@
   <div class="flex items-center justify-between px-5 py-5">
     <button class="flex items-center gap-3 text-left" onclick={() => { navigate('/dashboard'); onclose() }}>
       <img
-        src="/logo_polda_bali.png"
-        alt="Logo Polda Bali"
+        src={meta.data?.logo_url ?? '/api/logo'}
+        alt={`Logo ${meta.data?.polda_name ?? 'Polda'}`}
         class="h-10 w-10 shrink-0 rounded-xl border border-gold-400/40 bg-white object-contain p-1"
       />
       <span>
-        <strong class="block text-sm font-bold tracking-[0.12em]">{meta.data?.polda_name ?? 'POLDA BALI'}</strong>
+        <strong class="block text-sm font-bold tracking-[0.12em]">{meta.data?.polda_name ?? 'POLDA'}</strong>
         <small class="block text-[9px] tracking-[0.2em] text-forest-200/70">LAPORAN MINGGUAN PBM</small>
       </span>
     </button>

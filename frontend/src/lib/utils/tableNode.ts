@@ -36,6 +36,7 @@ export function createTableNode(
   }
 
   const baseSize = element.font_size ?? 9
+  const compact = Boolean(element.table_compact)
   const baseFamily = fontStack(element.font_family || 'sans')
   const headerSize =
     element.table_header_font_size && element.table_header_font_size > 0
@@ -51,6 +52,7 @@ export function createTableNode(
   table.style.fontFamily = baseFamily
   table.style.fontSize = `${baseSize}pt`
   table.style.color = element.color ?? '#143d30'
+  if (compact) table.style.lineHeight = '1.12'
   table.style.setProperty(
     '--table-border',
     `${element.border_width ?? 0.5}pt solid ${element.border_color ?? '#d7ddd6'}`,
@@ -69,6 +71,7 @@ export function createTableNode(
       th.style.fontFamily = headerFamily
       th.style.fontSize = `${headerSize}pt`
       th.style.textAlign = isNumericCell(cell) ? 'right' : 'left'
+      if (compact) th.style.padding = '0.35mm 0.8mm'
       tr.appendChild(th)
     })
     thead.appendChild(tr)
@@ -106,6 +109,7 @@ export function createTableNode(
       if (columnFamily) td.style.fontFamily = fontStack(columnFamily)
       if (columnSize > 0) td.style.fontSize = `${columnSize}pt`
       td.style.textAlign = columnAlign || (isNumericCell(cell) ? 'right' : 'left')
+      if (compact) td.style.padding = '0.35mm 0.8mm'
       tr.appendChild(td)
     })
     tbody.appendChild(tr)

@@ -380,7 +380,7 @@
   {#if loading}
     <div class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-forest-950/70 backdrop-blur-sm">
       <span class="flex h-16 w-16 items-center justify-center rounded-2xl border border-gold-400/30 bg-white/5 p-2">
-        <img src="/logo_polda_bali.png" alt="Logo Polda Bali" class="h-full w-full object-contain" />
+        <img src="/api/logo" alt="Logo Polda" class="h-full w-full object-contain" />
       </span>
       <LoaderCircle size={22} class="animate-spin text-gold-300" />
       <p class="text-sm text-forest-100/70">Menyiapkan presentasi…</p>
@@ -402,7 +402,7 @@
       <div class="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-3">
         <div class="flex min-w-0 items-center gap-3">
           <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/10 p-1.5 backdrop-blur">
-            <img src="/logo_polda_bali.png" alt="Logo Polda Bali" class="h-full w-full object-contain" />
+            <img src="/api/logo" alt="Logo Polda" class="h-full w-full object-contain" />
           </span>
           <div class="min-w-0">
             <p class="truncate text-sm font-semibold text-white">{share.period_label}</p>

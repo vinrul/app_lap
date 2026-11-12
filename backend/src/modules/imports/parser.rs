@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     modules::imports::{
-        analysis,
+        analysis, bot,
         models::{
             HEADER_ALIASES, HEADERS, ImportPreview, ImportedRow, MAP_HEADERS, REQUIRED_HEADERS,
         },
@@ -70,6 +70,7 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
             area_total: 0.0,
             jamaah_total: 0,
             preview_rows: Vec::new(),
+            bot_detection: Default::default(),
             rows: Vec::new(),
             missing_headers,
         });
@@ -229,6 +230,17 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
     }
 
     let preview_rows = parsed_rows.iter().take(12).cloned().collect();
+    let bot_detection = bot::detect(&parsed_rows);
+    if !bot_detection.rapid_input.is_empty() || !bot_detection.repeated_material.is_empty() {
+        warnings.insert(
+            0,
+            format!(
+                "Indikasi laporan otomatis: {} satuan dengan input cepat dan {} materi identik lintas satuan. Periksa panel Deteksi Bot.",
+                bot_detection.rapid_input.len(),
+                bot_detection.repeated_material.len()
+            ),
+        );
+    }
 
     Ok(ImportPreview {
         sheet: sheet_name,
@@ -253,6 +265,7 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
         area_total: (area_total * 100.0).round() / 100.0,
         jamaah_total,
         preview_rows,
+        bot_detection,
         rows: parsed_rows,
     })
 }

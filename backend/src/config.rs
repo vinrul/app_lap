@@ -25,6 +25,10 @@ pub struct Config {
     pub max_upload_bytes: usize,
     pub session_hours: i64,
     pub timezone_label: String,
+    /// Profil peta laporan: `bali` atau `jateng`.
+    pub map_region: String,
+    /// Logo instansi untuk web dan PDF. Bila `None`, dipakai logo bawaan.
+    pub logo_path: Option<PathBuf>,
     pub google_drive_api_key: Option<String>,
     /// Lama (hari) bukti dukung milik baris tersisih dipertahankan sebelum
     /// dibersihkan. Nilai 0 berarti langsung dibersihkan.
@@ -51,6 +55,8 @@ impl std::fmt::Debug for Config {
             .field("max_upload_bytes", &self.max_upload_bytes)
             .field("session_hours", &self.session_hours)
             .field("timezone_label", &self.timezone_label)
+            .field("map_region", &self.map_region)
+            .field("logo_path", &self.logo_path)
             .field(
                 "google_drive_api_key",
                 &self.google_drive_api_key.as_ref().map(|_| "<redacted>"),
@@ -80,6 +86,8 @@ impl Config {
             max_upload_bytes: 32 * 1024 * 1024,
             session_hours: 12,
             timezone_label: "WITA".into(),
+            map_region: "bali".into(),
+            logo_path: None,
             google_drive_api_key: None,
             evidence_retention_days: 0,
             evidence_purge_superseded: true,
@@ -154,6 +162,23 @@ impl Config {
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(120)
             .clamp(10, 600);
+        let logo_path = env::var("LAPORAN_LOGO_PATH")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                let candidate = data_dir.join("logo.png");
+                candidate.is_file().then_some(candidate)
+            });
+        let map_region = env::var("LAPORAN_MAP_REGION")
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .map(|value| match value.as_str() {
+                "jateng" | "jawa-tengah" | "jawa_tengah" => "jateng".to_string(),
+                _ => "bali".to_string(),
+            })
+            .unwrap_or_else(|| "bali".to_string());
 
         Ok(Self {
             data_dir,
@@ -177,6 +202,8 @@ impl Config {
             session_hours,
             timezone_label: env::var("LAPORAN_TIMEZONE_LABEL")
                 .unwrap_or_else(|_| "WITA".to_string()),
+            map_region,
+            logo_path,
             google_drive_api_key,
             evidence_retention_days,
             evidence_purge_superseded,

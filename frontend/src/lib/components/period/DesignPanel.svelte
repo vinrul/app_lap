@@ -76,7 +76,7 @@
   import { CHART_PALETTE, createChartSvg } from '../../utils/chartSvg'
   import { createTableNode } from '../../utils/tableNode'
   import { applyLayoutPatch, diffLayout, mergeLocalIntoRemote } from '../../design/layoutPatch'
-  import { buildBaliMapFile } from '../../design/baliMap'
+  import { buildRegionMapFile } from '../../design/regionMap'
   import { buildWeeklyReportTemplate } from '../../design/weeklyTemplate'
   import { realtime } from '../../realtime/socket'
   import {
@@ -88,6 +88,7 @@
   } from '../../utils/designDraft'
   import { formatDate, formatDateTime, formatMonthYear, formatNumber, formatRange } from '../../utils/format'
   import { toast } from '../../stores/toast.svelte'
+  import { meta } from '../../stores/meta.svelte'
   import { dialog } from '../../stores/dialog.svelte'
   import { auth } from '../../stores/auth.svelte'
   import Button from '../ui/Button.svelte'
@@ -2960,12 +2961,15 @@
         gaturDaily = mapData.gatur_daily ?? []
         polidikDaily = mapData.polidik_daily ?? []
         kumpulDaily = mapData.kumpul_daily ?? []
-        const mapFile = await buildBaliMapFile(mapData.points ?? [])
+        const mapFile = await buildRegionMapFile(mapData.points ?? [], {
+          region: meta.data?.map_region ?? 'bali',
+        })
         if (mapFile) {
           const uploaded = await designApi.uploadImage(periodId, mapFile)
           mapImageSrc = `upload:${uploaded.id}`
         }
-        const kumpulMapFile = await buildBaliMapFile(mapData.points ?? [], {
+        const kumpulMapFile = await buildRegionMapFile(mapData.points ?? [], {
+          region: meta.data?.map_region ?? 'bali',
           title: 'Peta Sebaran Kumpul Bersama',
           series: [
             {
@@ -2979,7 +2983,8 @@
           const uploaded = await designApi.uploadImage(periodId, kumpulMapFile)
           kumpulMapImageSrc = `upload:${uploaded.id}`
         }
-        const greenMapFile = await buildBaliMapFile(mapData.points ?? [], {
+        const greenMapFile = await buildRegionMapFile(mapData.points ?? [], {
+          region: meta.data?.map_region ?? 'bali',
           title: 'Peta Sebaran Green Policing',
           series: [
             {
@@ -2993,7 +2998,8 @@
           const uploaded = await designApi.uploadImage(periodId, greenMapFile)
           greenMapImageSrc = `upload:${uploaded.id}`
         }
-        const jumlingMapFile = await buildBaliMapFile(mapData.points ?? [], {
+        const jumlingMapFile = await buildRegionMapFile(mapData.points ?? [], {
+          region: meta.data?.map_region ?? 'bali',
           title: 'Peta Sebaran Jumat Keliling',
           series: [
             {
@@ -3007,7 +3013,8 @@
           const uploaded = await designApi.uploadImage(periodId, jumlingMapFile)
           jumlingMapImageSrc = `upload:${uploaded.id}`
         }
-        const subuhMapFile = await buildBaliMapFile(mapData.points ?? [], {
+        const subuhMapFile = await buildRegionMapFile(mapData.points ?? [], {
+          region: meta.data?.map_region ?? 'bali',
           title: 'Peta Sebaran Subuh Keliling',
           series: [
             {
@@ -3021,7 +3028,8 @@
           const uploaded = await designApi.uploadImage(periodId, subuhMapFile)
           subuhMapImageSrc = `upload:${uploaded.id}`
         }
-        const mingguMapFile = await buildBaliMapFile(mapData.points ?? [], {
+        const mingguMapFile = await buildRegionMapFile(mapData.points ?? [], {
+          region: meta.data?.map_region ?? 'bali',
           title: 'Peta Sebaran Minggu Kasih',
           series: [
             {

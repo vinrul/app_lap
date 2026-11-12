@@ -39,7 +39,7 @@
         {@render children?.()}
       </div>
       <footer class="mt-12 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-5 text-[10px] font-semibold tracking-[0.14em] text-ink-muted uppercase">
-        <span>Laporan Mingguan PBM · {meta.data?.polda_name ?? 'Polda Bali'}</span>
+        <span>Laporan Mingguan PBM · {meta.data?.polda_name ?? 'Polda'}</span>
         <span>Data lokal · Diverifikasi operator</span>
       </footer>
     </main>

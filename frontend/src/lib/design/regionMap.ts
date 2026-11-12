@@ -1,18 +1,15 @@
 import type { QwMapPoint } from '../types'
 
 /**
- * Menggambar peta sebaran titik QW1.1/QW1.2 ke PNG agar dapat dipakai sebagai
+ * Menggambar peta sebaran titik Quick Wins ke PNG agar dapat dipakai sebagai
  * elemen gambar pada desain laporan. Tile OSM diambil lewat proxy backend agar
- * tidak terkena CORS; bila tile tidak tersedia, siluet Pulau Bali tetap digambar
+ * tidak terkena CORS; bila tile tidak tersedia, siluet wilayah tetap digambar
  * sehingga peta tidak kosong.
  */
 
 const CANVAS_WIDTH = 1260
 const CANVAS_HEIGHT = 900
 const TILE_SIZE = 256
-const ZOOM = 10
-const CENTER_LON = 115.08
-const CENTER_LAT = -8.47
 const TILE_TIMEOUT_MS = 4_000
 
 const FOREST = '#143d30'
@@ -22,7 +19,15 @@ const INK = '#2f3d36'
 const MUTED = '#6f7c75'
 const PAPER = '#f7faf6'
 
-const WORLD_SIZE = TILE_SIZE * 2 ** ZOOM
+export type MapRegion = 'bali' | 'jateng'
+
+interface RegionProfile {
+  centerLon: number
+  centerLat: number
+  zoom: number
+  outline: [number, number][]
+  labels: { label: string; lon: number; lat: number }[]
+}
 
 /** Siluet ringkas Pulau Bali (lon, lat), cukup untuk peta gaya laporan. */
 const BALI_OUTLINE: [number, number][] = [
@@ -76,7 +81,7 @@ const BALI_OUTLINE: [number, number][] = [
   [114.51, -8.20],
 ]
 
-const REGION_LABELS: { label: string; lon: number; lat: number }[] = [
+const BALI_LABELS: { label: string; lon: number; lat: number }[] = [
   { label: 'Singaraja', lon: 115.09, lat: -8.12 },
   { label: 'Negara', lon: 114.62, lat: -8.35 },
   { label: 'Denpasar', lon: 115.22, lat: -8.66 },
@@ -84,38 +89,137 @@ const REGION_LABELS: { label: string; lon: number; lat: number }[] = [
   { label: 'Karangasem', lon: 115.6, lat: -8.45 },
 ]
 
-export interface BaliMapSeries {
+/** Siluet ringkas Jawa Tengah (lon, lat) untuk tampilan peta laporan. */
+const JATENG_OUTLINE: [number, number][] = [
+  [108.90, -6.85],
+  [109.05, -6.85],
+  [109.15, -6.80],
+  [109.28, -6.85],
+  [109.40, -6.80],
+  [109.55, -6.85],
+  [109.70, -6.85],
+  [109.85, -6.80],
+  [110.00, -6.85],
+  [110.15, -6.80],
+  [110.30, -6.85],
+  [110.42, -6.90],
+  [110.50, -6.80],
+  [110.55, -6.70],
+  [110.65, -6.60],
+  [110.75, -6.65],
+  [110.85, -6.70],
+  [111.00, -6.70],
+  [111.15, -6.65],
+  [111.30, -6.70],
+  [111.45, -6.75],
+  [111.55, -6.90],
+  [111.40, -7.00],
+  [111.35, -7.15],
+  [111.25, -7.25],
+  [111.20, -7.40],
+  [111.10, -7.55],
+  [111.00, -7.70],
+  [110.90, -7.85],
+  [110.80, -7.90],
+  [110.70, -7.85],
+  [110.60, -7.90],
+  [110.50, -7.85],
+  [110.40, -7.90],
+  [110.30, -7.95],
+  [110.15, -7.90],
+  [110.00, -7.85],
+  [109.85, -7.80],
+  [109.70, -7.75],
+  [109.55, -7.75],
+  [109.40, -7.70],
+  [109.25, -7.75],
+  [109.10, -7.70],
+  [109.00, -7.60],
+  [108.95, -7.45],
+  [108.90, -7.30],
+  [108.85, -7.15],
+  [108.85, -7.00],
+]
+
+const JATENG_LABELS: { label: string; lon: number; lat: number }[] = [
+  { label: 'Semarang', lon: 110.42, lat: -6.99 },
+  { label: 'Pekalongan', lon: 109.68, lat: -6.89 },
+  { label: 'Tegal', lon: 109.13, lat: -6.87 },
+  { label: 'Cilacap', lon: 109.02, lat: -7.73 },
+  { label: 'Kebumen', lon: 109.66, lat: -7.67 },
+  { label: 'Surakarta', lon: 110.82, lat: -7.57 },
+  { label: 'Rembang', lon: 111.35, lat: -6.71 },
+]
+
+const REGION_PROFILES: Record<MapRegion, RegionProfile> = {
+  bali: {
+    centerLon: 115.08,
+    centerLat: -8.47,
+    zoom: 10,
+    outline: BALI_OUTLINE,
+    labels: BALI_LABELS,
+  },
+  jateng: {
+    centerLon: 110.05,
+    centerLat: -7.2,
+    zoom: 9,
+    outline: JATENG_OUTLINE,
+    labels: JATENG_LABELS,
+  },
+}
+
+export interface MapSeries {
   code: string
   label: string
   color: string
 }
 
-export interface BaliMapOptions {
+export interface MapOptions {
   title?: string
-  series?: BaliMapSeries[]
+  series?: MapSeries[]
+  region?: MapRegion
 }
 
-const DEFAULT_SERIES: BaliMapSeries[] = [
+const DEFAULT_SERIES: MapSeries[] = [
   { code: 'QW1.1', label: 'Gatur Lalin (QW1.1)', color: FOREST },
   { code: 'QW1.2', label: 'Polidik (QW1.2)', color: GOLD },
 ]
+
+interface Viewport {
+  x: number
+  y: number
+  worldSize: number
+  zoom: number
+}
 
 interface Projected {
   x: number
   y: number
 }
 
-function project(lon: number, lat: number, originX: number, originY: number): Projected {
-  const x = ((lon + 180) / 360) * WORLD_SIZE - originX
+function project(
+  lon: number,
+  lat: number,
+  originX: number,
+  originY: number,
+  worldSize: number,
+): Projected {
+  const x = ((lon + 180) / 360) * worldSize - originX
   const sin = Math.sin((lat * Math.PI) / 180)
   const y =
-    (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * WORLD_SIZE - originY
+    (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * worldSize - originY
   return { x, y }
 }
 
-function origin(): { x: number; y: number } {
-  const center = project(CENTER_LON, CENTER_LAT, 0, 0)
-  return { x: center.x - CANVAS_WIDTH / 2, y: center.y - CANVAS_HEIGHT / 2 }
+function viewportFor(profile: RegionProfile): Viewport {
+  const worldSize = TILE_SIZE * 2 ** profile.zoom
+  const center = project(profile.centerLon, profile.centerLat, 0, 0, worldSize)
+  return {
+    x: center.x - CANVAS_WIDTH / 2,
+    y: center.y - CANVAS_HEIGHT / 2,
+    worldSize,
+    zoom: profile.zoom,
+  }
 }
 
 function loadImage(url: string): Promise<HTMLImageElement | null> {
@@ -163,12 +267,13 @@ function roundedRect(
 
 function drawOutline(
   context: CanvasRenderingContext2D,
-  originPoint: Projected,
+  viewport: Viewport,
+  outline: [number, number][],
   withFill: boolean,
 ): void {
   context.beginPath()
-  BALI_OUTLINE.forEach(([lon, lat], index) => {
-    const point = project(lon, lat, originPoint.x, originPoint.y)
+  outline.forEach(([lon, lat], index) => {
+    const point = project(lon, lat, viewport.x, viewport.y, viewport.worldSize)
     if (index === 0) context.moveTo(point.x, point.y)
     else context.lineTo(point.x, point.y)
   })
@@ -184,7 +289,8 @@ function drawOutline(
 
 function drawRegionLabels(
   context: CanvasRenderingContext2D,
-  originPoint: Projected,
+  viewport: Viewport,
+  labels: { label: string; lon: number; lat: number }[],
 ): void {
   context.font = '500 22px Inter, "Segoe UI", Arial, sans-serif'
   context.textAlign = 'center'
@@ -193,8 +299,8 @@ function drawRegionLabels(
   context.lineWidth = 5
   context.strokeStyle = 'rgba(255, 255, 255, 0.9)'
   context.fillStyle = MUTED
-  for (const region of REGION_LABELS) {
-    const point = project(region.lon, region.lat, originPoint.x, originPoint.y)
+  for (const region of labels) {
+    const point = project(region.lon, region.lat, viewport.x, viewport.y, viewport.worldSize)
     context.strokeText(region.label, point.x, point.y)
     context.fillText(region.label, point.x, point.y)
   }
@@ -202,14 +308,20 @@ function drawRegionLabels(
 
 function drawPoints(
   context: CanvasRenderingContext2D,
-  originPoint: Projected,
+  viewport: Viewport,
   points: QwMapPoint[],
   colors: Map<string, string>,
 ): void {
   context.lineWidth = 2.4
   context.strokeStyle = 'rgba(255, 255, 255, 0.92)'
   for (const point of points) {
-    const projected = project(point.longitude, point.latitude, originPoint.x, originPoint.y)
+    const projected = project(
+      point.longitude,
+      point.latitude,
+      viewport.x,
+      viewport.y,
+      viewport.worldSize,
+    )
     if (
       projected.x < -20 ||
       projected.y < -20 ||
@@ -231,7 +343,7 @@ function drawPoints(
 
 function drawLegend(
   context: CanvasRenderingContext2D,
-  series: BaliMapSeries[],
+  series: MapSeries[],
   counts: Map<string, number>,
   title: string,
 ): void {
@@ -275,12 +387,12 @@ function drawLegend(
 
 async function drawTiles(
   context: CanvasRenderingContext2D,
-  originPoint: Projected,
+  viewport: Viewport,
 ): Promise<boolean> {
-  const startX = Math.floor(originPoint.x / TILE_SIZE)
-  const startY = Math.floor(originPoint.y / TILE_SIZE)
-  const endX = Math.floor((originPoint.x + CANVAS_WIDTH) / TILE_SIZE)
-  const endY = Math.floor((originPoint.y + CANVAS_HEIGHT) / TILE_SIZE)
+  const startX = Math.floor(viewport.x / TILE_SIZE)
+  const startY = Math.floor(viewport.y / TILE_SIZE)
+  const endX = Math.floor((viewport.x + CANVAS_WIDTH) / TILE_SIZE)
+  const endY = Math.floor((viewport.y + CANVAS_HEIGHT) / TILE_SIZE)
   const requests: Promise<void>[] = []
   let loaded = 0
   let total = 0
@@ -288,13 +400,13 @@ async function drawTiles(
     for (let tileY = startY; tileY <= endY; tileY += 1) {
       total += 1
       requests.push(
-        loadImage(`/api/map/tiles/${ZOOM}/${tileX}/${tileY}`).then((image) => {
+        loadImage(`/api/map/tiles/${viewport.zoom}/${tileX}/${tileY}`).then((image) => {
           if (!image) return
           loaded += 1
           context.drawImage(
             image,
-            tileX * TILE_SIZE - originPoint.x,
-            tileY * TILE_SIZE - originPoint.y,
+            tileX * TILE_SIZE - viewport.x,
+            tileY * TILE_SIZE - viewport.y,
             TILE_SIZE,
             TILE_SIZE,
           )
@@ -306,11 +418,13 @@ async function drawTiles(
   return total > 0 && loaded / total >= 0.4
 }
 
-export async function buildBaliMapFile(
+export async function buildRegionMapFile(
   points: QwMapPoint[],
-  options: BaliMapOptions = {},
+  options: MapOptions = {},
 ): Promise<File | null> {
   if (typeof document === 'undefined') return null
+  const region = options.region ?? 'bali'
+  const profile = REGION_PROFILES[region]
   const series = options.series?.length ? options.series : DEFAULT_SERIES
   const codes = new Set(series.map((item) => item.code))
   const visiblePoints = points.filter((point) => codes.has(point.kode))
@@ -325,14 +439,14 @@ export async function buildBaliMapFile(
   canvas.height = CANVAS_HEIGHT
   const context = canvas.getContext('2d')
   if (!context) return null
-  const originPoint = origin()
+  const viewport = viewportFor(profile)
 
   context.fillStyle = PAPER
   context.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
 
   let hasTiles = false
   try {
-    hasTiles = await drawTiles(context, originPoint)
+    hasTiles = await drawTiles(context, viewport)
   } catch {
     hasTiles = false
   }
@@ -341,7 +455,7 @@ export async function buildBaliMapFile(
     // Tile OSM dibiarkan redup agar warna laporan tetap dominan.
     context.fillStyle = 'rgba(247, 250, 246, 0.28)'
     context.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
-    drawOutline(context, originPoint, false)
+    drawOutline(context, viewport, profile.outline, false)
   } else {
     context.fillStyle = '#eef5ed'
     context.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
@@ -359,11 +473,11 @@ export async function buildBaliMapFile(
       context.lineTo(CANVAS_WIDTH, y)
       context.stroke()
     }
-    drawOutline(context, originPoint, true)
+    drawOutline(context, viewport, profile.outline, true)
   }
 
-  drawRegionLabels(context, originPoint)
-  drawPoints(context, originPoint, visiblePoints, seriesColors)
+  drawRegionLabels(context, viewport, profile.labels)
+  drawPoints(context, viewport, visiblePoints, seriesColors)
   drawLegend(context, series, counts, title)
 
   context.strokeStyle = 'rgba(20, 61, 48, 0.18)'
@@ -374,5 +488,5 @@ export async function buildBaliMapFile(
     canvas.toBlob((value) => resolve(value), 'image/png')
   })
   if (!blob) return null
-  return new File([blob], 'peta-gatur-polidik.png', { type: 'image/png' })
+  return new File([blob], `peta-${region}-gatur-polidik.png`, { type: 'image/png' })
 }

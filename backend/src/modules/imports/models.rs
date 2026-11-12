@@ -147,8 +147,54 @@ pub struct ImportPreview {
     pub area_total: f64,
     pub jamaah_total: i64,
     pub preview_rows: Vec<ImportedRow>,
+    pub bot_detection: BotDetection,
     #[serde(skip)]
     pub rows: Vec<ImportedRow>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct BotDetection {
+    pub rapid_input: Vec<RapidInputSuspect>,
+    pub repeated_material: Vec<RepeatedMaterialSuspect>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RapidInputSuspect {
+    pub satuan: String,
+    pub tanggal: String,
+    pub report_count: usize,
+    pub window_seconds: i64,
+    pub first_time: String,
+    pub last_time: String,
+    pub same_minute_count: usize,
+    pub activities: Vec<String>,
+    pub source_rows: Vec<i64>,
+    /// Rincian baris dalam jendela waktu, untuk dialog pemeriksaan.
+    pub rows: Vec<BotSuspectRow>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BotSuspectRow {
+    pub source_row: i64,
+    pub tanggal: String,
+    pub waktu_kirim_wib: String,
+    pub satuan: String,
+    pub kode: String,
+    pub kegiatan: String,
+    pub status_penerimaan: String,
+    pub isian_laporan: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RepeatedMaterialSuspect {
+    pub activity: String,
+    pub report_count: usize,
+    pub unit_count: usize,
+    pub units: Vec<String>,
+    pub sample: String,
+    pub source_rows: Vec<i64>,
+    /// Rincian baris (dibatasi) untuk dialog pemeriksaan.
+    pub rows: Vec<BotSuspectRow>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -465,6 +511,8 @@ pub struct CoverageResponse {
     pub media_metrics: Vec<CoverageMetric>,
     /// Rekap media per kegiatan dan per satuan.
     pub media_tables: Vec<CoverageTable>,
+    /// Indikasi input cepat/berulang dan materi identik pada periode ini.
+    pub bot_detection: BotDetection,
 }
 
 /// Jadwal satu sub-kode QW1 beserta status tiap polres/satker.

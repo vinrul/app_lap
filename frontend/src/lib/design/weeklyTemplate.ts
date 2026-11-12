@@ -259,6 +259,7 @@ interface TableOptions {
   fontSize?: number
   align?: ('left' | 'center' | 'right' | '')[]
   columnColors?: string[]
+  compact?: boolean
   z?: number
 }
 
@@ -386,6 +387,7 @@ function table(
     element('table', box, {
       table_rows: [columns, ...normalized],
       table_header: true,
+      table_compact: options.compact ?? false,
       table_header_bg: options.headerBg ?? FOREST,
       table_header_color: options.headerColor ?? WHITE,
       table_stripe: options.stripe ?? PANEL,
@@ -401,6 +403,42 @@ function table(
       z: options.z ?? 10,
     }),
   )
+}
+
+/**
+ * Menampilkan baris panjang (mis. 35 polres) sebagai beberapa tabel sejajar.
+ * Dengan begitu seluruh data tetap masuk ke area yang sama tanpa dipotong.
+ */
+function tableAcross(
+  page: LayoutPage,
+  box: Box,
+  columns: string[],
+  rows: string[][],
+  options: TableOptions = {},
+  maxColumns = 4,
+): void {
+  const columnCount = Math.min(
+    rows.length > 24 ? maxColumns : rows.length > 12 ? Math.min(3, maxColumns) : Math.min(2, maxColumns),
+    Math.max(1, rows.length),
+  )
+  const perColumn = Math.ceil(rows.length / columnCount)
+  const chunks: string[][][] = []
+  for (let index = 0; index < columnCount; index += 1) {
+    const chunk = rows.slice(index * perColumn, (index + 1) * perColumn)
+    if (chunk.length) chunks.push(chunk)
+  }
+  const gap = 2
+  const width = (box.width - gap * Math.max(0, chunks.length - 1)) / Math.max(1, chunks.length)
+  const tableOptions: TableOptions = { ...options, compact: options.compact ?? rows.length > 12 }
+  chunks.forEach((chunk, index) => {
+    table(
+      page,
+      { x: box.x + index * (width + gap), y: box.y, width, height: box.height },
+      columns,
+      chunk,
+      tableOptions,
+    )
+  })
 }
 
 function chart(
@@ -741,9 +779,9 @@ function scheduleStats(item: CoverageSchedule | null): {
   }
 }
 
-function scheduleRows(item: CoverageSchedule | null, limit = 12): string[][] {
+function scheduleRows(item: CoverageSchedule | null): string[][] {
   if (!item) return []
-  return item.polres.slice(0, limit).map((unit) => {
+  return item.polres.map((unit) => {
     const status =
       unit.status === 'on_time'
         ? 'Tepat jadwal'
@@ -756,9 +794,9 @@ function scheduleRows(item: CoverageSchedule | null, limit = 12): string[][] {
   })
 }
 
-function codeCoverageRows(item: CoverageProgram | null, limit = 12): string[][] {
+function codeCoverageRows(item: CoverageProgram | null): string[][] {
   if (!item) return []
-  return item.by_polres.slice(0, limit).map((unit) => [
+  return item.by_polres.map((unit) => [
     unit.label,
     fmt(unit.rows),
     unit.rows > 0 ? 'Melapor' : 'Belum melapor',
@@ -812,7 +850,7 @@ function buildCover(data: Data): LayoutPage {
     family: 'montserrat',
     color: WHITE,
   })
-  text(page, { x: 18, y: 43, width: 178, height: 8 }, 'POLDA BALI DAN JAJARAN', {
+  text(page, { x: 18, y: 43, width: 178, height: 8 }, `${data.frame.polda} DAN JAJARAN`, {
     size: 12.5,
     family: 'montserrat',
     color: PALE,
@@ -1301,21 +1339,14 @@ function buildKumpulBersama(data: Data): LayoutPage {
     .map((unit) => ({ label: unit.label, count: unit.on_time_rows }))
     .filter((unit) => unit.count > 0)
     .sort((left, right) => right.count - left.count)
-    .slice(0, 12)
     .map((unit) => [unit.label, fmt(unit.count)])
-  table(
+  tableAcross(
     page,
-    { x: 14, y: lowerY + 9, width: 88, height: 40 },
+    { x: 14, y: lowerY + 9, width: 182, height: 40 },
     ['Polres', 'Laporan Rabu'],
-    wednesdayRows.slice(0, Math.ceil(wednesdayRows.length / 2)),
-    { fontSize: 6.6, align: ['left', 'right'] },
-  )
-  table(
-    page,
-    { x: 108, y: lowerY + 9, width: 88, height: 40 },
-    ['Polres', 'Laporan Rabu'],
-    wednesdayRows.slice(Math.ceil(wednesdayRows.length / 2)),
-    { fontSize: 6.6, align: ['left', 'right'] },
+    wednesdayRows,
+    { fontSize: wednesdayRows.length > 24 ? 6.2 : 6.6, align: ['left', 'right'] },
+    4,
   )
 
   const complaints = uniqueFeedback(data.kumpulFeedback, 6)
@@ -1641,12 +1672,14 @@ function buildPoliran(data: Data): LayoutPage {
     `Cakupan Polres Hari ${dayName}`,
     `${fmt(stats.onTime)} dari ${fmt(stats.total)} polres melapor tepat jadwal`,
   )
-  table(
+  const poliranRows = scheduleRows(qw13)
+  tableAcross(
     page,
     { x: 14, y: rowTop + 11, width: 88, height: 76 },
     ['Polres', 'Status', 'Laporan'],
-    scheduleRows(qw13, 10),
+    poliranRows,
     { fontSize: 6.5, align: ['left', 'left', 'right'] },
+    2,
   )
   addPanelTitle(
     page,
@@ -1827,14 +1860,14 @@ function buildGreen(data: Data): LayoutPage {
   const rowTop = contentY + 69
   const chartHeight = 56
   if (plantingPolres.length) {
-    const polresLabels = plantingPolres.slice(0, 10).map((item) => shorten(item.label, 26))
+    const polresLabels = plantingPolres.map((item) => shorten(item.label, 26))
     chart(
       page,
       { x: 14, y: rowTop, width: 88, height: chartHeight },
       'hbar',
       'Pohon ditanam per polres',
       polresLabels,
-      plantingPolres.slice(0, 10).map((item) => item.bibit),
+      plantingPolres.map((item) => item.bibit),
       {
         colors: polresLabels.map(() => FOREST),
         showValues: true,
@@ -1881,27 +1914,20 @@ function buildGreen(data: Data): LayoutPage {
   }
 
   const coverageTop = rowTop + chartHeight + 3
-  const coverageRows = scheduleRows(scheduleInfo, 12)
-  const half = Math.ceil(coverageRows.length / 2)
+  const coverageRows = scheduleRows(scheduleInfo)
   addPanelTitle(
     page,
     { x: 14, y: coverageTop, width: 182, height: 10 },
     `Cakupan Polres Hari ${dayName}`,
     `${fmt(stats.onTime)} dari ${fmt(stats.total)} polres tepat jadwal`,
   )
-  table(
+  tableAcross(
     page,
-    { x: 14, y: coverageTop + 10, width: 88, height: 48 },
+    { x: 14, y: coverageTop + 10, width: 182, height: 54 },
     ['Polres', 'Status', 'Laporan'],
-    coverageRows.slice(0, half),
+    coverageRows,
     { fontSize: 6.2, align: ['left', 'left', 'right'] },
-  )
-  table(
-    page,
-    { x: 108, y: coverageTop + 10, width: 88, height: 48 },
-    ['Polres', 'Status', 'Laporan'],
-    coverageRows.slice(half),
-    { fontSize: 6.2, align: ['left', 'left', 'right'] },
+    4,
   )
   return page
 }
@@ -1962,7 +1988,6 @@ function buildWorship(
   const polresRows = [...metrics.by_polres]
     .filter((item) => item.rows > 0)
     .sort((left, right) => right.rows - left.rows)
-    .slice(0, 10)
 
   const start = addSectionHeading(
     page,
@@ -2122,27 +2147,20 @@ function buildWorship(
   )
 
   const coverageTop = rowTop + chartHeight + 3
-  const coverageRows = scheduleRows(scheduleInfo, 12)
-  const half = Math.ceil(coverageRows.length / 2)
+  const coverageRows = scheduleRows(scheduleInfo)
   addPanelTitle(
     page,
     { x: 14, y: coverageTop, width: 182, height: 10 },
     `Cakupan Polres Hari ${dayName}`,
     `${fmt(stats.onTime)} dari ${fmt(stats.total)} polres tepat jadwal`,
   )
-  table(
+  tableAcross(
     page,
-    { x: 14, y: coverageTop + 10, width: 88, height: 48 },
+    { x: 14, y: coverageTop + 10, width: 182, height: 54 },
     ['Polres', 'Status', 'Laporan'],
-    coverageRows.slice(0, half),
+    coverageRows,
     { fontSize: 6.2, align: ['left', 'left', 'right'] },
-  )
-  table(
-    page,
-    { x: 108, y: coverageTop + 10, width: 88, height: 48 },
-    ['Polres', 'Status', 'Laporan'],
-    coverageRows.slice(half),
-    { fontSize: 6.2, align: ['left', 'left', 'right'] },
+    4,
   )
   return page
 }
@@ -2284,7 +2302,7 @@ function buildAspirationFollowUp(data: Data): LayoutPage {
     .filter((theme) => theme.count > 0 && !preferredThemes.includes(theme))
     .sort((left, right) => right.count - left.count)
   const displayThemes = [...preferredThemes, ...remainingThemes].slice(0, 6)
-  const region = info?.top_polres?.[0]?.label ?? 'Polda Bali'
+  const region = info?.top_polres?.[0]?.label ?? data.metrics.polda_name ?? 'Polda'
   const total = info?.total ?? data.metrics.aspirations.total
   const doneThemes = displayThemes.filter((theme) => theme.follow_up === 'done').length
   const runningThemes = displayThemes.length - doneThemes
@@ -2628,7 +2646,7 @@ function buildAspirationsPage(data: Data): LayoutPage {
     family: 'montserrat',
     color: GOLD,
   })
-  const wilayah = topPolres.length ? topPolres.join(', ') : 'Polda Bali'
+  const wilayah = topPolres.length ? topPolres.join(', ') : (data.metrics.polda_name ?? 'Polda')
   text(
     page,
     { x: 52, y: numberY, width: 144, height: 14 },
@@ -3179,7 +3197,7 @@ function buildCentralNotes(data: Data): LayoutPage {
     'Catatan dan Penekanan Ketua Pusat',
     { size: 20, bold: true, family: 'montserrat', color: FOREST },
   )
-  const polda = (data.metrics.polda_name || 'Polda Bali')
+  const polda = (data.metrics.polda_name || 'Polda')
     .toLowerCase()
     .replace(/\b\w/g, (char) => char.toUpperCase())
   text(
@@ -3400,7 +3418,7 @@ export function buildWeeklyReportTemplate(input: WeeklyTemplateInput): ReportLay
   const start = detail.period.start_date || metrics.period_start
   const end = detail.period.end_date || metrics.period_end
   const frame: Frame = {
-    polda: (metrics.polda_name || 'POLDA BALI').toUpperCase(),
+    polda: (metrics.polda_name || 'POLDA').toUpperCase(),
     period: periodShort(start, end),
     shortPeriod: periodShort(start, end),
   }

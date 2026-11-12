@@ -23,6 +23,8 @@ export interface Meta {
   app_name: string
   max_upload_bytes: number
   timezone_label: string
+  map_region: 'bali' | 'jateng'
+  logo_url: string
 }
 
 export interface Period {
@@ -110,6 +112,7 @@ export interface LayoutElement {
   group?: string
   table_rows?: string[][]
   table_header?: boolean
+  table_compact?: boolean
   table_header_bg?: string
   table_header_color?: string
   table_stripe?: string
@@ -645,6 +648,45 @@ export interface PreviewRow {
   status_penerimaan: string
 }
 
+export interface BotSuspectRow {
+  source_row: number
+  tanggal: string
+  waktu_kirim_wib: string
+  satuan: string
+  kode: string
+  kegiatan: string
+  status_penerimaan: string
+  isian_laporan: string
+}
+
+export interface RapidInputSuspect {
+  satuan: string
+  tanggal: string
+  report_count: number
+  window_seconds: number
+  first_time: string
+  last_time: string
+  same_minute_count: number
+  activities: string[]
+  source_rows: number[]
+  rows: BotSuspectRow[]
+}
+
+export interface RepeatedMaterialSuspect {
+  activity: string
+  report_count: number
+  unit_count: number
+  units: string[]
+  sample: string
+  source_rows: number[]
+  rows: BotSuspectRow[]
+}
+
+export interface BotDetection {
+  rapid_input: RapidInputSuspect[]
+  repeated_material: RepeatedMaterialSuspect[]
+}
+
 export interface ImportPreview {
   sheet: string
   total_rows: number
@@ -668,6 +710,7 @@ export interface ImportPreview {
   area_total: number
   jamaah_total: number
   preview_rows: PreviewRow[]
+  bot_detection: BotDetection
 }
 
 export interface RecordItem {
@@ -900,6 +943,7 @@ export interface CoverageResponse {
   schedule: CoverageSchedule[]
   media_metrics?: CoverageMetric[]
   media_tables?: CoverageTable[]
+  bot_detection: BotDetection
 }
 
 /** `not_scheduled` dipakai bila periode tidak memuat hari jadwal tersebut. */

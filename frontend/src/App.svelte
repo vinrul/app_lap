@@ -108,8 +108,8 @@
 </script>
 
 <svelte:head>
-  <title>{meta.data?.app_name ?? 'Laporan Mingguan PBM'} · {meta.data?.polda_name ?? 'Polda Bali'}</title>
-  <meta name="description" content="Kelola impor data dan laporan mingguan PBM Polda Bali." />
+  <title>{meta.data?.app_name ?? 'Laporan Mingguan PBM'} · {meta.data?.polda_name ?? 'Polda'}</title>
+  <meta name="description" content={`Kelola impor data dan laporan mingguan PBM ${meta.data?.polda_name ?? 'Polda'}.`} />
 </svelte:head>
 
 {#if router.route.name === 'present' && router.route.id}

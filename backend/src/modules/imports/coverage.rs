@@ -4,6 +4,7 @@ use chrono::{Datelike, NaiveDate};
 
 use crate::{
     modules::imports::{
+        bot,
         models::{
             CoverageBreakdown, CoverageCode, CoverageGroup, CoverageMetric, CoverageProgram,
             CoverageResponse, CoverageSchedule, CoverageScheduleChild, CoverageScheduleUnit,
@@ -4504,6 +4505,7 @@ pub fn build_coverage_scoped_with_universe(
     let codes = build_code_programs(rows, &known, mode);
     let schedule = build_schedule(start, end, rows, &schedule_known, mode);
     let (media_metrics, media_tables) = media_coverage(rows);
+    let bot_detection = bot::detect_records(&rows.iter().collect::<Vec<_>>());
 
     CoverageResponse {
         date_start: start.to_string(),
@@ -4529,6 +4531,7 @@ pub fn build_coverage_scoped_with_universe(
         schedule,
         media_metrics,
         media_tables,
+        bot_detection,
     }
 }
 

@@ -20,6 +20,7 @@
   import type { Dashboard, User } from '../../lib/types'
   import { formatDateTime, formatNumber, formatRange, statusOfPeriod } from '../../lib/utils/format'
   import { navigate } from '../../lib/stores/router.svelte'
+  import { meta } from '../../lib/stores/meta.svelte'
   import PageHeader from '../../lib/components/ui/PageHeader.svelte'
   import StatCard from '../../lib/components/ui/StatCard.svelte'
   import Badge from '../../lib/components/ui/Badge.svelte'
@@ -79,7 +80,7 @@
 <PageHeader
   eyebrow="PUSAT KENDALI LAPORAN"
   title={`Selamat bekerja, ${user.username}.`}
-  description="Pantau periode terbaru, kualitas data, dan kesiapan laporan mingguan Polda Bali."
+  description={`Pantau periode terbaru, kualitas data, dan kesiapan laporan mingguan ${meta.data?.polda_name ?? 'Polda'}.`}
 >
   {#snippet actions()}
     <Button onclick={() => navigate('/periods')}><Plus size={16} /> Mulai laporan</Button>

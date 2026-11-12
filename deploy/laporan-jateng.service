@@ -1,0 +1,28 @@
+[Unit]
+Description=Laporan Mingguan PBM - Polda Jateng (backend + SPA)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=laporan
+Group=laporan
+WorkingDirectory=/opt/laporan-jateng
+EnvironmentFile=/etc/laporan/laporan-jateng.env
+ExecStart=/opt/laporan-jateng/laporan_mingguan serve
+# SIGTERM memicu graceful shutdown: server berhenti menerima permintaan,
+# worker unduhan menyelesaikan tugas yang sedang berjalan, lalu database ditutup.
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+
+# Hardening. Sengaja tanpa NoNewPrivileges agar sandbox Chrome
+# (user namespace) tetap dapat berjalan saat membuat PDF.
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/laporan-jateng
+
+[Install]
+WantedBy=multi-user.target

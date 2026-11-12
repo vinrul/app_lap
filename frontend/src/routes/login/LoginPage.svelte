@@ -33,12 +33,12 @@
 
     <div class="relative flex items-center gap-3">
       <img
-        src="/logo_polda_bali.png"
-        alt="Logo Polda Bali"
+        src={meta.data?.logo_url ?? '/api/logo'}
+        alt={`Logo ${meta.data?.polda_name ?? 'Polda'}`}
         class="h-11 w-11 shrink-0 rounded-xl border border-gold-400/40 bg-white object-contain p-1"
       />
       <div>
-        <strong class="block text-sm font-bold tracking-[0.16em]">{meta.data?.polda_name ?? 'POLDA BALI'}</strong>
+        <strong class="block text-sm font-bold tracking-[0.16em]">{meta.data?.polda_name ?? 'POLDA'}</strong>
         <small class="block text-[9px] tracking-[0.24em] text-forest-200/65">LAPORAN MINGGUAN PBM</small>
       </div>
     </div>
@@ -77,12 +77,12 @@
     <div class="w-full max-w-sm">
       <div class="mb-8 lg:hidden">
         <img
-          src="/logo_polda_bali.png"
-          alt="Logo Polda Bali"
+          src={meta.data?.logo_url ?? '/api/logo'}
+          alt={`Logo ${meta.data?.polda_name ?? 'Polda'}`}
           class="h-11 w-11 rounded-xl bg-white object-contain p-1 ring-1 ring-stone-200"
         />
         <h1 class="mt-4 font-display text-2xl font-semibold text-forest-900">Laporan Mingguan PBM</h1>
-        <p class="mt-1 text-sm text-ink-muted">{meta.data?.polda_name ?? 'Polda Bali'}</p>
+        <p class="mt-1 text-sm text-ink-muted">{meta.data?.polda_name ?? 'Polda'}</p>
       </div>
 
       <span class="eyebrow">MASUK KE APLIKASI</span>

@@ -11,13 +11,14 @@
     MapPin,
     Rows3,
     Search,
+    ShieldAlert,
     Trash2,
     Upload,
     X,
   } from 'lucide-svelte'
   import { importsApi } from '../../lib/api'
   import { errorMessage } from '../../lib/api/client'
-  import type { ImportPreview, ImportView, RecordItem, RecordsResponse, RealtimeServerMessage } from '../../lib/types'
+  import type { BotDetection, ImportPreview, ImportView, RapidInputSuspect, RecordItem, RecordsResponse, RealtimeServerMessage, RepeatedMaterialSuspect } from '../../lib/types'
   import { realtime } from '../../lib/realtime/socket'
   import { formatBytes, formatDate, formatDateTime, formatNumber } from '../../lib/utils/format'
   import { meta } from '../../lib/stores/meta.svelte'
@@ -28,12 +29,16 @@
   import Button from '../../lib/components/ui/Button.svelte'
   import EmptyState from '../../lib/components/ui/EmptyState.svelte'
   import EvidenceList from '../../lib/components/ui/EvidenceList.svelte'
+  import BotSuspectDialog from '../../lib/components/ui/BotSuspectDialog.svelte'
+  import BotMaterialDialog from '../../lib/components/ui/BotMaterialDialog.svelte'
   import LocationMap from '../../lib/components/ui/LocationMap.svelte'
   import Modal from '../../lib/components/ui/Modal.svelte'
 
   let fileInput: HTMLInputElement
   let file = $state<File | null>(null)
   let preview = $state<ImportPreview | null>(null)
+  let botSuspect = $state<RapidInputSuspect | null>(null)
+  let materialSuspect = $state<RepeatedMaterialSuspect | null>(null)
   let dragActive = $state(false)
   let checking = $state(false)
   let committing = $state(false)
@@ -66,6 +71,8 @@
 
   const maxBytes = $derived(meta.data?.max_upload_bytes ?? 32 * 1024 * 1024)
   const totalRows = $derived(imports.reduce((total, item) => total + item.row_count, 0))
+  const emptyBotDetection: BotDetection = { rapid_input: [], repeated_material: [] }
+  const botDetection = $derived(preview?.bot_detection ?? emptyBotDetection)
   const coverage = $derived.by(() => {
     if (!imports.length) return 'Belum ada data'
     const starts = imports.map((item) => item.date_start).filter(Boolean).sort()
@@ -151,6 +158,19 @@
     if (!job.total) return 0
     const processed = job.total - job.pending
     return Math.min(100, Math.max(0, Math.round((processed / job.total) * 100)))
+  }
+
+  function formatWindow(seconds: number): string {
+    if (seconds <= 0) return 'kurang dari 1 menit'
+    if (seconds < 60) return `${seconds} detik`
+    const minutes = Math.floor(seconds / 60)
+    const rest = seconds % 60
+    return rest ? `${minutes} menit ${rest} detik` : `${minutes} menit`
+  }
+
+  function formatPace(count: number, seconds: number): string {
+    if (count <= 1) return '—'
+    return `±${Math.max(1, Math.round(seconds / (count - 1)))} detik/laporan`
   }
 
   function phaseLabel(phase: string): string {
@@ -447,6 +467,80 @@
       {/each}
     </div>
 
+    {#if botDetection.rapid_input.length || botDetection.repeated_material.length}
+      <div class="border-b border-red-200 bg-red-50/60 px-5 py-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="flex items-center gap-1.5 text-[10px] font-bold tracking-[0.12em] text-red-700 uppercase">
+            <ShieldAlert size={13} /> Indikasi laporan otomatis
+          </p>
+          <div class="flex flex-wrap gap-1.5">
+            {#if botDetection.rapid_input.length}
+              <span class="badge badge-danger">{botDetection.rapid_input.length} satuan input cepat</span>
+            {/if}
+            {#if botDetection.repeated_material.length}
+              <span class="badge badge-danger">{botDetection.repeated_material.length} materi identik</span>
+            {/if}
+          </div>
+        </div>
+        <p class="mt-1 text-[11px] leading-relaxed text-ink-muted">
+          Indikasi untuk pemeriksaan, bukan penilaian otomatis. Periksa satuan dan kegiatan berikut sebelum menyimpan.
+        </p>
+
+        {#if botDetection.rapid_input.length}
+          <p class="mt-3 text-[10px] font-bold tracking-[0.1em] text-ink-muted uppercase">Input cepat berulang</p>
+          <p class="mt-0.5 text-[10px] text-ink-muted">Klik kartu untuk melihat rincian baris.</p>
+          <div class="mt-2 grid gap-2 sm:grid-cols-2">
+            {#each botDetection.rapid_input as item}
+              <button
+                type="button"
+                class="w-full rounded-xl border border-red-200 bg-white px-3 py-2.5 text-left transition-colors hover:border-red-400 hover:bg-red-50"
+                title="Lihat rincian baris {item.satuan}"
+                onclick={() => (botSuspect = item)}
+              >
+                <div class="flex items-start justify-between gap-2">
+                  <strong class="text-xs text-ink">{item.satuan}</strong>
+                  <span class="badge badge-danger shrink-0">{item.report_count} laporan</span>
+                </div>
+                <p class="mt-1 text-[10px] text-ink-muted">
+                  {formatDate(item.tanggal)} · {item.first_time}–{item.last_time} · {formatWindow(item.window_seconds)} · {formatPace(item.report_count, item.window_seconds)}
+                </p>
+                {#if item.same_minute_count > 1}
+                  <p class="mt-0.5 text-[10px] font-medium text-red-700">{item.same_minute_count} laporan pada menit yang sama</p>
+                {/if}
+                <p class="mt-1 line-clamp-2 text-[10px] text-ink-soft">{item.activities.join(' · ')}</p>
+                <p class="mt-1 text-[9px] text-ink-muted">Baris {item.source_rows.join(', ')}{#if item.source_rows.length >= 12}…{/if}</p>
+                <span class="mt-1 inline-block text-[10px] font-semibold text-red-700">Lihat rincian →</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+
+        {#if botDetection.repeated_material.length}
+          <p class="mt-3 text-[10px] font-bold tracking-[0.1em] text-ink-muted uppercase">Materi identik lintas satuan</p>
+          <p class="mt-0.5 text-[10px] text-ink-muted">Klik kartu untuk melihat rincian baris dan satuan.</p>
+          <div class="mt-2 grid gap-2 sm:grid-cols-2">
+            {#each botDetection.repeated_material as item}
+              <button
+                type="button"
+                class="w-full rounded-xl border border-red-200 bg-white px-3 py-2.5 text-left transition-colors hover:border-red-400 hover:bg-red-50"
+                title="Lihat rincian materi {item.activity}"
+                onclick={() => (materialSuspect = item)}
+              >
+                <div class="flex items-start justify-between gap-2">
+                  <strong class="text-xs text-ink">{item.activity}</strong>
+                  <span class="badge badge-danger shrink-0">{item.report_count} baris</span>
+                </div>
+                <p class="mt-1 text-[10px] text-ink-muted">{item.unit_count} satuan: {item.units.slice(0, 5).join(', ')}{#if item.unit_count > 5} +{item.unit_count - 5}{/if}</p>
+                <p class="mt-1 line-clamp-2 text-[10px] text-ink-soft">“{item.sample}”</p>
+                <p class="mt-1 text-[9px] text-ink-muted">Baris {item.source_rows.join(', ')}{#if item.source_rows.length >= 12}…{/if}</p>
+                <span class="mt-1 inline-block text-[10px] font-semibold text-red-700">Lihat rincian →</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     {#if preview.warnings.length}
       <div class="border-b border-line bg-gold-50/50 px-5 py-4">
         <p class="text-[10px] font-bold tracking-[0.12em] text-gold-700 uppercase">Catatan</p>
@@ -496,6 +590,9 @@
               <td>
                 <strong class="block text-xs font-semibold text-ink">{item.filename}</strong>
                 <small class="text-[10px] text-ink-muted">{item.imported_by} · parser v{item.parser_version}</small>
+                {#if item.warnings.some((warning) => warning.includes('Indikasi laporan otomatis'))}
+                  <span class="badge badge-danger mt-1">Indikasi input otomatis</span>
+                {/if}
                 {#if job}
                   <div class="mt-1.5 max-w-[220px]">
                     <div class="flex items-center justify-between gap-2 text-[9px] text-ink-muted">
@@ -665,3 +762,6 @@
     </div>
   {/if}
 </Modal>
+
+<BotSuspectDialog suspect={botSuspect} onclose={() => (botSuspect = null)} />
+<BotMaterialDialog suspect={materialSuspect} onclose={() => (materialSuspect = null)} />

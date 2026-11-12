@@ -1,4 +1,5 @@
 mod app;
+mod branding;
 mod config;
 mod db;
 mod error;

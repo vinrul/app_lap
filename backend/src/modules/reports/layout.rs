@@ -109,6 +109,8 @@ pub struct LayoutElement {
     pub group: String,
     pub table_rows: Vec<Vec<String>>,
     pub table_header: bool,
+    /// Padding dan line-height lebih rapat untuk tabel panjang (mis. 35 polres).
+    pub table_compact: bool,
     pub table_header_bg: String,
     pub table_header_color: String,
     pub table_stripe: String,
@@ -300,6 +302,7 @@ impl Default for LayoutElement {
             group: String::new(),
             table_rows: Vec::new(),
             table_header: true,
+            table_compact: false,
             table_header_bg: String::new(),
             table_header_color: String::new(),
             table_stripe: String::new(),
@@ -1032,6 +1035,7 @@ fn safe_image_src(value: &str) -> Option<String> {
 impl LayoutElement {
     fn clear_table(&mut self) {
         self.table_rows.clear();
+        self.table_compact = false;
         self.table_header_bg.clear();
         self.table_header_color.clear();
         self.table_stripe.clear();

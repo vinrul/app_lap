@@ -5,6 +5,7 @@ Backend secara default hanya listen di loopback, jadi konfigurasi yang direkomen
 memakai reverse proxy di mesin yang sama.
 
 Panduan ini diasumsikan untuk Ubuntu 22.04/24.04 x86_64. Untuk distro lain, sesuaikan nama paket.
+Untuk menjalankan instance kedua (Polda Jateng, port 4318) di VPS yang sama, lihat bagian 14.
 
 ## Prasyarat
 
@@ -96,6 +97,9 @@ Nilai penting:
 - `LAPORAN_SECURE_COOKIE=true` — wajib karena diakses lewat HTTPS.
 - `LAPORAN_CHROME=/usr/bin/google-chrome-stable` — sesuaikan hasil `command -v`.
 - `LAPORAN_DATA_DIR` dan `LAPORAN_FRONTEND_DIR` harus persis seperti pada contoh.
+- `LAPORAN_LOGO_PATH` — opsional, path logo instansi untuk web dan PDF. Bila kosong,
+aplikasi memakai `<LAPORAN_DATA_DIR>/logo.png` jika ada, lalu logo bawaan.
+- `LAPORAN_MAP_REGION` — `bali` atau `jateng`, menentukan profil peta pada template desain.
 - `LAPORAN_GOOGLE_DRIVE_API_KEY` — opsional, wajib jika workbook memakai tautan folder Google Drive publik. Isi API key asli di `/etc/laporan/laporan.env`; jangan menyimpannya di file contoh atau repository.
 - `LAPORAN_EVIDENCE_RETENTION_DAYS` — default `0`, bukti dukung baris yang kalah deduplikasi langsung dibersihkan. Isi jumlah hari bila ingin menyimpannya lebih lama.
 - `LAPORAN_EVIDENCE_PURGE_SUPERSEDED` — default `true`. Set `false` bila ingin mematikan pembersihan otomatis.
@@ -390,3 +394,212 @@ Aplikasi ini dirancang untuk satu komputer internal. Saat dipublikasikan ke inte
 - Gunakan sandi admin yang kuat dan unik; jangan memakai akun bersama.
 - Batasi akses SSH, rutin update OS dan Chrome, dan simpan backup di luar VPS.
 - Aplikasi menyimpan workbook serta PDF di server; pastikan kebijakan retensi/privasi data sesuai.
+
+## 14. Instance kedua: Polda Jateng (port 4318)
+
+Satu VPS dapat menjalankan dua instance selama **database dan direktori data dipisah**.
+Contoh ini mempertahankan Polda Bali di port `4317` dan menambahkan Polda Jateng di `4318`.
+
+| Bagian | Polda Bali | Polda Jateng |
+| --- | --- | --- |
+| Service | `laporan` | `laporan-jateng` |
+| Environment | `/etc/laporan/laporan.env` | `/etc/laporan/laporan-jateng.env` |
+| Data | `/var/lib/laporan` | `/var/lib/laporan-jateng` |
+| Binary + frontend | `/opt/laporan` | `/opt/laporan-jateng` |
+| Port loopback | `4317` | `4318` |
+
+Jangan mengarahkan dua service ke `LAPORAN_DATA_DIR` yang sama. Database SQLite,
+folder `imports/`, `reports/`, dan `design/` harus terpisah agar tidak saling menimpa.
+
+### 14.1 Salin binary dan frontend
+
+```bash
+sudo mkdir -p /opt/laporan-jateng/frontend /var/lib/laporan-jateng
+sudo chown -R laporan:laporan /var/lib/laporan-jateng
+
+sudo cp /opt/laporan/laporan_mingguan /opt/laporan-jateng/laporan_mingguan
+sudo rm -rf /opt/laporan-jateng/frontend/dist
+sudo cp -r /opt/laporan/frontend/dist /opt/laporan-jateng/frontend/dist
+sudo chmod 755 /opt/laporan-jateng/laporan_mingguan
+```
+
+Jika `/opt/laporan` belum berisi hasil build, build dari repo seperti pada bagian 3 lalu
+salin binary dan `frontend/dist` ke `/opt/laporan-jateng`.
+
+### 14.2 Environment Polda Jateng
+
+```bash
+sudo cp ~/app_lap/deploy/laporan-jateng.env.example /etc/laporan/laporan-jateng.env
+sudo nano /etc/laporan/laporan-jateng.env
+sudo chmod 600 /etc/laporan/laporan-jateng.env
+```
+
+```bash
+cd ~/app_lap_jateng/frontend
+bun install --frozen-lockfile
+bun run build
+sudo mkdir -p /opt/laporan-jateng/frontend
+sudo rm -rf /opt/laporan-jateng/frontend/dist
+sudo cp -r dist /opt/laporan-jateng/frontend/dist
+
+cd ~/app_lap_jateng/backend
+cargo build --release --locked
+sudo rm -rf /opt/laporan-jateng/laporan_mingguan
+sudo cp target/release/laporan_mingguan /opt/laporan-jateng/laporan_mingguan
+sudo chmod 755 /opt/laporan-jateng/laporan_mingguan
+sudo systemctl restart laporan-jateng
+```
+
+Nilai yang wajib dicek:
+
+- `LAPORAN_PORT=4318`
+- `LAPORAN_DATA_DIR=/var/lib/laporan-jateng`
+- `LAPORAN_FRONTEND_DIR=/opt/laporan-jateng/frontend/dist`
+- `LAPORAN_POLDA_NAME=POLDA JATENG`
+- `LAPORAN_TIMEZONE_LABEL=WIB` — jangan memakai `WITA` seperti instance Bali.
+- `LAPORAN_MAP_REGION=jateng` — peta template memakai profil Jawa Tengah, bukan Bali.
+- `LAPORAN_SECURE_COOKIE=true` bila diakses lewat HTTPS.
+- `HOME=/var/lib/laporan-jateng` agar Chrome headless dapat menulis profil sementara.
+- `LAPORAN_LOGO_PATH` — opsional, misalnya `/var/lib/laporan-jateng/logo.png`
+atau `/home/laporan-data-jateng/logo.png`.
+
+Jika instance Bali memakai data di `/home/laporan-data`, Anda dapat memakai pola yang sama
+untuk Jateng, misalnya `/home/laporan-data-jateng`:
+
+```bash
+sudo install -d -o laporan -g laporan -m 750 /home/laporan-data-jateng
+sudo -u laporan test -w /home/laporan-data-jateng && echo "direktori dapat ditulis"
+```
+
+Namun unit `laporan-jateng.service` memakai `ProtectHome=true`, sehingga direktori di
+`/home` tidak dapat ditulis. Untuk pola itu, ubah pada unit service:
+
+```ini
+ProtectHome=false
+ReadWritePaths=/home/laporan-data-jateng
+```
+
+lalu sesuaikan `LAPORAN_DATA_DIR=/home/laporan-data-jateng` dan
+`HOME=/home/laporan-data-jateng` pada env. Cara paling aman tetap memakai
+`/var/lib/laporan-jateng`.
+
+Sidecar PaddleOCR dapat dipakai bersama. Aktifkan baris yang sama seperti instance Bali:
+
+```text
+LAPORAN_PADDLE_URL=http://127.0.0.1:4320
+```
+
+### 14.3 Admin pertama
+
+Jalankan sekali sebelum service dinyalakan:
+
+```bash
+sudo -u laporan env \
+  LAPORAN_DATA_DIR=/var/lib/laporan-jateng \
+  LAPORAN_ADMIN_USER=admin \
+  LAPORAN_ADMIN_PASSWORD='ganti-dengan-sandi-kuat' \
+  /opt/laporan-jateng/laporan_mingguan bootstrap-admin
+```
+
+### 14.4 systemd
+
+```bash
+sudo cp ~/app_lap/deploy/laporan-jateng.service /etc/systemd/system/laporan-jateng.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now laporan-jateng
+sudo systemctl status laporan-jateng --no-pager
+journalctl -u laporan-jateng -f
+```
+
+### 14.5 Nginx dan TLS
+
+Buat DNS/subdomain terpisah untuk Polda Jateng, misalnya
+`laporan-jateng.example.go.id`, lalu:
+
+```bash
+sudo cp ~/app_lap/deploy/nginx-laporan-jateng.conf /etc/nginx/sites-available/laporan-jateng
+sudo ln -sf /etc/nginx/sites-available/laporan-jateng /etc/nginx/sites-enabled/laporan-jateng
+sudo nano /etc/nginx/sites-available/laporan-jateng   # ganti server_name
+sudo nginx -t
+sudo systemctl reload nginx
+
+sudo certbot --nginx -d laporan-jateng.example.go.id
+```
+
+Blok Nginx instance kedua sudah meneruskan header WebSocket (`Upgrade`/`Connection`)
+untuk kolaborasi desain. Port `4318` tetap hanya listen di loopback dan tidak perlu
+dibuka di firewall.
+
+### 14.6 Verifikasi
+
+```bash
+ss -ltnp | grep -E '4317|4318'
+curl -s http://127.0.0.1:4317/api/health
+curl -s http://127.0.0.1:4318/api/health
+curl -s http://127.0.0.1:4318/api/meta
+```
+
+Balasan `/api/meta` harus menampilkan `"polda_name":"POLDA JATENG"` dan
+`"timezone_label":"WIB"`. Setelah itu buka domain Jateng, login, lalu buat periode
+pertama dan impor workbook milik Polda Jateng.
+
+### 14.7 Logo Polda Jateng
+
+Logo web dan PDF sekarang dibaca saat runtime dari `LAPORAN_LOGO_PATH`. Letakkan logo
+Jateng di data dir instance tersebut:
+
+```bash
+sudo cp logo-polda-jateng.png /var/lib/laporan-jateng/logo.png
+sudo chown laporan:laporan /var/lib/laporan-jateng/logo.png
+sudo systemctl restart laporan-jateng
+```
+
+Cukup letakkan berkas bernama `logo.png` di `LAPORAN_DATA_DIR`; tanpa env tambahan aplikasi
+otomatis memakainya. Bila ingin path lain, isi:
+
+```text
+LAPORAN_LOGO_PATH=/home/laporan-data-jateng/logo-polda-jateng.png
+```
+
+Logo yang sama dipakai di halaman login, sidebar, favicon, pratinjau/PDF, dan template desain
+baru. Format yang didukung: PNG, JPG, WebP, GIF, dan SVG. Setelah mengganti logo, terapkan
+ulang template mingguan pada desain yang sudah ada agar elemen lama ikut diperbarui.
+
+### 14.8 Backup instance Jateng
+
+```bash
+sudo mkdir -p /var/backups/laporan-jateng
+sudo chown laporan:laporan /var/backups/laporan-jateng
+sudo -u laporan sqlite3 /var/lib/laporan-jateng/laporan.sqlite3 \
+  ".backup '/var/backups/laporan-jateng/db-$(date +%F).sqlite3'"
+sudo -u laporan tar czf /var/backups/laporan-jateng/files-$(date +%F).tar.gz \
+  --ignore-failed-read -C /var/lib/laporan-jateng imports reports design evidence
+```
+
+### 14.9 Akses langsung tanpa Nginx
+
+Bila memang ingin membuka `http://IP_VPS:4318` tanpa reverse proxy, set:
+
+```text
+LAPORAN_BIND_ADDR=0.0.0.0
+LAPORAN_ALLOWED_HOSTS=IP_VPS
+LAPORAN_SECURE_COOKIE=false
+```
+
+lalu buka port `4318` di firewall. Cara ini tanpa TLS sehingga cookie sesi dikirim
+terbuka; gunakan hanya di jaringan internal/VPN. Untuk akses internet tetap gunakan
+Nginx + HTTPS seperti bagian 14.5.
+
+### 14.10 Peta wilayah pada template
+
+Peta pada template mingguan mengikuti `LAPORAN_MAP_REGION`:
+
+```text
+LAPORAN_MAP_REGION=bali    # siluet, label, dan titik tengah Pulau Bali
+LAPORAN_MAP_REGION=jateng  # siluet, label, dan titik tengah Jawa Tengah
+```
+
+Setelah mengubah nilai ini, restart service lalu **terapkan ulang template mingguan**.
+Gambar peta di desain lama tidak berubah otomatis karena gambar peta diunggah saat
+template diterapkan. Tile OSM tetap diambil lewat proxy backend; bila tile gagal,
+siluet wilayah yang dipilih akan digambar sebagai cadangan.

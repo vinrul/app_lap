@@ -7,12 +7,14 @@
     Layers,
     MapPin,
     Rows3,
+    ShieldAlert,
     ShieldCheck,
     Users,
   } from 'lucide-svelte'
   import { importsApi, periodsApi } from '../../api'
   import { errorMessage } from '../../api/client'
   import type {
+    BotDetection,
     CoverageProgram,
     CoverageResponse,
     CoverageSchedule,
@@ -22,7 +24,9 @@
     CoverageUnit,
     QuickWinActivity,
     QuickWinDetail,
+    RapidInputSuspect,
     RecordItem,
+    RepeatedMaterialSuspect,
     ReportMetrics,
     UnitBreakdown,
   } from '../../types'
@@ -34,6 +38,8 @@
   import EvidenceList from '../ui/EvidenceList.svelte'
   import LocationMap from '../ui/LocationMap.svelte'
   import Modal from '../ui/Modal.svelte'
+  import BotSuspectDialog from '../ui/BotSuspectDialog.svelte'
+  import BotMaterialDialog from '../ui/BotMaterialDialog.svelte'
 
   type Props = { periodId: string }
   let { periodId }: Props = $props()
@@ -43,6 +49,10 @@
   type ActivityScope = 'polres' | 'satker' | 'masyarakat'
 
   let data = $state<CoverageResponse | null>(null)
+  const emptyBotDetection: BotDetection = { rapid_input: [], repeated_material: [] }
+  const botDetection = $derived(data?.bot_detection ?? emptyBotDetection)
+  let botSuspect = $state<RapidInputSuspect | null>(null)
+  let materialSuspect = $state<RepeatedMaterialSuspect | null>(null)
   let metrics = $state<ReportMetrics | null>(null)
   let loading = $state(true)
   let error = $state('')
@@ -192,6 +202,19 @@
   function percent(value: number, total: number): number {
     if (total <= 0) return 0
     return Math.max(0, Math.min(100, Math.round((value / total) * 100)))
+  }
+
+  function formatWindow(seconds: number): string {
+    if (seconds <= 0) return 'kurang dari 1 menit'
+    if (seconds < 60) return `${seconds} detik`
+    const minutes = Math.floor(seconds / 60)
+    const rest = seconds % 60
+    return rest ? `${minutes} menit ${rest} detik` : `${minutes} menit`
+  }
+
+  function formatPace(count: number, seconds: number): string {
+    if (count <= 1) return '—'
+    return `±${Math.max(1, Math.round(seconds / (count - 1)))} detik/laporan`
   }
 
   function scheduleUnitsFor(item: CoverageSchedule): CoverageScheduleUnit[] {
@@ -721,6 +744,104 @@
               </table>
             </div>
           </div>
+        </div>
+      </section>
+    {/if}
+
+    {#if botDetection.rapid_input.length || botDetection.repeated_material.length}
+      <section class="card overflow-hidden">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow flex items-center gap-1.5 text-red-700">
+              <ShieldAlert size={13} /> INDIKASI LAPORAN OTOMATIS
+            </span>
+            <h2 class="panel-title mt-0.5">Input cepat dan materi identik</h2>
+            <p class="mt-1 max-w-3xl text-[10px] leading-relaxed text-ink-muted">
+              Dihitung ulang dari seluruh baris pada periode ini. Indikasi untuk pemeriksaan,
+              bukan penilaian otomatis. Filter polres ikut mempersempit hasil.
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            {#if botDetection.rapid_input.length}
+              <span class="badge badge-danger">{botDetection.rapid_input.length} satuan input cepat</span>
+            {/if}
+            {#if botDetection.repeated_material.length}
+              <span class="badge badge-danger">{botDetection.repeated_material.length} materi identik</span>
+            {/if}
+          </div>
+        </div>
+
+        <div class="grid gap-4 border-t border-line p-4 {botDetection.rapid_input.length && botDetection.repeated_material.length
+          ? 'xl:grid-cols-2'
+          : ''}">
+          {#if botDetection.rapid_input.length}
+            <div>
+              <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">
+                Input cepat berulang
+              </p>
+              <p class="mt-0.5 text-[10px] text-ink-muted">Klik kartu untuk melihat rincian baris.</p>
+              <div class="mt-2 space-y-2">
+                {#each botDetection.rapid_input as item}
+                  <button
+                    type="button"
+                    class="w-full rounded-xl border border-red-200 bg-red-50/40 px-3 py-2 text-left transition-colors hover:border-red-400 hover:bg-red-50"
+                    title="Lihat rincian baris {item.satuan}"
+                    onclick={() => (botSuspect = item)}
+                  >
+                    <div class="flex items-start justify-between gap-2">
+                      <strong class="text-xs text-ink">{item.satuan}</strong>
+                      <span class="badge badge-danger shrink-0">{item.report_count} laporan</span>
+                    </div>
+                    <p class="mt-1 text-[10px] text-ink-muted">
+                      {formatDate(item.tanggal)} · {item.first_time}–{item.last_time} · {formatWindow(item.window_seconds)} · {formatPace(item.report_count, item.window_seconds)}
+                    </p>
+                    {#if item.same_minute_count > 1}
+                      <p class="mt-0.5 text-[10px] font-medium text-red-700">
+                        {item.same_minute_count} laporan pada menit yang sama
+                      </p>
+                    {/if}
+                    <p class="mt-1 line-clamp-2 text-[10px] text-ink-soft">{item.activities.join(' · ')}</p>
+                    <p class="mt-1 text-[9px] text-ink-muted">
+                      Baris {item.source_rows.join(', ')}{#if item.source_rows.length >= 12}…{/if}
+                    </p>
+                    <span class="mt-1 inline-block text-[10px] font-semibold text-red-700">Lihat rincian →</span>
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/if}
+
+          {#if botDetection.repeated_material.length}
+            <div>
+              <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">
+                Materi identik lintas satuan
+              </p>
+              <p class="mt-0.5 text-[10px] text-ink-muted">Klik kartu untuk melihat rincian baris dan satuan.</p>
+              <div class="mt-2 space-y-2">
+                {#each botDetection.repeated_material as item}
+                  <button
+                    type="button"
+                    class="w-full rounded-xl border border-red-200 bg-red-50/40 px-3 py-2 text-left transition-colors hover:border-red-400 hover:bg-red-50"
+                    title="Lihat rincian materi {item.activity}"
+                    onclick={() => (materialSuspect = item)}
+                  >
+                    <div class="flex items-start justify-between gap-2">
+                      <strong class="text-xs text-ink">{item.activity}</strong>
+                      <span class="badge badge-danger shrink-0">{item.report_count} baris</span>
+                    </div>
+                    <p class="mt-1 text-[10px] text-ink-muted">
+                      {item.unit_count} satuan: {item.units.slice(0, 5).join(', ')}{#if item.unit_count > 5} +{item.unit_count - 5}{/if}
+                    </p>
+                    <p class="mt-1 line-clamp-2 text-[10px] text-ink-soft">“{item.sample}”</p>
+                    <p class="mt-1 text-[9px] text-ink-muted">
+                      Baris {item.source_rows.join(', ')}{#if item.source_rows.length >= 12}…{/if}
+                    </p>
+                    <span class="mt-1 inline-block text-[10px] font-semibold text-red-700">Lihat rincian →</span>
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/if}
         </div>
       </section>
     {/if}
@@ -1431,3 +1552,6 @@
     </div>
   {/if}
 </Modal>
+
+<BotSuspectDialog suspect={botSuspect} onclose={() => (botSuspect = null)} />
+<BotMaterialDialog suspect={materialSuspect} onclose={() => (materialSuspect = null)} />

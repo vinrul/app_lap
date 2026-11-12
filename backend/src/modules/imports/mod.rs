@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod bot;
 pub mod coverage;
 pub mod drive;
 pub mod duties;

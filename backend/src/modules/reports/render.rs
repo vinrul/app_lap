@@ -1,9 +1,9 @@
-use std::{collections::HashMap, sync::OnceLock};
+use std::collections::HashMap;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{Datelike, NaiveDate};
 
 use crate::{
+    branding,
     config::Config,
     modules::reports::{
         fonts, icons,
@@ -215,7 +215,7 @@ pub fn render_with_layout(
     let css = format!(
         "{}{}{}{}",
         fonts::face_css(),
-        REPORT_CSS.replace("__LOGO_DATA_URI__", logo_data_uri()),
+        REPORT_CSS.replace("__LOGO_DATA_URI__", &branding::logo_data_uri(config)),
         block_css(layout),
         page_background_css(layout, &ctx.images)
     );
@@ -325,7 +325,7 @@ Data disusun dari {} baris laporan yang diimpor dari {}.",
     format!(
         "<section class=\"page cover\" data-page=\"1\">\
   <div class=\"cover-top\" data-block=\"cover-top\">\
-    <div class=\"cover-brand\"><span class=\"crest-logo cover-crest\" role=\"img\" aria-label=\"Logo Polda Bali\"></span><span><strong data-text-id=\"polda\">{polda}</strong><small>LAPORAN MINGGUAN PBM</small></span></div>\
+    <div class=\"cover-brand\"><span class=\"crest-logo cover-crest\" role=\"img\" aria-label=\"Logo {polda}\"></span><span><strong data-text-id=\"polda\">{polda}</strong><small>LAPORAN MINGGUAN PBM</small></span></div>\\
     <span class=\"cover-doc\" data-text-id=\"doc\">{doc}</span>\
     <h1 data-text-id=\"title\">{title}</h1>\
     <p class=\"cover-period\" data-text-id=\"period\">{label}</p>\
@@ -372,7 +372,7 @@ fn render_blank_document(
     let mut css = format!(
         "{}{}{}{}",
         fonts::face_css(),
-        REPORT_CSS.replace("__LOGO_DATA_URI__", logo_data_uri()),
+        REPORT_CSS.replace("__LOGO_DATA_URI__", &branding::logo_data_uri(config)),
         block_css(layout),
         page_background_css(layout, &ctx.images)
     );
@@ -785,7 +785,7 @@ fn page(
     let foot_text = text_or(ctx, page_no, &foot_id, "left", &foot_default);
     format!(
         "<section class=\"page {extra_class}\" data-page=\"{page_no}\">\
-  <header class=\"page-head\" data-block=\"page-{page_no}-head\"><div class=\"page-head-text\"><span class=\"eyebrow gold\" data-text-id=\"eyebrow\">{eyebrow}</span><h1 data-text-id=\"title\">{title}</h1><p data-text-id=\"subtitle\">{subtitle}</p></div><span class=\"crest-logo page-crest\" role=\"img\" aria-label=\"Logo Polda Bali\"></span></header>\
+  <header class=\"page-head\" data-block=\"page-{page_no}-head\"><div class=\"page-head-text\"><span class=\"eyebrow gold\" data-text-id=\"eyebrow\">{eyebrow}</span><h1 data-text-id=\"title\">{title}</h1><p data-text-id=\"subtitle\">{subtitle}</p></div><span class=\"crest-logo page-crest\" role=\"img\" aria-label=\"Logo {polda}\"></span></header>\\
   <div class=\"page-body\">{body}</div>\
   <footer class=\"page-foot\" data-block=\"page-{page_no}-foot\"><span data-text-id=\"left\">{foot}</span>{page_number}</footer>\
   {layer}\
@@ -796,6 +796,7 @@ fn page(
         subtitle = escape_html(&subtitle_text),
         body = body,
         foot = escape_html(&foot_text),
+        polda = escape_html(&metrics.polda_name),
         page_number = page_number,
         page_no = page_no,
         layer = layout_layer(page_no, ctx),
@@ -1288,14 +1289,25 @@ fn render_table_element(element: &LayoutElement, ctx: &DesignContext, style: &st
     } else {
         element.font_size
     };
+    let compact_padding = if element.table_compact {
+        "padding:.35mm .8mm;"
+    } else {
+        ""
+    };
+    let compact_line_height = if element.table_compact {
+        "line-height:1.12;"
+    } else {
+        ""
+    };
     let mut html = format!(
-        "<div class=\"layout-element layout-table\" data-element-id=\"{}\" style=\"{}background:{};overflow:hidden;\"><table class=\"design-table\" style=\"font-family:{base_family};font-size:{}pt;color:{};--table-border:{};\">",
+        "<div class=\"layout-element layout-table\" data-element-id=\"{}\" style=\"{}background:{};overflow:hidden;\"><table class=\"design-table\" style=\"font-family:{base_family};font-size:{}pt;color:{};--table-border:{};{};\">",
         escape_html(&element.id),
         style,
         element.fill,
         element.font_size,
         element.color,
-        border
+        border,
+        compact_line_height
     );
 
     if let Some(header_row) = header {
@@ -1307,7 +1319,7 @@ fn render_table_element(element: &LayoutElement, ctx: &DesignContext, style: &st
                 ""
             };
             html.push_str(&format!(
-                "<th style=\"background:{};color:{};font-family:{header_family};font-size:{header_size:.1}pt;{align}\">{}</th>",
+                "<th style=\"background:{};color:{};font-family:{header_family};font-size:{header_size:.1}pt;{align}{compact_padding}\">{}</th>",
                 element.table_header_bg,
                 element.table_header_color,
                 escape_html(&cell)
@@ -1351,7 +1363,12 @@ fn render_table_element(element: &LayoutElement, ctx: &DesignContext, style: &st
                         String::new()
                     }
                 });
-            let mut cell_style = background;
+            let mut cell_style = if element.table_compact {
+                "padding:.35mm .8mm;".to_string()
+            } else {
+                String::new()
+            };
+            cell_style.push_str(&background);
             if let Some(color) = element
                 .table_column_colors
                 .get(column_index)
@@ -2313,19 +2330,6 @@ fn date_long(value: &str) -> String {
             )
         })
         .unwrap_or_else(|_| value.to_string())
-}
-
-fn logo_data_uri() -> &'static str {
-    static LOGO: OnceLock<String> = OnceLock::new();
-    LOGO.get_or_init(|| {
-        format!(
-            "data:image/png;base64,{}",
-            STANDARD.encode(include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../logo_polda_bali.png"
-            )))
-        )
-    })
 }
 
 fn date_short(value: &str) -> String {
