@@ -590,16 +590,18 @@ lalu buka port `4318` di firewall. Cara ini tanpa TLS sehingga cookie sesi dikir
 terbuka; gunakan hanya di jaringan internal/VPN. Untuk akses internet tetap gunakan
 Nginx + HTTPS seperti bagian 14.5.
 
-### 14.10 Peta wilayah pada template
+### 14.10 Peta dan istilah wilayah pada template
 
-Peta pada template mingguan mengikuti `LAPORAN_MAP_REGION`:
+Peta dan istilah wilayah pada template mingguan mengikuti `LAPORAN_MAP_REGION`:
 
 ```text
 LAPORAN_MAP_REGION=bali    # siluet, label, dan titik tengah Pulau Bali
 LAPORAN_MAP_REGION=jateng  # siluet, label, dan titik tengah Jawa Tengah
 ```
 
-Setelah mengubah nilai ini, restart service lalu **terapkan ulang template mingguan**.
+Profil `jateng` memakai istilah netral seperti aparat desa/kelurahan dan pengunjung
+objek wisata; profil `bali` tetap memakai istilah lokal Bali. Setelah mengubah nilai
+ini, restart service lalu **terapkan ulang template mingguan**.
 Gambar peta di desain lama tidak berubah otomatis karena gambar peta diunggah saat
 template diterapkan. Tile OSM tetap diambil lewat proxy backend; bila tile gagal,
 siluet wilayah yang dipilih akan digambar sebagai cadangan.

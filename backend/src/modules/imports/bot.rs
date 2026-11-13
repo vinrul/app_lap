@@ -4,7 +4,7 @@ use chrono::{NaiveDate, NaiveDateTime, Timelike};
 use sha2::{Digest, Sha256};
 
 use crate::modules::imports::models::{
-    BotDetection, BotSuspectRow, ImportedRow, RapidInputSuspect, RecordView,
+    BotDetection, BotSuspectRow, ImportedRow, MaterialUnitCount, RapidInputSuspect, RecordView,
     RepeatedMaterialSuspect,
 };
 
@@ -251,6 +251,13 @@ fn detect_repeated_material(rows: &[BotRow<'_>]) -> Vec<RepeatedMaterialSuspect>
             let mut units: Vec<(String, usize)> = group.units.into_iter().collect();
             units.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
             let unit_count = units.len();
+            let unit_counts = units
+                .iter()
+                .map(|(satuan, rows)| MaterialUnitCount {
+                    satuan: satuan.clone(),
+                    rows: *rows,
+                })
+                .collect();
             let units = units.into_iter().map(|(unit, _)| unit).collect();
             let sample = group
                 .rows
@@ -274,6 +281,7 @@ fn detect_repeated_material(rows: &[BotRow<'_>]) -> Vec<RepeatedMaterialSuspect>
                 report_count: group.rows.len(),
                 unit_count,
                 units,
+                unit_counts,
                 sample,
                 source_rows,
                 rows: detail_rows,
@@ -489,6 +497,9 @@ mod tests {
         let suspect = &detection.repeated_material[0];
         assert_eq!(suspect.report_count, 3);
         assert_eq!(suspect.unit_count, 2);
+        assert_eq!(suspect.unit_counts.len(), 2);
+        assert_eq!(suspect.unit_counts[0].satuan, "Polsek A");
+        assert_eq!(suspect.unit_counts[0].rows, 2);
         assert!(suspect.activity.contains("QW5.4"));
     }
 }

@@ -73,6 +73,13 @@
   const totalRows = $derived(imports.reduce((total, item) => total + item.row_count, 0))
   const emptyBotDetection: BotDetection = { rapid_input: [], repeated_material: [] }
   const botDetection = $derived(preview?.bot_detection ?? emptyBotDetection)
+  const relatedRapid = $derived.by(() => {
+    const current = botSuspect
+    if (!current) return []
+    return botDetection.rapid_input.filter(
+      (item) => item !== current && item.tanggal === current.tanggal,
+    )
+  })
   const coverage = $derived.by(() => {
     if (!imports.length) return 'Belum ada data'
     const starts = imports.map((item) => item.date_start).filter(Boolean).sort()
@@ -508,7 +515,7 @@
                   <p class="mt-0.5 text-[10px] font-medium text-red-700">{item.same_minute_count} laporan pada menit yang sama</p>
                 {/if}
                 <p class="mt-1 line-clamp-2 text-[10px] text-ink-soft">{item.activities.join(' · ')}</p>
-                <p class="mt-1 text-[9px] text-ink-muted">Baris {item.source_rows.join(', ')}{#if item.source_rows.length >= 12}…{/if}</p>
+                <p class="mt-1 text-[9px] text-ink-muted">Baris {item.source_rows.join(', ')}{#if item.report_count > item.source_rows.length} · +{item.report_count - item.source_rows.length} baris lain{/if}</p>
                 <span class="mt-1 inline-block text-[10px] font-semibold text-red-700">Lihat rincian →</span>
               </button>
             {/each}
@@ -530,9 +537,9 @@
                   <strong class="text-xs text-ink">{item.activity}</strong>
                   <span class="badge badge-danger shrink-0">{item.report_count} baris</span>
                 </div>
-                <p class="mt-1 text-[10px] text-ink-muted">{item.unit_count} satuan: {item.units.slice(0, 5).join(', ')}{#if item.unit_count > 5} +{item.unit_count - 5}{/if}</p>
+                <p class="mt-1 text-[10px] text-ink-muted">{item.unit_count} satuan: {item.units.slice(0, 5).join(', ')}{#if item.unit_count > 5} · +{item.unit_count - 5} satuan lain{/if}</p>
                 <p class="mt-1 line-clamp-2 text-[10px] text-ink-soft">“{item.sample}”</p>
-                <p class="mt-1 text-[9px] text-ink-muted">Baris {item.source_rows.join(', ')}{#if item.source_rows.length >= 12}…{/if}</p>
+                <p class="mt-1 text-[9px] text-ink-muted">Baris {item.source_rows.join(', ')}{#if item.report_count > item.source_rows.length} · +{item.report_count - item.source_rows.length} baris lain{/if}</p>
                 <span class="mt-1 inline-block text-[10px] font-semibold text-red-700">Lihat rincian →</span>
               </button>
             {/each}
@@ -763,5 +770,10 @@
   {/if}
 </Modal>
 
-<BotSuspectDialog suspect={botSuspect} onclose={() => (botSuspect = null)} />
+<BotSuspectDialog
+  suspect={botSuspect}
+  related={relatedRapid}
+  onpick={(item) => (botSuspect = item)}
+  onclose={() => (botSuspect = null)}
+/>
 <BotMaterialDialog suspect={materialSuspect} onclose={() => (materialSuspect = null)} />

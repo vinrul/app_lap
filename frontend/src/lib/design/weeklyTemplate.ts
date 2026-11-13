@@ -16,6 +16,7 @@ import type {
 } from '../types'
 import { formatNumber } from '../utils/format'
 import { qwCodeTitles, qwGroupTitles } from '../utils/constants'
+import type { MapRegion } from './regionMap'
 
 /**
  * Template desain "Laporan Mingguan 8 Quick Wins" yang meniru susunan PDF
@@ -66,6 +67,8 @@ export interface WeeklyTemplateInput {
   leadership?: LeadershipTimelineResponse | null
   /// Ringkasan QW1.3 (Poliran) untuk halaman 5.
   poliran?: PoliranSummaryResponse | null
+  /// Wilayah untuk penyesuaian istilah lokal pada isi template.
+  mapRegion?: MapRegion
 }
 
 const FOREST = '#143d30'
@@ -623,6 +626,7 @@ interface Data {
   coverage: CoverageResponse | null
   detail: PeriodDetail
   frame: Frame
+  region: MapRegion
   mapImageSrc: string
   kumpulMapImageSrc: string
   greenMapImageSrc: string
@@ -642,6 +646,58 @@ interface Data {
   kumpulFeedbackTotal: number
   leadership: LeadershipTimelineResponse | null
   poliran: PoliranSummaryResponse | null
+}
+
+interface RegionalCopy {
+  kumpulPartners: string
+  touristsTitle: string
+  touristsPlan: string
+  touristsShort: string
+  touristsAudience: string
+  onlinePlan: string
+  aspirationsSubtitle: string
+  qw4Emphasis: string
+  qw7Emphasis: string
+  qw8Emphasis: string
+}
+
+const REGIONAL_COPY: Record<MapRegion, RegionalCopy> = {
+  bali: {
+    kumpulPartners: 'desa adat, paguyuban, nelayan, ojek, dan pelaku wisata',
+    touristsTitle: 'Wisatawan asing',
+    touristsPlan: 'Tertibkan wisatawan asing bersama desa adat dan pemandu',
+    touristsShort: 'Wisatawan asing',
+    touristsAudience: 'warga dan wisatawan',
+    onlinePlan: 'Edukasi hoaks dan judi daring di banjar dan rumah ibadah',
+    aspirationsSubtitle:
+      'Keluhan warga Bali pekan ini: lalu lintas dan knalpot brong, pencurian dan begal, narkoba dan vape pelajar, sampah, serta wisatawan asing.',
+    qw4Emphasis:
+      'Pastikan setiap panggilan 110 didatangi dan sosialisasikan kanal 110 di banjar serta rumah ibadah.',
+    qw7Emphasis:
+      'Bhabinkamtibmas bersama desa adat dan pecalang menghidupkan kembali ronda malam.',
+    qw8Emphasis:
+      'Labfor, Inafis dan Dokpol siap untuk kejadian di objek wisata alam; percepat identifikasi korban, termasuk WNA.',
+  },
+  jateng: {
+    kumpulPartners: 'aparat desa/kelurahan, paguyuban, nelayan, ojek, dan pelaku usaha',
+    touristsTitle: 'Pengunjung objek wisata',
+    touristsPlan: 'Tertibkan pengunjung objek wisata bersama pengelola dan pemandu',
+    touristsShort: 'Pengunjung wisata',
+    touristsAudience: 'warga dan pengunjung objek wisata',
+    onlinePlan: 'Edukasi hoaks dan judi daring di balai desa/kelurahan dan rumah ibadah',
+    aspirationsSubtitle:
+      'Keluhan warga Jawa Tengah pekan ini: lalu lintas dan knalpot brong, pencurian dan begal, narkoba dan vape pelajar, sampah, serta ketertiban pengunjung objek wisata.',
+    qw4Emphasis:
+      'Pastikan setiap panggilan 110 didatangi dan sosialisasikan kanal 110 di balai desa/kelurahan serta rumah ibadah.',
+    qw7Emphasis:
+      'Bhabinkamtibmas bersama aparat desa/kelurahan dan tokoh masyarakat menghidupkan kembali ronda malam.',
+    qw8Emphasis:
+      'Labfor, Inafis dan Dokpol siap untuk kejadian di objek wisata alam; percepat identifikasi korban.',
+  },
+}
+
+function regionCopy(data: Data): RegionalCopy {
+  return REGIONAL_COPY[data.region]
 }
 
 function codeRows(data: Data, code: string): number {
@@ -1235,12 +1291,13 @@ function buildKumpulBersama(data: Data): LayoutPage {
   const page = newPage(3)
   addHeader(page, data.frame)
   addFooter(page, data.frame, 3)
+  const copy = regionCopy(data)
   const start = addSectionHeading(
     page,
     26,
     'Kumpul Bersama Masyarakat',
     'Dialog dengan Warga dan Komunitas',
-    `Tercatat ${fmt(codeRows(data, 'QW1.4'))} kegiatan dialog bersama desa adat, paguyuban, nelayan, ojek, dan pelaku wisata. Peta titik koordinat, laporan khusus hari Rabu, laporan di luar jadwal, dan suara warga dirangkum pada halaman ini.`,
+    `Tercatat ${fmt(codeRows(data, 'QW1.4'))} kegiatan dialog bersama ${copy.kumpulPartners}. Peta titik koordinat, laporan khusus hari Rabu, laporan di luar jadwal, dan suara warga dirangkum pada halaman ini.`,
   )
   const program = codeProgram(data, 'QW1.4')
   const scheduleInfo = schedule(data, 'QW1.4')
@@ -2006,10 +2063,17 @@ function buildWorship(
             detail: 'gereja dikunjungi',
           },
           {
-            label: 'Lokasi pura',
-            value: fmt(breakdownValue(programInfo, ['jenis-ibadah'], ['pura'])),
+            label: data.region === 'jateng' ? 'Lokasi wihara/klenteng' : 'Lokasi pura',
+            value: fmt(
+              breakdownValue(
+                programInfo,
+                ['jenis-ibadah'],
+                data.region === 'jateng' ? ['vihara', 'wihara', 'klenteng'] : ['pura'],
+              ),
+            ),
             unit: 'lokasi',
-            detail: 'pura dikunjungi',
+            detail:
+              data.region === 'jateng' ? 'wihara/klenteng dikunjungi' : 'pura dikunjungi',
           },
         ]
       : []
@@ -2172,7 +2236,6 @@ const followTitleByKey: Record<string, string> = {
   bullying: 'Perundungan pelajar',
   waste: 'Sampah dan kebersihan',
   online: 'Penipuan daring',
-  tourists: 'Wisatawan asing',
   youth: 'Knalpot brong dan balap liar',
   jobs: 'Lowongan kerja',
 }
@@ -2184,7 +2247,6 @@ const followPlanByKey: Record<string, string> = {
   bullying: 'Edukasi anti perundungan dan pemantauan geng pelajar di sekolah',
   waste: 'Jadwalkan Green Policing rutin dan kerja bakti saluran air',
   online: 'Perluas edukasi judi daring dan penipuan, dampingi korban',
-  tourists: 'Tertibkan wisatawan asing bersama desa adat dan pemandu',
   youth: 'Razia miras dan patroli titik kumpul remaja',
   jobs: 'Buka lowongan, pelatihan kerja dan pendampingan UMKM',
 }
@@ -2194,12 +2256,17 @@ const dayMonthLongFormatter = new Intl.DateTimeFormat('id-ID', {
   month: 'long',
 })
 
-function aspirationFollowTitle(key: string, fallback: string): string {
+function aspirationFollowTitle(data: Data, key: string, fallback: string): string {
+  if (key === 'tourists') return regionCopy(data).touristsTitle
   return followTitleByKey[key] ?? fallback
 }
 
-function aspirationFollowPlan(theme: AspirationThemeRow): string {
-  return followPlanByKey[theme.key] ?? 'Tindak lanjuti aspirasi warga sesuai hasil forum dan laporan satuan'
+function aspirationFollowPlan(data: Data, theme: AspirationThemeRow): string {
+  if (theme.key === 'tourists') return regionCopy(data).touristsPlan
+  return (
+    followPlanByKey[theme.key] ??
+    'Tindak lanjuti aspirasi warga sesuai hasil forum dan laporan satuan'
+  )
 }
 
 function aspirationFollowDescription(
@@ -2222,7 +2289,7 @@ function aspirationFollowDescription(
     case 'online':
       return `${fmt(codeRows(data, 'QW4.3'))} panggilan 110 dan ${fmt(codeRows(data, 'QW3.2'))} layanan aduan penipuan; edukasi judi daring dan penipuan masih perlu diperluas.`
     case 'tourists':
-      return `${fmt(codeRows(data, 'QW1.6'))} kegiatan Jumat Keliling dan ${fmt(codeRows(data, 'QW1.8'))} Minggu Kasih menjangkau warga dan wisatawan di ${region}.`
+      return `${fmt(codeRows(data, 'QW1.6'))} kegiatan Jumat Keliling dan ${fmt(codeRows(data, 'QW1.8'))} Minggu Kasih menjangkau ${regionCopy(data).touristsAudience} di ${region}.`
     case 'youth':
       return `${fmt(codeRows(data, 'QW1.10'))} laporan patroli dan ${fmt(codeRows(data, 'QW1.9'))} Patroli Siaga Reserse; titik kumpul remaja dan balap liar perlu dipantau malam.`
     case 'jobs':
@@ -2336,7 +2403,7 @@ function buildAspirationFollowUp(data: Data): LayoutPage {
   const plans = [...displayThemes]
     .sort((left, right) => right.count - left.count)
     .slice(0, 4)
-    .map((theme) => aspirationFollowPlan(theme))
+    .map((theme) => aspirationFollowPlan(data, theme))
   const fallbackPlans = [
     'Lengkapi cakupan Poliran dan Minggu Kasih di seluruh Polsek',
     'Tetapkan kawasan rawan narkoba bersama BNN dan pemerintah daerah',
@@ -2440,7 +2507,7 @@ function buildAspirationFollowUp(data: Data): LayoutPage {
     text(
       page,
       { x: rowX + 18, y: y + 2.4, width: 140, height: 4.4 },
-      aspirationFollowTitle(theme.key, theme.label),
+      aspirationFollowTitle(data, theme.key, theme.label),
       { size: 7.4, bold: true, color: FOREST },
     )
     text(
@@ -2520,12 +2587,12 @@ function buildAspirationsPage(data: Data): LayoutPage {
   const page = newPage(10)
   addHeader(page, data.frame)
   addFooter(page, data.frame, 10)
+  const copy = regionCopy(data)
   const info = data.aspirations
   const total = info?.total ?? data.metrics.aspirations.total
   const themes = info?.themes ?? []
   const topPolres = (info?.top_polres ?? []).map((item) => item.label)
-  const subtitle =
-    'Keluhan warga Bali pekan ini: lalu lintas dan knalpot brong, pencurian dan begal, narkoba dan vape pelajar, sampah, serta wisatawan asing.'
+  const subtitle = copy.aspirationsSubtitle
   text(
     page,
     { x: 14, y: 26, width: 182, height: 5 },
@@ -2578,7 +2645,7 @@ function buildAspirationsPage(data: Data): LayoutPage {
     bullying: 'Perundungan',
     waste: 'Sampah & saluran',
     online: 'Judi & penipuan',
-    tourists: 'Wisatawan asing',
+    tourists: copy.touristsShort,
     youth: 'Remaja & miras',
     jobs: 'Lowongan kerja',
   }
@@ -2683,11 +2750,11 @@ function buildAspirationsPage(data: Data): LayoutPage {
     },
     online: {
       icon: 'smartphone',
-      text: 'Edukasi hoaks dan judi daring di banjar dan rumah ibadah',
+      text: copy.onlinePlan,
     },
     tourists: {
       icon: 'plane',
-      text: 'Edukasi tertib berlalu lintas bagi wisatawan asing bersama desa adat',
+      text: copy.touristsPlan,
     },
     youth: {
       icon: 'users-round',
@@ -3152,6 +3219,7 @@ function centralNote(data: Data, group: string): string {
 }
 
 function centralEmphasis(data: Data, group: string): string {
+  const copy = regionCopy(data)
   const topPolres =
     data.aspirations?.top_polres?.[0]?.label ??
     data.metrics.by_polres[0]?.label ??
@@ -3164,15 +3232,15 @@ function centralEmphasis(data: Data, group: string): string {
     case 'QW3':
       return 'Tindak lanjuti situs judi dan tawarkan pendampingan kepada setiap korban penipuan daring.'
     case 'QW4':
-      return 'Pastikan setiap panggilan 110 didatangi dan sosialisasikan kanal 110 di banjar serta rumah ibadah.'
+      return copy.qw4Emphasis
     case 'QW5':
       return 'SP2HP tepat waktu dan pastikan setiap laporan warga mendapat kepastian tindak lanjut.'
     case 'QW6':
       return 'Jawab kebutuhan kanal pengaduan; pastikan layanan bebas pungli dan transparan.'
     case 'QW7':
-      return 'Bhabinkamtibmas bersama desa adat dan pecalang menghidupkan kembali ronda malam.'
+      return copy.qw7Emphasis
     case 'QW8':
-      return 'Labfor, Inafis dan Dokpol siap untuk kejadian di objek wisata alam; percepat identifikasi korban, termasuk WNA.'
+      return copy.qw8Emphasis
     default:
       return 'Tindak lanjuti temuan lapangan sesuai arahan pimpinan.'
   }
@@ -3427,6 +3495,7 @@ export function buildWeeklyReportTemplate(input: WeeklyTemplateInput): ReportLay
     coverage,
     detail,
     frame,
+    region: input.mapRegion ?? 'bali',
     mapImageSrc: input.mapImageSrc ?? '',
     kumpulMapImageSrc: input.kumpulMapImageSrc ?? '',
     greenMapImageSrc: input.greenMapImageSrc ?? '',

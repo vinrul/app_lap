@@ -672,11 +672,17 @@ export interface RapidInputSuspect {
   rows: BotSuspectRow[]
 }
 
+export interface MaterialUnitCount {
+  satuan: string
+  rows: number
+}
+
 export interface RepeatedMaterialSuspect {
   activity: string
   report_count: number
   unit_count: number
   units: string[]
+  unit_counts?: MaterialUnitCount[]
   sample: string
   source_rows: number[]
   rows: BotSuspectRow[]

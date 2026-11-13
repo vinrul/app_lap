@@ -6,10 +6,12 @@
 
   type Props = {
     suspect?: RapidInputSuspect | null
+    related?: RapidInputSuspect[]
+    onpick?: (item: RapidInputSuspect) => void
     onclose: () => void
   }
 
-  let { suspect = null, onclose }: Props = $props()
+  let { suspect = null, related = [], onpick, onclose }: Props = $props()
 
   const open = $derived(Boolean(suspect))
   const title = $derived(suspect ? `Input cepat · ${suspect.satuan}` : 'Input cepat')
@@ -54,6 +56,53 @@
       <p class="text-[11px] leading-relaxed text-ink-muted">
         {suspect.activities.join(' · ')}
       </p>
+
+      {#if related.length}
+        <div>
+          <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">
+              Satuan lain pada tanggal yang sama
+            </p>
+            <span class="text-[10px] text-ink-muted">
+              {related.length} satuan juga perlu diperiksa
+            </span>
+          </div>
+          <div class="mt-1 max-h-52 overflow-auto rounded-xl border border-red-200">
+            <table class="min-w-full text-left text-[11px]">
+              <thead class="sticky top-0 z-10 bg-red-50 text-[9px] tracking-[0.08em] text-red-700 uppercase">
+                <tr>
+                  <th class="px-3 py-2">Satuan</th>
+                  <th class="px-3 py-2 text-right">Laporan</th>
+                  <th class="whitespace-nowrap px-3 py-2">Jendela</th>
+                  <th class="px-3 py-2 text-right">Menit sama</th>
+                  <th class="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-line">
+                {#each related as item (item.satuan + item.tanggal)}
+                  <tr class="hover:bg-red-50/40">
+                    <td class="px-3 py-1.5 font-medium break-words text-ink">{item.satuan}</td>
+                    <td class="px-3 py-1.5 text-right font-semibold text-ink">{item.report_count}</td>
+                    <td class="whitespace-nowrap px-3 py-1.5 text-ink-muted">{formatWindow(item.window_seconds)}</td>
+                    <td class="px-3 py-1.5 text-right text-ink-muted">{item.same_minute_count}</td>
+                    <td class="px-3 py-1.5 text-right">
+                      {#if onpick}
+                        <button
+                          type="button"
+                          class="text-[10px] font-semibold text-red-700 hover:underline"
+                          onclick={() => onpick?.(item)}
+                        >
+                          Periksa
+                        </button>
+                      {/if}
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      {/if}
 
       <div class="max-h-[55vh] overflow-auto rounded-xl border border-line">
         <table class="min-w-[900px] text-left text-[11px]">

@@ -39,10 +39,33 @@
       </div>
 
       <div>
-        <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">Satuan yang memakai materi ini</p>
-        <p class="mt-1 max-h-28 overflow-auto rounded-xl border border-line bg-stone-50/60 p-3 text-[11px] leading-relaxed break-words text-ink-soft">
-          {suspect.units.join(', ')}
+        <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">
+          Satuan yang memakai materi ini · {suspect.unit_count}
         </p>
+        {#if suspect.unit_counts?.length}
+          <div class="mt-1 max-h-52 overflow-auto rounded-xl border border-line">
+            <table class="min-w-full text-left text-[11px]">
+              <thead class="sticky top-0 z-10 bg-stone-50 text-[9px] tracking-[0.08em] text-ink-muted uppercase">
+                <tr>
+                  <th class="px-3 py-2">Satuan</th>
+                  <th class="w-24 px-3 py-2 text-right">Baris</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-line">
+                {#each suspect.unit_counts as unit (unit.satuan)}
+                  <tr class="hover:bg-stone-50/60">
+                    <td class="px-3 py-1.5 break-words text-ink">{unit.satuan}</td>
+                    <td class="px-3 py-1.5 text-right font-semibold text-ink">{unit.rows}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {:else}
+          <p class="mt-1 max-h-28 overflow-auto rounded-xl border border-line bg-stone-50/60 p-3 text-[11px] leading-relaxed break-words text-ink-soft">
+            {suspect.units.join(', ')}
+          </p>
+        {/if}
       </div>
 
       <div>

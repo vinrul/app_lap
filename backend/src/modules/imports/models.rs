@@ -191,10 +191,18 @@ pub struct RepeatedMaterialSuspect {
     pub report_count: usize,
     pub unit_count: usize,
     pub units: Vec<String>,
+    /// Jumlah baris per satuan yang memakai materi ini.
+    pub unit_counts: Vec<MaterialUnitCount>,
     pub sample: String,
     pub source_rows: Vec<i64>,
     /// Rincian baris (dibatasi) untuk dialog pemeriksaan.
     pub rows: Vec<BotSuspectRow>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MaterialUnitCount {
+    pub satuan: String,
+    pub rows: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]

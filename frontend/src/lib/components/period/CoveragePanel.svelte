@@ -53,6 +53,13 @@
   const botDetection = $derived(data?.bot_detection ?? emptyBotDetection)
   let botSuspect = $state<RapidInputSuspect | null>(null)
   let materialSuspect = $state<RepeatedMaterialSuspect | null>(null)
+  const relatedRapid = $derived.by(() => {
+    const current = botSuspect
+    if (!current) return []
+    return botDetection.rapid_input.filter(
+      (item) => item !== current && item.tanggal === current.tanggal,
+    )
+  })
   let metrics = $state<ReportMetrics | null>(null)
   let loading = $state(true)
   let error = $state('')
@@ -802,7 +809,7 @@
                     {/if}
                     <p class="mt-1 line-clamp-2 text-[10px] text-ink-soft">{item.activities.join(' · ')}</p>
                     <p class="mt-1 text-[9px] text-ink-muted">
-                      Baris {item.source_rows.join(', ')}{#if item.source_rows.length >= 12}…{/if}
+                      Baris {item.source_rows.join(', ')}{#if item.report_count > item.source_rows.length} · +{item.report_count - item.source_rows.length} baris lain{/if}
                     </p>
                     <span class="mt-1 inline-block text-[10px] font-semibold text-red-700">Lihat rincian →</span>
                   </button>
@@ -830,11 +837,11 @@
                       <span class="badge badge-danger shrink-0">{item.report_count} baris</span>
                     </div>
                     <p class="mt-1 text-[10px] text-ink-muted">
-                      {item.unit_count} satuan: {item.units.slice(0, 5).join(', ')}{#if item.unit_count > 5} +{item.unit_count - 5}{/if}
+                      {item.unit_count} satuan: {item.units.slice(0, 5).join(', ')}{#if item.unit_count > 5} · +{item.unit_count - 5} satuan lain{/if}
                     </p>
                     <p class="mt-1 line-clamp-2 text-[10px] text-ink-soft">“{item.sample}”</p>
                     <p class="mt-1 text-[9px] text-ink-muted">
-                      Baris {item.source_rows.join(', ')}{#if item.source_rows.length >= 12}…{/if}
+                      Baris {item.source_rows.join(', ')}{#if item.report_count > item.source_rows.length} · +{item.report_count - item.source_rows.length} baris lain{/if}
                     </p>
                     <span class="mt-1 inline-block text-[10px] font-semibold text-red-700">Lihat rincian →</span>
                   </button>
@@ -1553,5 +1560,10 @@
   {/if}
 </Modal>
 
-<BotSuspectDialog suspect={botSuspect} onclose={() => (botSuspect = null)} />
+<BotSuspectDialog
+  suspect={botSuspect}
+  related={relatedRapid}
+  onpick={(item) => (botSuspect = item)}
+  onclose={() => (botSuspect = null)}
+/>
 <BotMaterialDialog suspect={materialSuspect} onclose={() => (materialSuspect = null)} />

@@ -3053,6 +3053,7 @@
         metrics: metricsData,
         coverage: coverageData,
         detail,
+        mapRegion: meta.data?.map_region ?? 'bali',
         mapImageSrc,
         kumpulMapImageSrc,
         greenMapImageSrc,

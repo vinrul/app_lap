@@ -1754,7 +1754,7 @@ const ASPIRATION_THEME_DEFS: &[AspirationThemeDef] = &[
     },
     AspirationThemeDef {
         key: "tourists",
-        label: "Wisatawan asing melanggar lalu lintas",
+        label: "Pengunjung objek wisata melanggar lalu lintas",
         keywords: &["wisatawan", "turis", "asing"],
     },
     AspirationThemeDef {
