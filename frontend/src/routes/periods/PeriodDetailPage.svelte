@@ -25,6 +25,7 @@
   import PeriodFormModal from '../../lib/components/period/PeriodFormModal.svelte'
   import PeriodOverview from '../../lib/components/period/PeriodOverview.svelte'
   import AnalysisPanel from '../../lib/components/period/AnalysisPanel.svelte'
+  import AnevPanel from '../../lib/components/period/AnevPanel.svelte'
   import CoveragePanel from '../../lib/components/period/CoveragePanel.svelte'
   import RecordsPanel from '../../lib/components/period/RecordsPanel.svelte'
   import DesignPanel from '../../lib/components/period/DesignPanel.svelte'
@@ -49,7 +50,7 @@
   const reader = $derived(auth.user?.role === 'polres' || auth.user?.role === 'polda')
 
   const activeTab = $derived(
-    ['overview', 'analysis', 'coverage', 'records', 'design', 'documents', 'documentation'].includes(tab) &&
+    ['overview', 'analysis', 'coverage', 'anev', 'records', 'design', 'documents', 'documentation'].includes(tab) &&
       !hiddenTabs.has(tab) &&
       !(reader && (tab === 'design' || tab === 'documentation'))
       ? tab
@@ -139,6 +140,7 @@
     { id: 'overview', label: 'Ringkasan' },
     { id: 'analysis', label: 'Analisis' },
     { id: 'coverage', label: 'Cakupan' },
+    { id: 'anev', label: 'Anev' },
     { id: 'records', label: 'Data sumber' },
     { id: 'design', label: 'Desain' },
     { id: 'documents', label: 'Dokumen', count: detail?.reports.length ?? 0 },
@@ -240,6 +242,8 @@
     <AnalysisPanel {periodId} />
   {:else if activeTab === 'coverage'}
     <CoveragePanel {periodId} />
+  {:else if activeTab === 'anev'}
+    <AnevPanel {periodId} />
   {:else if activeTab === 'records'}
     <RecordsPanel {periodId} />
   {:else if activeTab === 'design'}

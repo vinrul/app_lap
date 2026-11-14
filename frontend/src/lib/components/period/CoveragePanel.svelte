@@ -7,26 +7,18 @@
     Layers,
     MapPin,
     Rows3,
-    ShieldAlert,
     ShieldCheck,
     Users,
   } from 'lucide-svelte'
   import { importsApi, periodsApi } from '../../api'
   import { errorMessage } from '../../api/client'
   import type {
-    BotDetection,
     CoverageProgram,
     CoverageResponse,
-    CoverageSchedule,
-    CoverageScheduleChild,
-    CoverageScheduleStatus,
-    CoverageScheduleUnit,
     CoverageUnit,
     QuickWinActivity,
     QuickWinDetail,
-    RapidInputSuspect,
     RecordItem,
-    RepeatedMaterialSuspect,
     ReportMetrics,
     UnitBreakdown,
   } from '../../types'
@@ -38,8 +30,6 @@
   import EvidenceList from '../ui/EvidenceList.svelte'
   import LocationMap from '../ui/LocationMap.svelte'
   import Modal from '../ui/Modal.svelte'
-  import BotSuspectDialog from '../ui/BotSuspectDialog.svelte'
-  import BotMaterialDialog from '../ui/BotMaterialDialog.svelte'
 
   type Props = { periodId: string }
   let { periodId }: Props = $props()
@@ -49,25 +39,12 @@
   type ActivityScope = 'polres' | 'satker' | 'masyarakat'
 
   let data = $state<CoverageResponse | null>(null)
-  const emptyBotDetection: BotDetection = { rapid_input: [], repeated_material: [] }
-  const botDetection = $derived(data?.bot_detection ?? emptyBotDetection)
-  let botSuspect = $state<RapidInputSuspect | null>(null)
-  let materialSuspect = $state<RepeatedMaterialSuspect | null>(null)
-  const relatedRapid = $derived.by(() => {
-    const current = botSuspect
-    if (!current) return []
-    return botDetection.rapid_input.filter(
-      (item) => item !== current && item.tanggal === current.tanggal,
-    )
-  })
   let metrics = $state<ReportMetrics | null>(null)
   let loading = $state(true)
   let error = $state('')
   let expandedGroup = $state<string | null>(null)
   let activeGroup = $state('QW1')
   let activeCode = $state('')
-  let scheduleStatus = $state<'' | CoverageScheduleStatus>('')
-  let scheduleScope = $state<'' | 'polres' | 'satker'>('')
   let polresFilter = $state('')
   let polresLoading = $state(false)
   let polresError = $state('')
@@ -209,66 +186,6 @@
   function percent(value: number, total: number): number {
     if (total <= 0) return 0
     return Math.max(0, Math.min(100, Math.round((value / total) * 100)))
-  }
-
-  function formatWindow(seconds: number): string {
-    if (seconds <= 0) return 'kurang dari 1 menit'
-    if (seconds < 60) return `${seconds} detik`
-    const minutes = Math.floor(seconds / 60)
-    const rest = seconds % 60
-    return rest ? `${minutes} menit ${rest} detik` : `${minutes} menit`
-  }
-
-  function formatPace(count: number, seconds: number): string {
-    if (count <= 1) return '—'
-    return `±${Math.max(1, Math.round(seconds / (count - 1)))} detik/laporan`
-  }
-
-  function scheduleUnitsFor(item: CoverageSchedule): CoverageScheduleUnit[] {
-    const units: CoverageScheduleUnit[] = []
-    if (scheduleScope !== 'satker') units.push(...item.polres)
-    if (scheduleScope !== 'polres') units.push(...item.satker)
-    return units
-  }
-
-  function scheduleCount(item: CoverageSchedule, status: CoverageScheduleStatus): number {
-    return scheduleUnitsFor(item).filter((unit) => unit.status === status).length
-  }
-
-  function filterScheduleUnits(units: CoverageScheduleUnit[]): CoverageScheduleUnit[] {
-    return scheduleStatus ? units.filter((unit) => unit.status === scheduleStatus) : units
-  }
-
-  function filterScheduleChildren(children: CoverageScheduleChild[]): CoverageScheduleChild[] {
-    return scheduleStatus ? children.filter((child) => child.status === scheduleStatus) : children
-  }
-
-  function scheduleStatusLabel(status: CoverageScheduleStatus): string {
-    switch (status) {
-      case 'on_time':
-        return 'Sesuai jadwal'
-      case 'off_schedule':
-        return 'Di luar jadwal'
-      case 'missing':
-        return 'Belum melapor'
-      default:
-        return 'Tidak ada jadwal'
-    }
-  }
-
-  function scheduleUnitClass(status: CoverageScheduleStatus): string {
-    const base =
-      'inline-flex items-center rounded-full border px-1.5 py-0.5 text-[9px] font-semibold'
-    switch (status) {
-      case 'on_time':
-        return `${base} border-forest-200 bg-forest-50 text-forest-700`
-      case 'off_schedule':
-        return `${base} border-gold-300 bg-gold-50 text-gold-700`
-      case 'missing':
-        return `${base} border-red-200 bg-red-50 text-red-700`
-      default:
-        return `${base} border-line bg-stone-100 text-ink-muted`
-    }
   }
 
   function formatValue(value: number, unit: string): string {
@@ -468,67 +385,6 @@
   {/if}
 {/snippet}
 
-{#snippet scheduleUnits(items: CoverageScheduleUnit[])}
-  <div class="space-y-1">
-    {#each filterScheduleUnits(items) as unit (unit.label)}
-      <div class="rounded-lg border border-line bg-white px-2 py-1.5">
-        <div class="flex flex-wrap items-center justify-between gap-1">
-          <span class="text-[10px] font-semibold text-ink">{unit.label}</span>
-          <span class={scheduleUnitClass(unit.status)}>{scheduleStatusLabel(unit.status)}</span>
-        </div>
-        {#if unit.on_time_dates.length}
-          <p class="mt-0.5 text-[9px] text-forest-700">Sesuai: {unit.on_time_dates.map(formatDate).join(', ')}</p>
-        {/if}
-        {#if unit.off_schedule_dates.length}
-          <p class="mt-0.5 text-[9px] text-gold-700">Hari laporan: {unit.off_schedule_dates.map(formatDate).join(', ')}</p>
-        {/if}
-        {#if unit.polsek.length || unit.satker.length}
-          <details class="mt-1">
-            <summary class="cursor-pointer text-[9px] font-semibold text-forest-700">Rincian polsek / satker</summary>
-            <div class="mt-1 space-y-1.5 border-t border-line pt-1.5">
-              {#if unit.polsek.length}
-                <div>
-                  <p class="text-[8px] font-bold tracking-[0.1em] text-ink-muted uppercase">Polsek</p>
-                  {#each filterScheduleChildren(unit.polsek) as child (child.label)}
-                    <div class="mt-0.5 rounded-md border border-line bg-stone-50/60 px-1.5 py-1">
-                      <div class="flex flex-wrap items-center justify-between gap-1">
-                        <span class="text-[9px] font-medium text-ink">{child.label}</span>
-                        <span class={scheduleUnitClass(child.status)}>{scheduleStatusLabel(child.status)}</span>
-                      </div>
-                      {#if child.on_time_dates.length}<p class="text-[8px] text-forest-700">Sesuai: {child.on_time_dates.map(formatDate).join(', ')}</p>{/if}
-                      {#if child.off_schedule_dates.length}<p class="text-[8px] text-gold-700">Hari laporan: {child.off_schedule_dates.map(formatDate).join(', ')}</p>{/if}
-                    </div>
-                  {:else}
-                    <p class="mt-0.5 text-[9px] text-ink-muted">Tidak ada polsek pada filter ini.</p>
-                  {/each}
-                </div>
-              {/if}
-              {#if unit.satker.length}
-                <div>
-                  <p class="text-[8px] font-bold tracking-[0.1em] text-ink-muted uppercase">Satker polres</p>
-                  {#each filterScheduleChildren(unit.satker) as child (child.label)}
-                    <div class="mt-0.5 rounded-md border border-line bg-stone-50/60 px-1.5 py-1">
-                      <div class="flex flex-wrap items-center justify-between gap-1">
-                        <span class="text-[9px] font-medium text-ink">{child.label}</span>
-                        <span class={scheduleUnitClass(child.status)}>{scheduleStatusLabel(child.status)}</span>
-                      </div>
-                      {#if child.on_time_dates.length}<p class="text-[8px] text-forest-700">Sesuai: {child.on_time_dates.map(formatDate).join(', ')}</p>{/if}
-                      {#if child.off_schedule_dates.length}<p class="text-[8px] text-gold-700">Hari laporan: {child.off_schedule_dates.map(formatDate).join(', ')}</p>{/if}
-                    </div>
-                  {:else}
-                    <p class="mt-0.5 text-[9px] text-ink-muted">Tidak ada satker pada filter ini.</p>
-                  {/each}
-                </div>
-              {/if}
-            </div>
-          </details>
-        {/if}
-      </div>
-    {:else}
-      <p class="text-[10px] text-ink-muted">Tidak ada unit pada filter ini.</p>
-    {/each}
-  </div>
-{/snippet}
 
 {#snippet unitTable(items: UnitBreakdown[], scope: 'polres' | 'satker', onpick: ((label: string) => void) | null)}
   {#if items.length}
@@ -755,103 +611,6 @@
       </section>
     {/if}
 
-    {#if botDetection.rapid_input.length || botDetection.repeated_material.length}
-      <section class="card overflow-hidden">
-        <div class="panel-heading">
-          <div>
-            <span class="eyebrow flex items-center gap-1.5 text-red-700">
-              <ShieldAlert size={13} /> INDIKASI LAPORAN OTOMATIS
-            </span>
-            <h2 class="panel-title mt-0.5">Input cepat dan materi identik</h2>
-            <p class="mt-1 max-w-3xl text-[10px] leading-relaxed text-ink-muted">
-              Dihitung ulang dari seluruh baris pada periode ini. Indikasi untuk pemeriksaan,
-              bukan penilaian otomatis. Filter polres ikut mempersempit hasil.
-            </p>
-          </div>
-          <div class="flex flex-wrap gap-1.5">
-            {#if botDetection.rapid_input.length}
-              <span class="badge badge-danger">{botDetection.rapid_input.length} satuan input cepat</span>
-            {/if}
-            {#if botDetection.repeated_material.length}
-              <span class="badge badge-danger">{botDetection.repeated_material.length} materi identik</span>
-            {/if}
-          </div>
-        </div>
-
-        <div class="grid gap-4 border-t border-line p-4 {botDetection.rapid_input.length && botDetection.repeated_material.length
-          ? 'xl:grid-cols-2'
-          : ''}">
-          {#if botDetection.rapid_input.length}
-            <div>
-              <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">
-                Input cepat berulang
-              </p>
-              <p class="mt-0.5 text-[10px] text-ink-muted">Klik kartu untuk melihat rincian baris.</p>
-              <div class="mt-2 space-y-2">
-                {#each botDetection.rapid_input as item}
-                  <button
-                    type="button"
-                    class="w-full rounded-xl border border-red-200 bg-red-50/40 px-3 py-2 text-left transition-colors hover:border-red-400 hover:bg-red-50"
-                    title="Lihat rincian baris {item.satuan}"
-                    onclick={() => (botSuspect = item)}
-                  >
-                    <div class="flex items-start justify-between gap-2">
-                      <strong class="text-xs text-ink">{item.satuan}</strong>
-                      <span class="badge badge-danger shrink-0">{item.report_count} laporan</span>
-                    </div>
-                    <p class="mt-1 text-[10px] text-ink-muted">
-                      {formatDate(item.tanggal)} · {item.first_time}–{item.last_time} · {formatWindow(item.window_seconds)} · {formatPace(item.report_count, item.window_seconds)}
-                    </p>
-                    {#if item.same_minute_count > 1}
-                      <p class="mt-0.5 text-[10px] font-medium text-red-700">
-                        {item.same_minute_count} laporan pada menit yang sama
-                      </p>
-                    {/if}
-                    <p class="mt-1 line-clamp-2 text-[10px] text-ink-soft">{item.activities.join(' · ')}</p>
-                    <p class="mt-1 text-[9px] text-ink-muted">
-                      Baris {item.source_rows.join(', ')}{#if item.report_count > item.source_rows.length} · +{item.report_count - item.source_rows.length} baris lain{/if}
-                    </p>
-                    <span class="mt-1 inline-block text-[10px] font-semibold text-red-700">Lihat rincian →</span>
-                  </button>
-                {/each}
-              </div>
-            </div>
-          {/if}
-
-          {#if botDetection.repeated_material.length}
-            <div>
-              <p class="text-[10px] font-bold tracking-[0.12em] text-ink-muted uppercase">
-                Materi identik lintas satuan
-              </p>
-              <p class="mt-0.5 text-[10px] text-ink-muted">Klik kartu untuk melihat rincian baris dan satuan.</p>
-              <div class="mt-2 space-y-2">
-                {#each botDetection.repeated_material as item}
-                  <button
-                    type="button"
-                    class="w-full rounded-xl border border-red-200 bg-red-50/40 px-3 py-2 text-left transition-colors hover:border-red-400 hover:bg-red-50"
-                    title="Lihat rincian materi {item.activity}"
-                    onclick={() => (materialSuspect = item)}
-                  >
-                    <div class="flex items-start justify-between gap-2">
-                      <strong class="text-xs text-ink">{item.activity}</strong>
-                      <span class="badge badge-danger shrink-0">{item.report_count} baris</span>
-                    </div>
-                    <p class="mt-1 text-[10px] text-ink-muted">
-                      {item.unit_count} satuan: {item.units.slice(0, 5).join(', ')}{#if item.unit_count > 5} · +{item.unit_count - 5} satuan lain{/if}
-                    </p>
-                    <p class="mt-1 line-clamp-2 text-[10px] text-ink-soft">“{item.sample}”</p>
-                    <p class="mt-1 text-[9px] text-ink-muted">
-                      Baris {item.source_rows.join(', ')}{#if item.report_count > item.source_rows.length} · +{item.report_count - item.source_rows.length} baris lain{/if}
-                    </p>
-                    <span class="mt-1 inline-block text-[10px] font-semibold text-red-700">Lihat rincian →</span>
-                  </button>
-                {/each}
-              </div>
-            </div>
-          {/if}
-        </div>
-      </section>
-    {/if}
 
     <section class="card overflow-hidden">
       <div class="panel-heading">
@@ -1036,102 +795,6 @@
         </div>
       {/if}
     </section>
-
-      {#if data.schedule?.length}
-        <section class="card overflow-hidden">
-        <div class="px-5 py-4">
-          <div class="flex flex-wrap items-end justify-between gap-3 border-b border-line pb-3">
-            <div>
-              <span class="eyebrow">KEPATUHAN JADWAL</span>
-              <h2 class="panel-title mt-0.5">Jadwal pelaporan QW1.1–QW1.8</h2>
-              <p class="mt-1 max-w-3xl text-[11px] leading-relaxed text-ink-muted">
-                Senin: QW1.1 & QW1.2 · Rabu: QW1.4 · Kamis: QW1.3 · Jumat: QW1.5 & QW1.6 · Sabtu: QW1.7 · Minggu: QW1.8.
-                Laporan pada hari lain dihitung di luar jadwal. Sub-kode lain dapat dilaporkan setiap hari.
-              </p>
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <label class="flex flex-col gap-1">
-                <span class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">Status</span>
-                <select class="input w-44 py-1.5 text-xs" bind:value={scheduleStatus}>
-                  <option value="">Semua status</option>
-                  <option value="on_time">Sesuai jadwal</option>
-                  <option value="off_schedule">Di luar jadwal</option>
-                  <option value="missing">Belum melapor</option>
-                </select>
-              </label>
-              <label class="flex flex-col gap-1">
-                <span class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">Unit</span>
-                <select class="input w-48 py-1.5 text-xs" bind:value={scheduleScope}>
-                  <option value="">{primaryLabel} & {secondaryLower}</option>
-                  <option value="polres">{primaryLabel}</option>
-                  <option value="satker">{secondaryLabel}</option>
-                </select>
-              </label>
-            </div>
-          </div>
-
-          <div class="mt-3 grid gap-3 xl:grid-cols-2">
-            {#each data.schedule.filter((entry) => entry.expected_dates.length) as item (item.code)}
-              <article class="rounded-xl border border-line bg-white p-3.5">
-                <div class="flex flex-wrap items-start justify-between gap-2">
-                  <div class="min-w-0">
-                    <p class="text-sm font-semibold text-ink">
-                      <span class="rounded-md bg-forest-50 px-1.5 py-0.5 text-[10px] font-bold text-forest-700">{item.code}</span>
-                      <span class="ml-1.5 text-[11px] font-normal text-ink-muted">{item.title}</span>
-                    </p>
-                    <p class="mt-1 text-[10px] text-ink-muted">
-                      Jadwal <strong class="text-ink">{item.day}</strong>
-                      {#if item.expected_dates.length}· {item.expected_dates.map(formatDate).join(', ')}{/if}
-                    </p>
-                  </div>
-                  <span class="badge badge-neutral">{item.day}</span>
-                </div>
-
-                <div class="mt-2 flex flex-wrap gap-1.5">
-                  <span class="inline-flex items-center rounded-full border border-forest-200 bg-forest-50 px-1.5 py-0.5 text-[9px] font-semibold text-forest-700">
-                    {scheduleCount(item, 'on_time')} sesuai
-                  </span>
-                  <span class="inline-flex items-center rounded-full border border-gold-300 bg-gold-50 px-1.5 py-0.5 text-[9px] font-semibold text-gold-700">
-                    {scheduleCount(item, 'off_schedule')} di luar
-                  </span>
-                  <span class="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-1.5 py-0.5 text-[9px] font-semibold text-red-700">
-                    {scheduleCount(item, 'missing')} belum
-                  </span>
-                </div>
-
-                {#if item.expected_dates.length === 0}
-                  <p class="mt-2 text-[10px] text-ink-muted">
-                    Tidak ada hari {item.day} pada periode ini; kepatuhan tidak dapat dinilai.
-                  </p>
-                {:else}
-                  <details class="mt-2" open={scheduleStatus !== ''}>
-                    <summary class="cursor-pointer text-[10px] font-semibold text-forest-700">Lihat unit</summary>
-                    <div class="mt-2 grid gap-2 sm:grid-cols-2">
-                      {#if scheduleScope !== 'satker'}
-                        <div>
-                          <p class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">{primaryLabel}</p>
-                          <div class="mt-1">{@render scheduleUnits(item.polres)}</div>
-                        </div>
-                      {/if}
-                      {#if scheduleScope !== 'polres'}
-                        <div>
-                          <p class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">{secondaryLabel}</p>
-                          <div class="mt-1">{@render scheduleUnits(item.satker)}</div>
-                        </div>
-                      {/if}
-                    </div>
-                  </details>
-                {/if}
-              </article>
-            {:else}
-              <p class="rounded-xl border border-dashed border-line bg-white px-3 py-6 text-center text-[11px] text-ink-muted xl:col-span-2">
-                Periode ini tidak memuat hari yang menjadi jadwal QW1.1–QW1.8.
-              </p>
-            {/each}
-          </div>
-        </div>
-        </section>
-      {/if}
 
     {#if (data.media_metrics?.length ?? 0) || (data.media_tables?.length ?? 0)}
       <section class="card overflow-hidden">
@@ -1559,11 +1222,3 @@
     </div>
   {/if}
 </Modal>
-
-<BotSuspectDialog
-  suspect={botSuspect}
-  related={relatedRapid}
-  onpick={(item) => (botSuspect = item)}
-  onclose={() => (botSuspect = null)}
-/>
-<BotMaterialDialog suspect={materialSuspect} onclose={() => (materialSuspect = null)} />

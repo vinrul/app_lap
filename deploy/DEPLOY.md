@@ -605,3 +605,35 @@ ini, restart service lalu **terapkan ulang template mingguan**.
 Gambar peta di desain lama tidak berubah otomatis karena gambar peta diunggah saat
 template diterapkan. Tile OSM tetap diambil lewat proxy backend; bila tile gagal,
 siluet wilayah yang dipilih akan digambar sebagai cadangan.
+
+## 15. Tab Anev dan analisis duplikasi
+
+Restart service setelah memperbarui aplikasi. Migrasi `0016_import_duplicates.sql`
+berjalan otomatis dan menambahkan tabel `import_duplicate_rows` serta kolom
+`imports.duplicates_synced` tanpa mengubah data laporan yang sudah ada.
+
+Tab **Anev** berisi lima sub-tab: Input cepat, Jadwal pelaporan, Duplikasi isian,
+Tautan Drive, dan Materi identik lintas satuan (paling bawah). Empat PDF pemeriksaan
+dapat diunduh langsung (A4 landscape, filter `polres` opsional):
+
+```text
+GET /api/periods/{id}/anev/rapid.pdf
+GET /api/periods/{id}/anev/schedule.pdf
+GET /api/periods/{id}/anev/duplicates.pdf
+GET /api/periods/{id}/anev/drive.pdf
+```
+
+Endpoint pendukung untuk data sub-tab dan penyiapan ulang:
+
+```text
+GET  /api/periods/{id}/anev/indicators?polres=NAMA_POLRES
+POST /api/periods/{id}/anev/rebuild
+```
+
+Impor yang dilakukan sebelum pembaruan ini belum memiliki baris duplikat
+(`duplicates_synced = 0`). Buka **Anev → Duplikasi isian**, lalu klik
+**Siapkan analisis duplikat**. Proses ini membaca kembali workbook asli dari
+`<LAPORAN_DATA_DIR>/imports/` dan hanya mengisi tabel `import_duplicate_rows`;
+baris utama dan angka laporan tidak berubah. Bila workbook asli sudah tidak ada,
+impor ulang berkas tersebut. Untuk banyak import sekaligus, jalankan
+`POST /api/periods/{id}/anev/rebuild` pada periode terkait.

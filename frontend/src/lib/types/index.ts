@@ -693,6 +693,77 @@ export interface BotDetection {
   repeated_material: RepeatedMaterialSuspect[]
 }
 
+export interface AnevRowView {
+  source_row: number
+  tanggal: string
+  satuan: string
+  kode: string
+  kegiatan: string
+  isian_laporan: string
+  bukti_dukung: string
+}
+
+export interface DuplicateUnit {
+  satuan: string
+  rows: number
+  exact_rows: number
+  fuzzy_rows: number
+  exact_percent: number
+  fuzzy_percent: number
+}
+
+export interface DuplicateGroup {
+  satuan: string
+  kode: string
+  kegiatan: string
+  count: number
+  similarity: number
+  sample: string
+  source_rows: number[]
+  rows: AnevRowView[]
+}
+
+export interface DriveUnit {
+  satuan: string
+  rows: number
+  drive_rows: number
+  repeated_rows: number
+  foto_rows: number
+  repeated_foto_rows: number
+}
+
+export interface DriveGroup {
+  drive_id: string
+  link: string
+  count: number
+  units: string[]
+  sample: string
+  source_rows: number[]
+  rows: AnevRowView[]
+}
+
+export interface AnevIndicators {
+  total_rows: number
+  duplicate_ready: boolean
+  pending_imports: string[]
+  duplicate: {
+    units: DuplicateUnit[]
+    exact_groups: DuplicateGroup[]
+    fuzzy_groups: DuplicateGroup[]
+  }
+  drive: {
+    total_drive_rows: number
+    repeated_drive_rows: number
+    foto_drive_rows: number
+    repeated_foto_rows: number
+    distinct_ids: number
+    repeated_ids: number
+    max_reuse: number
+    units: DriveUnit[]
+    groups: DriveGroup[]
+  }
+}
+
 export interface ImportPreview {
   sheet: string
   total_rows: number

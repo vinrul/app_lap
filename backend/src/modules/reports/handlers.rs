@@ -14,6 +14,7 @@ use crate::{
         live::ServerMessage,
         notifications,
         reports::{
+            anev_report, bot_report,
             layout::{
                 DesignSource, DesignTemplateView, ImportMediaRequest, LayoutPatch, LayoutView,
                 MediaFilters, MediaItem, PatchLayoutRequest, SaveLayoutRequest,
@@ -23,7 +24,7 @@ use crate::{
                 DraftView, GenerateReportRequest, PreviewReportRequest, PreviewResponse,
                 PublicShareView, ReportContent, ReportMetrics, ReportShareView, ReportView,
             },
-            service, sources,
+            schedule_report, service, sources,
         },
     },
     state::AppState,
@@ -323,6 +324,123 @@ pub async fn import_media(
     ))
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct AnevReportQuery {
+    pub polres: Option<String>,
+}
+
+pub async fn rapid_bot_report(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+    Query(query): Query<AnevReportQuery>,
+) -> ApiResult<Response> {
+    let scope = user.data_scope();
+    let polres = if scope.is_all() {
+        query
+            .polres
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    } else {
+        None
+    };
+    let (bytes, filename) = bot_report::generate_rapid_pdf(
+        &state.db,
+        &state.config,
+        state.pdf_lock.as_ref(),
+        &period_id,
+        polres,
+        &scope,
+    )
+    .await?;
+    pdf_bytes_response(bytes, &filename, "attachment")
+}
+
+pub async fn schedule_report(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+    Query(query): Query<AnevReportQuery>,
+) -> ApiResult<Response> {
+    let scope = user.data_scope();
+    let polres = if scope.is_all() {
+        query
+            .polres
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    } else {
+        None
+    };
+    let (bytes, filename) = schedule_report::generate_schedule_pdf(
+        &state.db,
+        &state.config,
+        state.pdf_lock.as_ref(),
+        &period_id,
+        polres,
+        &scope,
+    )
+    .await?;
+    pdf_bytes_response(bytes, &filename, "attachment")
+}
+
+pub async fn anev_duplicate_report(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+    Query(query): Query<AnevReportQuery>,
+) -> ApiResult<Response> {
+    let scope = user.data_scope();
+    let polres = if scope.is_all() {
+        query
+            .polres
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    } else {
+        None
+    };
+    let (bytes, filename) = anev_report::generate_duplicate_pdf(
+        &state.db,
+        &state.config,
+        state.pdf_lock.as_ref(),
+        &period_id,
+        polres,
+        &scope,
+    )
+    .await?;
+    pdf_bytes_response(bytes, &filename, "attachment")
+}
+
+pub async fn anev_drive_report(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+    Query(query): Query<AnevReportQuery>,
+) -> ApiResult<Response> {
+    let scope = user.data_scope();
+    let polres = if scope.is_all() {
+        query
+            .polres
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    } else {
+        None
+    };
+    let (bytes, filename) = anev_report::generate_drive_pdf(
+        &state.db,
+        &state.config,
+        state.pdf_lock.as_ref(),
+        &period_id,
+        polres,
+        &scope,
+    )
+    .await?;
+    pdf_bytes_response(bytes, &filename, "attachment")
+}
+
 pub async fn generate(
     State(state): State<AppState>,
     user: AuthUser,
@@ -547,6 +665,14 @@ async fn pdf_response(
     disposition_type: &str,
 ) -> ApiResult<Response> {
     let bytes = tokio::fs::read(path).await.map_err(ApiError::internal)?;
+    pdf_bytes_response(bytes, filename, disposition_type)
+}
+
+fn pdf_bytes_response(
+    bytes: Vec<u8>,
+    filename: &str,
+    disposition_type: &str,
+) -> ApiResult<Response> {
     let disposition =
         HeaderValue::from_str(&format!("{disposition_type}; filename=\"{filename}\""))
             .map_err(ApiError::internal)?;

@@ -19,11 +19,11 @@ use crate::{
             coverage::{self, Scope, UnitMode},
             evidence_store,
             models::{
-                AspirationThemeRow, AspirationsPageResponse, CoverageResponse, EvidenceView,
-                ImportPreview, ImportView, ImportedRow, LeadershipTimelineResponse, ParsedRow,
-                PoliranDay, PoliranSummaryResponse, QuickWinActivity, QuickWinCodeCoverage,
-                QuickWinDetailResponse, QwIssue, QwMapPoint, QwMapResponse, QwTimelineEntry,
-                RecordQuery, RecordView, RecordsResponse, UnitDetailResponse,
+                AspirationThemeRow, AspirationsPageResponse, CoverageResponse, DuplicateRow,
+                EvidenceView, ImportPreview, ImportView, ImportedRow, LeadershipTimelineResponse,
+                ParsedRow, PoliranDay, PoliranSummaryResponse, QuickWinActivity,
+                QuickWinCodeCoverage, QuickWinDetailResponse, QwIssue, QwMapPoint, QwMapResponse,
+                QwTimelineEntry, RecordQuery, RecordView, RecordsResponse, UnitDetailResponse,
             },
             parser, qw,
         },
@@ -273,8 +273,8 @@ async fn persist_import(
     sqlx::query(
         "INSERT INTO imports(
             id, filename, file_hash, stored_path, parser_version, row_count, skipped_rows,
-            duplicate_rows, date_start, date_end, warnings_json, imported_by
-         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            duplicate_rows, date_start, date_end, warnings_json, imported_by, duplicates_synced
+         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1)",
     )
     .bind(import_id)
     .bind(filename)
@@ -377,6 +377,8 @@ async fn persist_import(
         }
     }
 
+    insert_duplicate_rows(&mut tx, import_id, &preview.duplicate_details).await?;
+
     audit::record_tx(
         &mut tx,
         Some(user_id),
@@ -396,6 +398,107 @@ async fn persist_import(
 
     tx.commit().await.map_err(ApiError::internal)?;
     Ok(())
+}
+
+async fn insert_duplicate_rows(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    import_id: &str,
+    rows: &[DuplicateRow],
+) -> ApiResult<()> {
+    for row in rows {
+        sqlx::query(
+            "INSERT INTO import_duplicate_rows(
+                import_id, source_row, tanggal, waktu_kirim_wib, satuan, tingkat, polres,
+                polsek, level, unit, satker, kode, kegiatan, isian_laporan, bukti_dukung,
+                dedupe_key
+             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(import_id)
+        .bind(row.source_row)
+        .bind(&row.tanggal)
+        .bind(&row.waktu_kirim_wib)
+        .bind(&row.satuan)
+        .bind(&row.tingkat)
+        .bind(&row.polres)
+        .bind(&row.polsek)
+        .bind(&row.level)
+        .bind(&row.unit)
+        .bind(&row.satker)
+        .bind(&row.kode)
+        .bind(&row.kegiatan)
+        .bind(&row.isian_laporan)
+        .bind(&row.bukti_dukung)
+        .bind(&row.dedupe_key)
+        .execute(&mut **tx)
+        .await
+        .map_err(ApiError::internal)?;
+    }
+    Ok(())
+}
+
+/// Mengisi ulang baris duplikat untuk import lama dari workbook asli. Dipakai
+/// tombol "Siapkan analisis duplikat" di tab Anev tanpa mengubah data utama.
+pub async fn rebuild_duplicates(
+    db: &SqlitePool,
+    config: &Config,
+    actor_id: &str,
+    import_id: &str,
+) -> ApiResult<usize> {
+    let row = sqlx::query("SELECT filename, stored_path FROM imports WHERE id = ?")
+        .bind(import_id)
+        .fetch_optional(db)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("Import tidak ditemukan."))?;
+    let filename: String = row.get("filename");
+    let stored_path: String = row.get("stored_path");
+    if stored_path.trim().is_empty() {
+        return Err(ApiError::bad_request(
+            "Workbook asli tidak tersimpan; impor ulang berkas untuk menyiapkan analisis duplikat.",
+        ));
+    }
+    let path = Path::new(&stored_path);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        config.data_dir.join(path)
+    };
+    let bytes = tokio::fs::read(&path).await.map_err(|error| {
+        ApiError::not_found(format!(
+            "Workbook asli tidak dapat dibaca ({}): {error}",
+            path.display()
+        ))
+    })?;
+    let preview = preview(bytes).await?;
+
+    let mut tx = db.begin().await.map_err(ApiError::internal)?;
+    sqlx::query("DELETE FROM import_duplicate_rows WHERE import_id = ?")
+        .bind(import_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::internal)?;
+    insert_duplicate_rows(&mut tx, import_id, &preview.duplicate_details).await?;
+    sqlx::query("UPDATE imports SET duplicate_rows = ?, duplicates_synced = 1 WHERE id = ?")
+        .bind(preview.duplicate_details.len() as i64)
+        .bind(import_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::internal)?;
+    audit::record_tx(
+        &mut tx,
+        Some(actor_id),
+        "import.duplicates_rebuild",
+        "import",
+        import_id,
+        serde_json::json!({
+            "filename": filename,
+            "duplicates": preview.duplicate_details.len(),
+        }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::internal)?;
+    cache::invalidate();
+    Ok(preview.duplicate_details.len())
 }
 
 pub async fn load_period_rows(

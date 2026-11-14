@@ -1102,6 +1102,27 @@ pub async fn metrics_for_scope(
     Ok((*metrics).clone())
 }
 
+/// Metrik dan cakupan yang sudah dibatasi ke unit pengguna. Bila filter polres
+/// diisi, cakupan dihitung ulang agar jadwal dan indikasi bot ikut tersaring.
+pub(crate) async fn coverage_for_report(
+    db: &SqlitePool,
+    config: &Config,
+    period_id: &str,
+    polres: Option<&str>,
+    scope: &DataScope,
+) -> ApiResult<(ReportMetrics, imports::models::CoverageResponse)> {
+    let metrics = metrics_for_scope(db, config, period_id, scope).await?;
+    let coverage = match polres {
+        Some(polres) => {
+            imports::service::coverage_for_period(db, period_id, Some(polres), scope).await?
+        }
+        None => metrics.coverage.clone().ok_or_else(|| {
+            ApiError::internal("Cakupan periode tidak tersedia untuk laporan PDF.")
+        })?,
+    };
+    Ok((metrics, coverage))
+}
+
 pub async fn preview_html(
     db: &SqlitePool,
     config: &Config,
@@ -1175,36 +1196,7 @@ pub async fn generate(
             return Err(cancelled_pdf());
         }
         publish_phase(hub, job, "render").await;
-        let output = Command::new(&config.chrome_path)
-            .arg("--headless")
-            .arg("--disable-gpu")
-            .arg("--disable-extensions")
-            .arg("--hide-scrollbars")
-            .arg("--no-first-run")
-            .arg("--no-default-browser-check")
-            .arg(format!("--user-data-dir={}", chrome_dir.display()))
-            .arg("--no-pdf-header-footer")
-            .arg("--run-all-compositor-stages-before-draw")
-            .arg("--virtual-time-budget=2000")
-            .arg(format!("--print-to-pdf={}", pdf_path.display()))
-            .arg(file_url(&html_path))
-            .kill_on_drop(true)
-            .output()
-            .await;
-
-        match output {
-            Ok(output) if output.status.success() => Ok(()),
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(ApiError::internal(format!(
-                    "PDF gagal dibuat oleh Chrome/Edge: {}",
-                    stderr.trim()
-                )))
-            }
-            Err(error) => Err(ApiError::bad_request(format!(
-                "Chrome/Edge tidak dapat dijalankan ({error}). Atur LAPORAN_CHROME ke path chrome.exe atau msedge.exe."
-            ))),
-        }
+        chrome_print_to_pdf(config, &chrome_dir, &html_path, &pdf_path).await
     };
 
     if handle.is_cancelled() {
@@ -1268,6 +1260,80 @@ pub async fn generate(
 
 fn cancelled_pdf() -> ApiError {
     ApiError::bad_request("Pembuatan PDF dibatalkan.")
+}
+
+/// Menulis HTML sementara, mencetaknya lewat Chrome/Edge, lalu mengembalikan isi
+/// PDF. Direktori kerja selalu dibersihkan, termasuk saat pencetakan gagal.
+pub(crate) async fn html_to_pdf_bytes(
+    config: &Config,
+    pdf_lock: &Mutex<()>,
+    period_id: &str,
+    prefix: &str,
+    html: String,
+) -> ApiResult<Vec<u8>> {
+    let report_id = Uuid::new_v4().to_string();
+    let report_dir = config
+        .data_dir
+        .join("reports")
+        .join(period_id)
+        .join(format!("{prefix}-{report_id}"));
+    tokio::fs::create_dir_all(&report_dir)
+        .await
+        .map_err(ApiError::internal)?;
+    let html_path = report_dir.join("report.html");
+    let pdf_path = report_dir.join("report.pdf");
+    let chrome_dir = report_dir.join("chrome");
+
+    let result = async {
+        tokio::fs::write(&html_path, html)
+            .await
+            .map_err(ApiError::internal)?;
+        let _guard = pdf_lock.lock().await;
+        chrome_print_to_pdf(config, &chrome_dir, &html_path, &pdf_path).await?;
+        tokio::fs::read(&pdf_path).await.map_err(ApiError::internal)
+    }
+    .await;
+    let _ = tokio::fs::remove_dir_all(&report_dir).await;
+    result
+}
+
+/// Menjalankan Chrome/Edge headless untuk mencetak satu berkas HTML menjadi PDF.
+pub(crate) async fn chrome_print_to_pdf(
+    config: &Config,
+    chrome_dir: &Path,
+    html_path: &Path,
+    pdf_path: &Path,
+) -> ApiResult<()> {
+    let output = Command::new(&config.chrome_path)
+        .arg("--headless")
+        .arg("--disable-gpu")
+        .arg("--disable-extensions")
+        .arg("--hide-scrollbars")
+        .arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg(format!("--user-data-dir={}", chrome_dir.display()))
+        .arg("--no-pdf-header-footer")
+        .arg("--run-all-compositor-stages-before-draw")
+        .arg("--virtual-time-budget=2000")
+        .arg(format!("--print-to-pdf={}", pdf_path.display()))
+        .arg(file_url(html_path))
+        .kill_on_drop(true)
+        .output()
+        .await;
+
+    match output {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(ApiError::internal(format!(
+                "PDF gagal dibuat oleh Chrome/Edge: {}",
+                stderr.trim()
+            )))
+        }
+        Err(error) => Err(ApiError::bad_request(format!(
+            "Chrome/Edge tidak dapat dijalankan ({error}). Atur LAPORAN_CHROME ke path chrome.exe atau msedge.exe."
+        ))),
+    }
 }
 
 async fn publish_phase(hub: &Hub, job: &str, phase: &str) {

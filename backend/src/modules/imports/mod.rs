@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod anev;
 pub mod bot;
 pub mod coverage;
 pub mod drive;
@@ -26,6 +27,10 @@ pub fn routes() -> Router<AppState> {
         .route("/imports/preview", post(handlers::preview))
         .route("/imports/jobs", get(handlers::running_jobs))
         .route("/imports/{import_id}", delete(handlers::delete_import))
+        .route(
+            "/imports/{import_id}/duplicates/rebuild",
+            post(handlers::rebuild_duplicates),
+        )
         .route("/imports/{import_id}/records", get(handlers::records))
         .route(
             "/imports/{import_id}/evidence/retry",
@@ -50,6 +55,14 @@ pub fn period_routes() -> Router<AppState> {
             get(handlers::aspirations),
         )
         .route("/periods/{period_id}/coverage", get(handlers::coverage))
+        .route(
+            "/periods/{period_id}/anev/indicators",
+            get(handlers::anev_indicators),
+        )
+        .route(
+            "/periods/{period_id}/anev/rebuild",
+            post(handlers::rebuild_anev),
+        )
         .route(
             "/periods/{period_id}/unit-detail",
             get(handlers::unit_detail),

@@ -150,6 +150,29 @@ pub struct ImportPreview {
     pub bot_detection: BotDetection,
     #[serde(skip)]
     pub rows: Vec<ImportedRow>,
+    /// Baris yang tersaring oleh deduplikasi operasional. Disimpan terpisah
+    /// agar analisis Anev dapat memeriksa duplikasi dan tautan berulang.
+    #[serde(skip)]
+    pub duplicate_details: Vec<DuplicateRow>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct DuplicateRow {
+    pub source_row: i64,
+    pub tanggal: String,
+    pub waktu_kirim_wib: String,
+    pub satuan: String,
+    pub tingkat: String,
+    pub polres: String,
+    pub polsek: String,
+    pub level: String,
+    pub unit: String,
+    pub satker: String,
+    pub kode: String,
+    pub kegiatan: String,
+    pub isian_laporan: String,
+    pub bukti_dukung: String,
+    pub dedupe_key: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

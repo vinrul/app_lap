@@ -10,7 +10,7 @@ use crate::{
     modules::{
         auth::{AuthUser, DataScope},
         imports::{
-            evidence,
+            anev, evidence,
             models::{
                 AnalysisResponse, AspirationsPageResponse, CoverageResponse, ImportPreview,
                 ImportView, LeadershipTimelineResponse, PoliranSummaryResponse,
@@ -74,6 +74,16 @@ pub async fn delete_import(
     user.require_admin()?;
     service::delete(&state.db, &state.config, &user.id, &import_id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn rebuild_duplicates(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(import_id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    user.require_writer()?;
+    let count = service::rebuild_duplicates(&state.db, &state.config, &user.id, &import_id).await?;
+    Ok(Json(serde_json::json!({ "duplicates": count })))
 }
 
 pub async fn retry_evidence(
@@ -263,6 +273,38 @@ pub async fn aspirations(
 #[derive(Debug, serde::Deserialize)]
 pub struct CoverageQuery {
     pub polres: Option<String>,
+}
+
+pub async fn anev_indicators(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+    Query(query): Query<CoverageQuery>,
+) -> ApiResult<Json<anev::AnevIndicators>> {
+    let scope = user.data_scope();
+    let polres = if scope.is_all() {
+        query
+            .polres
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    } else {
+        None
+    };
+    Ok(Json(
+        anev::indicators_for_period(&state.db, &period_id, polres, &scope).await?,
+    ))
+}
+
+pub async fn rebuild_anev(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    user.require_writer()?;
+    let duplicates =
+        anev::rebuild_period_duplicates(&state.db, &state.config, &user.id, &period_id).await?;
+    Ok(Json(serde_json::json!({ "duplicates": duplicates })))
 }
 
 pub async fn coverage(

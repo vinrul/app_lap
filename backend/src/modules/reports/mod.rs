@@ -1,3 +1,5 @@
+pub mod anev_report;
+pub mod bot_report;
 pub mod fonts;
 mod handlers;
 pub mod icons;
@@ -5,6 +7,7 @@ pub mod layout;
 pub mod metrics;
 pub mod models;
 pub mod render;
+pub mod schedule_report;
 pub mod service;
 pub mod shapes;
 pub mod sources;
@@ -30,6 +33,22 @@ pub fn period_routes() -> Router<AppState> {
         .route(
             "/periods/{period_id}/reports/preview",
             post(handlers::preview_render),
+        )
+        .route(
+            "/periods/{period_id}/anev/rapid.pdf",
+            get(handlers::rapid_bot_report),
+        )
+        .route(
+            "/periods/{period_id}/anev/schedule.pdf",
+            get(handlers::schedule_report),
+        )
+        .route(
+            "/periods/{period_id}/anev/duplicates.pdf",
+            get(handlers::anev_duplicate_report),
+        )
+        .route(
+            "/periods/{period_id}/anev/drive.pdf",
+            get(handlers::anev_drive_report),
         )
         .route(
             "/periods/{period_id}/reports/{request_id}/cancel",

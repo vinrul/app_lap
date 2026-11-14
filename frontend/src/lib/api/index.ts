@@ -2,6 +2,7 @@ import type {
   AdminSession,
   AdminUser,
   AnalysisResponse,
+  AnevIndicators,
   CoverageResponse,
   Dashboard,
   DesignSource,
@@ -130,6 +131,12 @@ export const importsApi = {
     request<AnalysisResponse>(`/periods/${periodId}/analysis`),
   coverage: (periodId: string, polres?: string) =>
     request<CoverageResponse>(`/periods/${periodId}/coverage${queryString({ polres })}`),
+  anevIndicators: (periodId: string, polres?: string) =>
+    request<AnevIndicators>(`/periods/${periodId}/anev/indicators${queryString({ polres })}`),
+  rebuildAnev: (periodId: string) =>
+    request<{ duplicates: number }>(`/periods/${periodId}/anev/rebuild`, {
+      method: 'POST',
+    }),
   qwMap: (periodId: string) =>
     request<QwMapResponse>(`/periods/${periodId}/qw-map`),
   leadership: (periodId: string) =>
@@ -204,6 +211,14 @@ export const reportsApi = {
     request<{ cancelled: boolean }>(`/periods/${periodId}/reports/${requestId}/cancel`, {
       method: 'POST',
     }),
+  rapidBotReportUrl: (periodId: string, polres?: string) =>
+    `/api/periods/${periodId}/anev/rapid.pdf${queryString({ polres })}`,
+  scheduleReportUrl: (periodId: string, polres?: string) =>
+    `/api/periods/${periodId}/anev/schedule.pdf${queryString({ polres })}`,
+  duplicateReportUrl: (periodId: string, polres?: string) =>
+    `/api/periods/${periodId}/anev/duplicates.pdf${queryString({ polres })}`,
+  driveReportUrl: (periodId: string, polres?: string) =>
+    `/api/periods/${periodId}/anev/drive.pdf${queryString({ polres })}`,
   preview: (periodId: string, content: ReportContent, layout?: ReportLayout) =>
     request<{ html: string }>(`/periods/${periodId}/reports/preview`, {
       method: 'POST',
@@ -342,6 +357,67 @@ export const usersApi = {
       method: 'PATCH',
       body: JSON.stringify(input),
     }),
+}
+
+async function downloadAnevPdf(
+  url: string,
+  fallbackName: string,
+  failureMessage: string,
+): Promise<void> {
+  const response = await fetch(url, { credentials: 'same-origin' })
+  if (!response.ok) {
+    let message = failureMessage
+    try {
+      const payload = (await response.json()) as { error?: string }
+      if (payload.error) message = payload.error
+    } catch {
+      // Pertahankan pesan umum bila respons bukan JSON.
+    }
+    throw new Error(message)
+  }
+  const blob = await response.blob()
+  const disposition = response.headers.get('Content-Disposition') ?? ''
+  const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? fallbackName
+  const objectUrl = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = objectUrl
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(objectUrl)
+}
+
+export function downloadRapidBotReport(periodId: string, polres?: string): Promise<void> {
+  return downloadAnevPdf(
+    reportsApi.rapidBotReportUrl(periodId, polres),
+    'pemeriksaan-input-cepat.pdf',
+    'Laporan PDF input cepat tidak dapat dibuat.',
+  )
+}
+
+export function downloadScheduleReport(periodId: string, polres?: string): Promise<void> {
+  return downloadAnevPdf(
+    reportsApi.scheduleReportUrl(periodId, polres),
+    'jadwal-pelaporan-qw1.pdf',
+    'Laporan PDF jadwal pelaporan tidak dapat dibuat.',
+  )
+}
+
+export function downloadDuplicateReport(periodId: string, polres?: string): Promise<void> {
+  return downloadAnevPdf(
+    reportsApi.duplicateReportUrl(periodId, polres),
+    'pemeriksaan-duplikasi-isian.pdf',
+    'Laporan PDF duplikasi isian tidak dapat dibuat.',
+  )
+}
+
+export function downloadDriveReport(periodId: string, polres?: string): Promise<void> {
+  return downloadAnevPdf(
+    reportsApi.driveReportUrl(periodId, polres),
+    'pemeriksaan-tautan-drive.pdf',
+    'Laporan PDF tautan Drive tidak dapat dibuat.',
+  )
 }
 
 export async function downloadReport(report: ReportView): Promise<void> {

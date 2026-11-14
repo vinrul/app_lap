@@ -10,11 +10,12 @@ use crate::{
     modules::imports::{
         analysis, bot,
         models::{
-            HEADER_ALIASES, HEADERS, ImportPreview, ImportedRow, MAP_HEADERS, REQUIRED_HEADERS,
+            DuplicateRow, HEADER_ALIASES, HEADERS, ImportPreview, ImportedRow, MAP_HEADERS,
+            REQUIRED_HEADERS,
         },
         qw,
     },
-    shared::{LabeledCount, extract_links, normalize_date, parse_fields},
+    shared::{LabeledCount, extract_links, is_noise, normalize_date, parse_fields, satker_label},
 };
 
 const MAX_LISTED_WARNINGS: usize = 60;
@@ -51,6 +52,7 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
             valid_rows: 0,
             skipped_rows: 0,
             duplicate_rows: 0,
+            duplicate_details: Vec::new(),
             unmatched_dates: 0,
             headers: actual_headers,
             errors: missing_headers
@@ -85,6 +87,7 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
     let mut total_rows = 0_usize;
     let mut skipped_rows = 0_usize;
     let mut duplicate_rows = 0_usize;
+    let mut duplicate_details: Vec<DuplicateRow> = Vec::new();
     let mut warnings = Vec::new();
     let mut date_counts = BTreeMap::<String, i64>::new();
     let mut quick_wins = BTreeMap::<String, i64>::new();
@@ -129,8 +132,26 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
         let key = dedupe_key(
             &date, &values[1], &values[2], &values[3], &values[5], &values[6], &values[7],
         );
-        if !seen.insert(key) {
+        if seen.contains(&key) {
             duplicate_rows += 1;
+            let (level, unit) = hierarchy(&values[4], &values[5], &values[6], &values[2]);
+            duplicate_details.push(DuplicateRow {
+                source_row: source_row as i64,
+                tanggal: date,
+                waktu_kirim_wib: values[1].clone(),
+                satuan: values[2].clone(),
+                tingkat: values[3].clone(),
+                polres: values[5].clone(),
+                polsek: values[6].clone(),
+                satker: duplicate_satker(&level, &values[10], &values[12], &unit, &values[2]),
+                level,
+                unit,
+                kode: values[7].clone(),
+                kegiatan: values[8].clone(),
+                isian_laporan: values[17].clone(),
+                bukti_dukung: values[15].clone(),
+                dedupe_key: key,
+            });
             push_warning(
                 &mut warnings,
                 format!(
@@ -139,6 +160,7 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
             );
             continue;
         }
+        seen.insert(key);
 
         let (quick_win, qw_title) = derive_quick_win(&values[9], &values[7]);
         *date_counts.entry(date.clone()).or_default() += 1;
@@ -248,6 +270,7 @@ pub fn parse_workbook(bytes: &[u8]) -> Result<ImportPreview, String> {
         valid_rows: parsed_rows.len(),
         skipped_rows,
         duplicate_rows,
+        duplicate_details,
         unmatched_dates: 0,
         headers: actual_headers,
         missing_headers,
@@ -341,6 +364,29 @@ fn dedupe_key(
         .map(|value| value.trim().to_lowercase())
         .collect::<Vec<_>>()
         .join("|")
+}
+
+fn duplicate_satker(
+    level: &str,
+    pejabat_pelaksana: &str,
+    pelaksana: &str,
+    unit: &str,
+    satuan: &str,
+) -> String {
+    if !level.trim().eq_ignore_ascii_case("polda") {
+        return String::new();
+    }
+    [pejabat_pelaksana, pelaksana, unit, satuan]
+        .into_iter()
+        .find_map(|value| {
+            if is_noise(value) {
+                None
+            } else {
+                let label = satker_label(value);
+                (!label.is_empty()).then_some(label)
+            }
+        })
+        .unwrap_or_default()
 }
 
 fn hierarchy(polda: &str, polres: &str, polsek: &str, satuan: &str) -> (String, String) {
