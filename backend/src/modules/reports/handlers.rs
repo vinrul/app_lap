@@ -14,7 +14,7 @@ use crate::{
         live::ServerMessage,
         notifications,
         reports::{
-            anev_report, bot_report,
+            anev_report, bot_report, deadline_report,
             layout::{
                 DesignSource, DesignTemplateView, ImportMediaRequest, LayoutPatch, LayoutView,
                 MediaFilters, MediaItem, PatchLayoutRequest, SaveLayoutRequest,
@@ -374,6 +374,34 @@ pub async fn schedule_report(
         None
     };
     let (bytes, filename) = schedule_report::generate_schedule_pdf(
+        &state.db,
+        &state.config,
+        state.pdf_lock.as_ref(),
+        &period_id,
+        polres,
+        &scope,
+    )
+    .await?;
+    pdf_bytes_response(bytes, &filename, "attachment")
+}
+
+pub async fn deadline_report(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(period_id): Path<String>,
+    Query(query): Query<AnevReportQuery>,
+) -> ApiResult<Response> {
+    let scope = user.data_scope();
+    let polres = if scope.is_all() {
+        query
+            .polres
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    } else {
+        None
+    };
+    let (bytes, filename) = deadline_report::generate_deadline_pdf(
         &state.db,
         &state.config,
         state.pdf_lock.as_ref(),

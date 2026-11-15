@@ -13,7 +13,7 @@ use crate::{
     error::ApiResult,
     modules::{
         auth::DataScope,
-        imports::models::{BotSuspectRow, RapidInputSuspect},
+        imports::models::{BotSuspectRow, RapidInputRankUnit, RapidInputSuspect},
         reports::{fonts, service},
     },
 };
@@ -27,6 +27,7 @@ pub struct RapidReportData<'a> {
     pub source_filename: &'a str,
     pub filter_polres: &'a str,
     pub suspects: &'a [RapidInputSuspect],
+    pub ranking: &'a [RapidInputRankUnit],
 }
 
 const MONTHS: [&str; 12] = [
@@ -63,6 +64,7 @@ pub async fn generate_rapid_pdf(
         source_filename: &metrics.source_filename,
         filter_polres: &coverage.filter_polres,
         suspects: &coverage.bot_detection.rapid_input,
+        ranking: &coverage.bot_detection.rapid_ranking,
     };
     let html = render_rapid_report(config, &data);
     let bytes = service::html_to_pdf_bytes(config, pdf_lock, period_id, "rapid", html).await?;
@@ -82,6 +84,67 @@ pub fn render_rapid_report(config: &Config, data: &RapidReportData<'_>) -> Strin
         .collect();
     let total_reports: usize = data.suspects.iter().map(|item| item.report_count).sum();
     let total_detail_rows: usize = data.suspects.iter().map(|item| item.rows.len()).sum();
+
+    let ranking_findings: usize = data.ranking.iter().map(|unit| unit.findings).sum();
+    let ranking_reports: usize = data.ranking.iter().map(|unit| unit.reports).sum();
+    let mut ranking_rows = String::new();
+    for (index, unit) in data.ranking.iter().enumerate() {
+        ranking_rows.push_str(&format!(
+            "<tr class=\"{class}\">\
+<td class=\"num\">{number}</td>\
+<td><strong>{label}</strong></td>\
+<td class=\"num\">{findings}</td>\
+<td class=\"num\">{reports}</td>\
+<td class=\"num\">{units}</td>\
+<td class=\"num\">{dates}</td>\
+<td class=\"num\">{max}</td>\
+</tr>",
+            class = if unit.findings == 0 { "muted" } else { "" },
+            number = index + 1,
+            label = escape(&unit.label),
+            findings = unit.findings,
+            reports = unit.reports,
+            units = unit.unit_count,
+            dates = unit.date_count,
+            max = unit.max_reports,
+        ));
+    }
+    let ranking_section = if data.ranking.is_empty() {
+        "<section class=\"ranking-section\"><h2 class=\"section-title\">Peringkat polres</h2>\
+<div class=\"empty\">Tidak ada data polres untuk peringkat pada periode ini.</div></section>"
+            .to_string()
+    } else {
+        format!(
+            "<section class=\"ranking-section\">\
+<h2 class=\"section-title\">Peringkat polres — input cepat berulang</h2>\
+<p class=\"ranking-note\">Temuan adalah kelompok satuan+tanggal yang terindikasi; laporan adalah jumlah laporan dalam seluruh jendela indikasi. Unit = jumlah satuan berbeda; Tanggal = jumlah tanggal berbeda; Maks. laporan = laporan terbanyak dalam satu jendela. Peringkat menghitung seluruh indikasi yang memiliki polres pada periode, sedangkan kartu ringkasan dan tabel di atas menampilkan hingga 20 indikasi teratas. Total: {findings} temuan, {reports} laporan.</p>\
+<table class=\"ranking-table\">\
+<colgroup>\
+<col style=\"width:5%\">\
+<col style=\"width:35%\">\
+<col style=\"width:10%\">\
+<col style=\"width:12%\">\
+<col style=\"width:10%\">\
+<col style=\"width:10%\">\
+<col style=\"width:18%\">\
+</colgroup>\
+<thead><tr>\
+<th class=\"num\">No</th>\
+<th>Polres</th>\
+<th class=\"num\">Temuan</th>\
+<th class=\"num\">Laporan</th>\
+<th class=\"num\">Unit</th>\
+<th class=\"num\">Tanggal</th>\
+<th class=\"num\">Maks. laporan</th>\
+</tr></thead>\
+<tbody>{rows}</tbody>\
+</table>\
+</section>",
+            findings = ranking_findings,
+            reports = ranking_reports,
+            rows = ranking_rows,
+        )
+    };
 
     let mut summary_rows = String::new();
     for (index, item) in data.suspects.iter().enumerate() {
@@ -135,15 +198,13 @@ pub fn render_rapid_report(config: &Config, data: &RapidReportData<'_>) -> Strin
 <col style=\"width:9%\">\
 <col style=\"width:6%\">\
 <col style=\"width:17%\">\
-<col style=\"width:8%\">\
-<col style=\"width:55%\">\
+<col style=\"width:63%\">\
 </colgroup>\
 <thead><tr>\
 <th class=\"num\">Baris</th>\
 <th>Waktu kirim</th>\
 <th>Kode</th>\
 <th>Kegiatan</th>\
-<th>Status</th>\
 <th>Isian laporan</th>\
 </tr></thead>\
 <tbody>{rows}</tbody>\
@@ -251,6 +312,7 @@ pub fn render_rapid_report(config: &Config, data: &RapidReportData<'_>) -> Strin
     </tr></thead>\
     <tbody>{summary_rows}</tbody>\
     </table>\
+    {ranking_section}\
     {empty_state}\
     {details}\
     <p class=\"doc-note\">Laporan ini dihasilkan otomatis oleh {app_name}. Jumlah baris rincian mengikuti data pemeriksaan pada aplikasi; isian laporan ditampilkan ringkas dan teks lengkapnya dapat dibuka pada data periode.</p>\
@@ -270,6 +332,7 @@ pub fn render_rapid_report(config: &Config, data: &RapidReportData<'_>) -> Strin
         rows = total_detail_rows,
         filter = filter,
         summary_rows = summary_rows,
+        ranking_section = ranking_section,
         empty_state = empty_state,
         details = details,
         app_name = escape(&config.app_name),
@@ -283,14 +346,12 @@ fn detail_row(row: &BotSuspectRow) -> String {
 <td>{waktu}</td>\
 <td>{kode}</td>\
 <td>{kegiatan}</td>\
-<td>{status}</td>\
 <td class=\"isian\">{isian}</td>\
 </tr>",
         baris = row.source_row,
         waktu = escape(value_or(&row.waktu_kirim_wib, &row.tanggal)),
         kode = escape(value_or(&row.kode, "—")),
         kegiatan = escape(value_or(&row.kegiatan, "—")),
-        status = escape(value_or(&row.status_penerimaan, "Belum diisi")),
         isian = escape(value_or(&row.isian_laporan, "—")),
     )
 }
@@ -413,6 +474,13 @@ tbody tr:nth-child(even) td { background: var(--panel); }
 .summary-table { font-size: 7.1pt; }
 .summary-table th, .summary-table td { padding: 1mm 1.3mm; }
 .summary-table tbody tr { page-break-inside: avoid; }
+.ranking-section { page-break-before: always; }
+.ranking-note { margin-bottom: 2mm; font-size: 7.2pt; color: var(--soft); }
+.ranking-table { font-size: 7.2pt; }
+.ranking-table thead { display: table-header-group; }
+.ranking-table th, .ranking-table td { padding: 1mm 1.3mm; }
+.ranking-table tbody tr { page-break-inside: avoid; }
+.ranking-table tr.muted td { color: var(--muted); }
 .empty, .empty-cell { padding: 4mm; text-align: center; color: var(--muted); font-style: italic; }
 .detail { page-break-before: always; }
 .detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 5mm; border-bottom: .8pt solid var(--line); padding-bottom: 2.2mm; margin-bottom: 2.2mm; }
@@ -434,12 +502,13 @@ mod tests {
     use super::{RapidReportData, render_rapid_report};
     use crate::{
         config::Config,
-        modules::imports::models::{BotSuspectRow, RapidInputSuspect},
+        modules::imports::models::{BotSuspectRow, RapidInputRankUnit, RapidInputSuspect},
     };
 
     fn sample_suspect() -> RapidInputSuspect {
         RapidInputSuspect {
             satuan: "Polsek Cepat <script>".to_string(),
+            polres: "Polres Contoh".to_string(),
             tanggal: "2026-11-09".to_string(),
             report_count: 8,
             window_seconds: 60,
@@ -465,6 +534,14 @@ mod tests {
     fn renders_landscape_report_with_escaped_details() {
         let config = Config::test_config();
         let suspects = vec![sample_suspect()];
+        let ranking = vec![RapidInputRankUnit {
+            label: "Polres Contoh".to_string(),
+            findings: 1,
+            reports: 8,
+            unit_count: 1,
+            date_count: 1,
+            max_reports: 8,
+        }];
         let data = RapidReportData {
             polda_name: "POLDA JATENG",
             period_label: "9–15 November 2026",
@@ -474,6 +551,7 @@ mod tests {
             source_filename: "contoh.xlsx",
             filter_polres: "",
             suspects: &suspects,
+            ranking: &ranking,
         };
 
         let html = render_rapid_report(&config, &data);
@@ -484,6 +562,10 @@ mod tests {
         assert!(html.contains("08:00–08:01"));
         assert!(html.contains("Isian uji &lt;b&gt;tebal&lt;/b&gt;"));
         assert!(html.contains("minimal 8 laporan"));
+        assert!(!html.contains("<th>Status</th>"));
+        assert!(!html.contains("Diterima"));
+        assert!(html.contains("Peringkat polres"));
+        assert!(html.contains("Polres Contoh"));
     }
 
     #[test]
@@ -498,6 +580,7 @@ mod tests {
             source_filename: "",
             filter_polres: "",
             suspects: &[],
+            ranking: &[],
         };
 
         let html = render_rapid_report(&config, &data);

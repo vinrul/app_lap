@@ -105,14 +105,13 @@
       {/if}
 
       <div class="max-h-[55vh] overflow-auto rounded-xl border border-line">
-        <table class="min-w-[900px] text-left text-[11px]">
+        <table class="min-w-[820px] text-left text-[11px]">
           <thead class="sticky top-0 z-10 bg-stone-50 text-[9px] tracking-[0.08em] text-ink-muted uppercase">
             <tr>
               <th class="whitespace-nowrap px-3 py-2">Baris</th>
               <th class="whitespace-nowrap px-3 py-2">Waktu kirim</th>
               <th class="whitespace-nowrap px-3 py-2">Kode</th>
               <th class="whitespace-nowrap px-3 py-2">Kegiatan</th>
-              <th class="whitespace-nowrap px-3 py-2">Status</th>
               <th class="min-w-[320px] px-3 py-2">Isian laporan</th>
             </tr>
           </thead>
@@ -127,16 +126,15 @@
                   </span>
                 </td>
                 <td class="max-w-[220px] px-3 py-2 text-ink">{row.kegiatan || '—'}</td>
-                <td class="whitespace-nowrap px-3 py-2 text-ink-muted">{row.status_penerimaan || 'Belum diisi'}</td>
                 <td class="px-3 py-2">
-                  <p class="max-w-[520px] whitespace-pre-wrap break-words text-[10px] leading-relaxed text-ink-soft">
+                  <p class="max-w-[620px] whitespace-pre-wrap break-words text-[10px] leading-relaxed text-ink-soft">
                     {row.isian_laporan || '—'}
                   </p>
                 </td>
               </tr>
             {:else}
               <tr>
-                <td class="px-3 py-4 text-ink-muted" colspan="6">Tidak ada rincian baris untuk indikator ini.</td>
+                <td class="px-3 py-4 text-ink-muted" colspan="5">Tidak ada rincian baris untuk indikator ini.</td>
               </tr>
             {/each}
           </tbody>

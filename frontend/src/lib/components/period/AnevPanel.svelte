@@ -11,6 +11,7 @@
   import {
     downloadDriveReport,
     downloadDuplicateReport,
+    downloadDeadlineReport,
     downloadRapidBotReport,
     downloadScheduleReport,
     importsApi,
@@ -20,6 +21,7 @@
     AnevIndicators,
     BotDetection,
     CoverageResponse,
+    CoverageDeadlineUnit,
     CoverageSchedule,
     CoverageScheduleChild,
     CoverageScheduleStatus,
@@ -55,21 +57,44 @@
   let polresRequest = 0
   let scheduleStatus = $state<'' | CoverageScheduleStatus>('')
   let scheduleScope = $state<'' | 'polres' | 'satker'>('')
+  let deadlineFilter = $state<'' | 'findings' | 'clear'>('')
   let botSuspect = $state<RapidInputSuspect | null>(null)
   let materialSuspect = $state<RepeatedMaterialSuspect | null>(null)
   let rapidPdfBusy = $state(false)
   let schedulePdfBusy = $state(false)
+  let deadlinePdfBusy = $state(false)
   let duplicatePdfBusy = $state(false)
   let drivePdfBusy = $state(false)
   let rebuildBusy = $state(false)
 
-  const emptyBotDetection: BotDetection = { rapid_input: [], repeated_material: [] }
+  const emptyBotDetection: BotDetection = {
+    rapid_input: [],
+    rapid_ranking: [],
+    repeated_material: [],
+  }
 
   onMount(load)
 
   const botDetection = $derived(data?.bot_detection ?? emptyBotDetection)
+  const rapidRankingWithFindings = $derived(
+    botDetection.rapid_ranking.filter((unit) => unit.findings > 0).length,
+  )
   const schedules = $derived(data?.schedule ?? [])
   const scheduled = $derived(schedules.filter((item) => item.expected_dates.length))
+  const deadline = $derived(data?.deadline ?? null)
+  const deadlineUnits = $derived(deadline?.units ?? [])
+  const deadlineUnitsWithFindings = $derived(
+    deadlineUnits.filter((unit) => unit.findings > 0).length,
+  )
+  const filteredDeadlineUnits = $derived.by(() => {
+    if (deadlineFilter === 'findings') {
+      return deadlineUnits.filter((unit) => unit.findings > 0)
+    }
+    if (deadlineFilter === 'clear') {
+      return deadlineUnits.filter((unit) => unit.findings === 0)
+    }
+    return deadlineUnits
+  })
   const polresOptions = $derived(data?.polres_options ?? [])
   const activePolres = $derived(data?.filter_polres ?? '')
   const primaryLabel = $derived(activePolres ? 'Polsek' : 'Polres')
@@ -102,17 +127,23 @@
     (indicators?.duplicate.units ?? []).reduce((total, unit) => total + unit.fuzzy_rows, 0),
   )
 
-  const tabs = $derived([
-    { id: 'rapid', label: 'Input cepat', count: botDetection.rapid_input.length },
-    { id: 'schedule', label: 'Jadwal pelaporan', count: scheduled.length },
-    { id: 'duplicate', label: 'Duplikasi isian', count: duplicateUnits.length },
-    { id: 'drive', label: 'Tautan Drive', count: driveUnits.length },
-    {
-      id: 'material',
-      label: 'Materi identik lintas satuan',
-      count: botDetection.repeated_material.length,
-    },
-  ])
+  // Sementara disembunyikan; hapus id dari daftar ini untuk menampilkan kembali.
+  const hiddenAnevTabs: AnevTab[] = ['duplicate', 'drive', 'material']
+  const tabs = $derived(
+    (
+      [
+        { id: 'rapid', label: 'Input cepat', count: botDetection.rapid_input.length },
+        { id: 'schedule', label: 'Jadwal pelaporan', count: scheduled.length },
+        { id: 'duplicate', label: 'Duplikasi isian', count: duplicateUnits.length },
+        { id: 'drive', label: 'Tautan Drive', count: driveUnits.length },
+        {
+          id: 'material',
+          label: 'Materi identik lintas satuan',
+          count: botDetection.repeated_material.length,
+        },
+      ] as { id: AnevTab; label: string; count: number }[]
+    ).filter((tab) => !hiddenAnevTabs.includes(tab.id)),
+  )
 
   async function load() {
     loading = true
@@ -178,6 +209,19 @@
       toast.error(errorMessage(caught))
     } finally {
       schedulePdfBusy = false
+    }
+  }
+
+  async function downloadDeadlinePdf(): Promise<void> {
+    if (deadlinePdfBusy) return
+    deadlinePdfBusy = true
+    try {
+      await downloadDeadlineReport(periodId, polresFilter || undefined)
+      toast.success('Laporan PDF batas waktu berhasil diunduh.')
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    } finally {
+      deadlinePdfBusy = false
     }
   }
 
@@ -279,6 +323,20 @@
       default:
         return `${base} border-line bg-stone-100 text-ink-muted`
     }
+  }
+
+  function deadlineRank(unit: CoverageDeadlineUnit): number {
+    return deadlineUnits.indexOf(unit) + 1
+  }
+
+  function deadlinePercent(unit: CoverageDeadlineUnit): string {
+    if (!unit.rows) return '—'
+    return `${unit.percent.toFixed(2).replace('.', ',')}%`
+  }
+
+  function reportTime(value: string): string {
+    const match = value.match(/(\d{1,2}:\d{2})(?::\d{2})?/)
+    return match ? match[1] : value || '—'
   }
 </script>
 
@@ -515,7 +573,7 @@
             </p>
           </div>
           <div class="flex flex-wrap items-center gap-1.5">
-            <span class="badge badge-danger">{botDetection.rapid_input.length} satuan</span>
+            <span class="badge badge-danger">{botDetection.rapid_input.length} indikasi teratas</span>
             {#if botDetection.rapid_input.length}
               <Button
                 variant="secondary"
@@ -561,6 +619,69 @@
             </p>
           {/each}
         </div>
+      </section>
+
+      <section class="card mt-3 overflow-hidden">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow flex items-center gap-1.5 text-gold-700">
+              <ShieldAlert size={13} /> PERINGKAT POLRES
+            </span>
+            <h2 class="panel-title mt-0.5">Input cepat berulang per polres</h2>
+            <p class="mt-1 max-w-3xl text-[10px] leading-relaxed text-ink-muted">
+              Temuan adalah kelompok satuan+tanggal yang terindikasi; laporan adalah jumlah laporan
+              dalam seluruh jendela indikasi. Peringkat diurutkan dari temuan terbanyak sampai
+              polres tanpa temuan. Kartu di atas menampilkan hingga 20 indikasi teratas, sedangkan
+              tabel ini menghitung seluruh indikasi yang memiliki polres pada periode.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span class="badge badge-danger">{rapidRankingWithFindings} polres</span>
+            <span class="badge badge-neutral">{botDetection.rapid_ranking.length} polres</span>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto border-t border-line">
+          <table class="min-w-full text-left text-[11px]">
+            <thead class="bg-stone-50 text-[9px] tracking-[0.08em] text-ink-muted uppercase">
+              <tr>
+                <th class="px-3 py-2">#</th>
+                <th class="px-3 py-2">Polres</th>
+                <th class="px-3 py-2 text-right">Temuan</th>
+                <th class="px-3 py-2 text-right">Laporan</th>
+                <th class="px-3 py-2 text-right">Unit</th>
+                <th class="px-3 py-2 text-right">Tanggal</th>
+                <th class="px-3 py-2 text-right">Maks. laporan</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-line">
+              {#each botDetection.rapid_ranking as unit, index (unit.label)}
+                <tr class={unit.findings ? '' : 'text-ink-muted'}>
+                  <td class="px-3 py-1.5 text-ink-muted">{index + 1}</td>
+                  <td class="px-3 py-1.5 font-medium">{unit.label}</td>
+                  <td class="px-3 py-1.5 text-right">
+                    {unit.findings ? formatNumber(unit.findings) : 'Tidak ada'}
+                  </td>
+                  <td class="px-3 py-1.5 text-right">{formatNumber(unit.reports)}</td>
+                  <td class="px-3 py-1.5 text-right">{formatNumber(unit.unit_count)}</td>
+                  <td class="px-3 py-1.5 text-right">{formatNumber(unit.date_count)}</td>
+                  <td class="px-3 py-1.5 text-right">
+                    {unit.max_reports ? formatNumber(unit.max_reports) : '—'}
+                  </td>
+                </tr>
+              {:else}
+                <tr>
+                  <td class="px-3 py-4 text-ink-muted" colspan="7">
+                    Tidak ada data polres untuk peringkat pada periode ini.
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        <p class="border-t border-line px-3 py-2 text-[9px] text-ink-muted">
+          Unit = jumlah satuan berbeda; Tanggal = jumlah tanggal berbeda; Maks. laporan = laporan terbanyak dalam satu jendela.
+        </p>
       </section>
     {:else if activeTab === 'schedule'}
       <section class="card overflow-hidden">
@@ -658,6 +779,181 @@
             {/each}
           </div>
         </div>
+      </section>
+
+      <section class="card mt-3 overflow-hidden">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow flex items-center gap-1.5 text-red-700">
+              <AlertCircle size={13} /> BATAS WAKTU LAPORAN
+            </span>
+            <h2 class="panel-title mt-0.5">Temuan batas waktu dan peringkat polres</h2>
+            <p class="mt-1 max-w-3xl text-[10px] leading-relaxed text-ink-muted">
+              Laporan QW1.1–QW1.8 diperiksa terhadap hari dan jam batas.
+              Satu baris yang melewati batas dihitung satu temuan. Peringkat diurutkan dari
+              temuan terbanyak sampai satuan tanpa temuan. Total dan peringkat hanya menghitung
+              satuan tingkat polres; laporan satker Polda tidak diikutkan.
+              Section ini memakai <strong>Tanggal lapor (WIB)</strong>; jadwal di atas memeriksa
+              hari kegiatan. Khusus QW1.7, laporan hari Minggu sampai pukul 08:00 tetap dianggap tepat waktu.
+            </p>
+          </div>
+          {#if deadline}
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span class="badge badge-danger">{formatNumber(deadline.findings)} temuan</span>
+              <span class="badge badge-neutral">{formatNumber(deadline.total_rows)} baris</span>
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={deadlinePdfBusy}
+                onclick={() => void downloadDeadlinePdf()}
+              >
+                <FileDown size={13} /> PDF batas waktu
+              </Button>
+            </div>
+          {/if}
+        </div>
+
+        {#if deadline}
+          <div class="grid gap-2 border-t border-line p-4 sm:grid-cols-2 xl:grid-cols-4">
+            <div class="rounded-xl border border-line bg-white p-3">
+              <span class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">Total temuan</span>
+              <p class="mt-1 text-2xl font-bold text-red-700">{formatNumber(deadline.findings)}</p>
+            </div>
+            <div class="rounded-xl border border-line bg-white p-3">
+              <span class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">Satuan dengan temuan</span>
+              <p class="mt-1 text-2xl font-bold text-gold-700">{formatNumber(deadlineUnitsWithFindings)}</p>
+            </div>
+            <div class="rounded-xl border border-line bg-white p-3">
+              <span class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">Baris diperiksa</span>
+              <p class="mt-1 text-2xl font-bold text-ink">{formatNumber(deadline.total_rows)}</p>
+            </div>
+            <div class="rounded-xl border border-line bg-white p-3">
+              <span class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">Tepat waktu</span>
+              <p class="mt-1 text-2xl font-bold text-forest-700">{deadline.total_rows ? `${deadline.percent.toFixed(2).replace('.', ',')}%` : '—'}</p>
+              <p class="text-[9px] text-ink-muted">{formatNumber(deadline.on_time)} baris</p>
+            </div>
+          </div>
+
+          <div class="border-t border-line px-4 py-4">
+            <h3 class="text-[11px] font-bold tracking-[0.12em] text-ink-muted uppercase">Aturan batas waktu</h3>
+            <div class="mt-2 overflow-x-auto">
+              <table class="min-w-full text-left text-[10px]">
+                <thead class="bg-stone-50 text-[9px] text-ink-muted uppercase">
+                  <tr>
+                    <th class="px-2 py-1.5">Kode</th>
+                    <th class="px-2 py-1.5">Kegiatan</th>
+                    <th class="px-2 py-1.5">Hari batas</th>
+                    <th class="px-2 py-1.5">Jam batas</th>
+                    <th class="px-2 py-1.5">Catatan</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-line">
+                  {#each deadline.rules as rule (rule.code)}
+                    <tr class="align-top">
+                      <td class="whitespace-nowrap px-2 py-1.5">
+                        <span class="rounded-md bg-forest-50 px-1.5 py-0.5 text-[9px] font-bold text-forest-700">{rule.code}</span>
+                      </td>
+                      <td class="px-2 py-1.5">{rule.title}</td>
+                      <td class="whitespace-nowrap px-2 py-1.5">{rule.day}</td>
+                      <td class="whitespace-nowrap px-2 py-1.5 font-semibold">{rule.time}</td>
+                      <td class="px-2 py-1.5 text-ink-muted">{rule.note}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="border-t border-line px-4 py-4">
+            <div class="flex flex-wrap items-end justify-between gap-2">
+              <div>
+                <h3 class="text-[11px] font-bold tracking-[0.12em] text-ink-muted uppercase">Peringkat per polres</h3>
+                <p class="mt-0.5 text-[10px] text-ink-muted">
+                  Klik satuan untuk melihat rincian temuan. Maksimal 50 baris ditampilkan per satuan.
+                </p>
+              </div>
+              <label class="flex flex-col gap-1">
+                <span class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">Tampilkan</span>
+                <select class="input w-44 py-1.5 text-xs" bind:value={deadlineFilter}>
+                  <option value="">Semua satuan</option>
+                  <option value="findings">Ada temuan</option>
+                  <option value="clear">Tanpa temuan</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="mt-3 space-y-1.5">
+              {#each filteredDeadlineUnits as unit (unit.label)}
+                <details class="rounded-xl border border-line bg-white">
+                  <summary class="flex cursor-pointer flex-wrap items-center gap-2 px-3 py-2">
+                    <span class="w-7 text-[10px] font-bold text-ink-muted">#{deadlineRank(unit)}</span>
+                    <span class="min-w-0 flex-1 text-xs font-semibold text-ink">{unit.label}</span>
+                    <span class={unit.findings ? 'badge badge-danger' : 'badge badge-success'}>
+                      {unit.findings
+                        ? `${formatNumber(unit.findings)} temuan`
+                        : unit.rows
+                          ? 'Tidak ada temuan'
+                          : 'Tidak ada laporan'}
+                    </span>
+                    <span class="text-[10px] text-ink-muted">
+                      {formatNumber(unit.rows)} baris · {deadlinePercent(unit)} tepat waktu
+                    </span>
+                  </summary>
+                  <div class="border-t border-line p-3">
+                    {#if unit.codes.length}
+                      <div class="mb-2 flex flex-wrap gap-1">
+                        {#each unit.codes as code (code.code)}
+                          <span class="badge badge-progress">{code.code} · {formatNumber(code.findings)}</span>
+                        {/each}
+                      </div>
+                    {/if}
+                    {#if unit.details.length}
+                      <div class="max-h-72 overflow-auto rounded-lg border border-line">
+                        <table class="min-w-full text-left text-[10px]">
+                          <thead class="sticky top-0 bg-stone-50 text-[9px] text-ink-muted uppercase">
+                            <tr>
+                              <th class="px-2 py-1.5">Baris</th>
+                              <th class="px-2 py-1.5">Tanggal lapor</th>
+                              <th class="px-2 py-1.5">Jam</th>
+                              <th class="px-2 py-1.5">Kode</th>
+                              <th class="px-2 py-1.5">Alasan</th>
+                              <th class="px-2 py-1.5">Kegiatan</th>
+                            </tr>
+                          </thead>
+                          <tbody class="divide-y divide-line">
+                            {#each unit.details as detail, detailIndex (detailIndex)}
+                              <tr class="align-top">
+                                <td class="px-2 py-1.5 font-semibold">{detail.source_row}</td>
+                                <td class="whitespace-nowrap px-2 py-1.5">{formatDate(detail.tanggal)}</td>
+                                <td class="whitespace-nowrap px-2 py-1.5">{reportTime(detail.waktu)}</td>
+                                <td class="whitespace-nowrap px-2 py-1.5">{detail.kode}</td>
+                                <td class="px-2 py-1.5 text-gold-700">{detail.reason}</td>
+                                <td class="max-w-[260px] px-2 py-1.5 text-ink-soft">{detail.kegiatan || '—'}</td>
+                              </tr>
+                            {/each}
+                          </tbody>
+                        </table>
+                      </div>
+                      {#if unit.findings > unit.details.length}
+                        <p class="mt-1 text-[9px] text-ink-muted">
+                          Menampilkan {unit.details.length} dari {formatNumber(unit.findings)} temuan.
+                        </p>
+                      {/if}
+                    {:else}
+                      <p class="text-[10px] text-ink-muted">Tidak ada temuan pada satuan ini.</p>
+                    {/if}
+                  </div>
+                </details>
+              {:else}
+                <p class="rounded-xl border border-dashed border-line px-3 py-5 text-center text-[11px] text-ink-muted">
+                  Tidak ada satuan pada filter ini.
+                </p>
+              {/each}
+            </div>
+          </div>
+        {:else}
+          <p class="p-4 text-[11px] text-ink-muted">Data batas waktu belum tersedia.</p>
+        {/if}
       </section>
     {:else if activeTab === 'duplicate'}
       <section class="card overflow-hidden">

@@ -1,15 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, NaiveDate, NaiveTime};
 
 use crate::{
     modules::imports::{
         bot,
         models::{
-            CoverageBreakdown, CoverageCode, CoverageGroup, CoverageMetric, CoverageProgram,
-            CoverageResponse, CoverageSchedule, CoverageScheduleChild, CoverageScheduleUnit,
-            CoverageTable, CoverageTableRow, CoverageUnit, CoverageUnitCount, CoverageUnitValue,
-            RecordView,
+            CoverageBreakdown, CoverageCode, CoverageDeadlineCode, CoverageDeadlineReport,
+            CoverageDeadlineRow, CoverageDeadlineRule, CoverageDeadlineUnit, CoverageGroup,
+            CoverageMetric, CoverageProgram, CoverageResponse, CoverageSchedule,
+            CoverageScheduleChild, CoverageScheduleUnit, CoverageTable, CoverageTableRow,
+            CoverageUnit, CoverageUnitCount, CoverageUnitValue, RapidInputRankUnit, RecordView,
         },
         qw,
     },
@@ -4011,6 +4012,58 @@ const QW1_SCHEDULE: [(&str, u32); 8] = [
     ("QW1.8", 7),
 ];
 
+/// Batas waktu laporan: kode, hari batas, jam batas, dan penjelasan.
+const DEADLINE_SPECS: [(&str, &str, &str, &str); 8] = [
+    (
+        "QW1.1",
+        "Senin",
+        "08:00",
+        "Laporan maksimal Senin pukul 08:00.",
+    ),
+    (
+        "QW1.2",
+        "Senin",
+        "20:00",
+        "Laporan maksimal Senin pukul 20:00.",
+    ),
+    (
+        "QW1.3",
+        "Kamis",
+        "20:00",
+        "Laporan maksimal Kamis pukul 20:00.",
+    ),
+    (
+        "QW1.4",
+        "Rabu",
+        "20:00",
+        "Laporan maksimal Rabu pukul 20:00.",
+    ),
+    (
+        "QW1.5",
+        "Jumat",
+        "20:00",
+        "Laporan maksimal Jumat pukul 20:00.",
+    ),
+    (
+        "QW1.6",
+        "Jumat",
+        "20:00",
+        "Laporan maksimal Jumat pukul 20:00.",
+    ),
+    (
+        "QW1.7",
+        "Sabtu / Minggu",
+        "08:00",
+        "Kegiatan Sabtu; laporan boleh Minggu sampai pukul 08:00.",
+    ),
+    (
+        "QW1.8",
+        "Minggu",
+        "20:00",
+        "Laporan maksimal Minggu pukul 20:00.",
+    ),
+];
+
 const DAY_NAMES: [&str; 7] = [
     "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu",
 ];
@@ -4194,6 +4247,280 @@ fn build_schedule(
             })
         })
         .collect()
+}
+
+#[derive(Default)]
+struct DeadlineAcc {
+    label: String,
+    rows: i64,
+    on_time: i64,
+    findings: i64,
+    codes: BTreeMap<String, i64>,
+    details: Vec<CoverageDeadlineRow>,
+}
+
+fn build_deadlines(rows: &[RecordView], known: &KnownUnits) -> CoverageDeadlineReport {
+    let mut rules = Vec::new();
+    for (code, day, time, note) in DEADLINE_SPECS {
+        let Some(item) = qw::find(code) else {
+            continue;
+        };
+        rules.push(CoverageDeadlineRule {
+            code: item.code.to_string(),
+            title: item.title.to_string(),
+            day: day.to_string(),
+            time: time.to_string(),
+            note: note.to_string(),
+        });
+    }
+
+    let mut units: BTreeMap<String, DeadlineAcc> = BTreeMap::new();
+    for (key, label) in known.set(Scope::Polres) {
+        units.insert(
+            key.clone(),
+            DeadlineAcc {
+                label: label.clone(),
+                ..DeadlineAcc::default()
+            },
+        );
+    }
+
+    let mut total_rows = 0_i64;
+    let mut total_on_time = 0_i64;
+    let mut total_findings = 0_i64;
+
+    for row in rows {
+        let normalized = qw::normalize(&row.kode);
+        let Some(found) = qw::find(&normalized) else {
+            continue;
+        };
+        if !DEADLINE_SPECS
+            .iter()
+            .any(|(code, _, _, _)| *code == found.code)
+        {
+            continue;
+        }
+        let polres = row.polres.trim();
+        if record_is_polda(row) || is_noise(polres) {
+            continue;
+        }
+        let key = polres.to_lowercase();
+        let acc = units.entry(key).or_insert_with(|| DeadlineAcc {
+            label: polres.to_string(),
+            ..DeadlineAcc::default()
+        });
+        acc.rows += 1;
+        total_rows += 1;
+
+        let (on_time, reason) = deadline_status(found.code, &row.tanggal, &row.waktu_kirim_wib);
+        if on_time {
+            acc.on_time += 1;
+            total_on_time += 1;
+        } else {
+            acc.findings += 1;
+            total_findings += 1;
+            *acc.codes.entry(found.code.to_string()).or_insert(0) += 1;
+            acc.details.push(CoverageDeadlineRow {
+                source_row: row.source_row,
+                tanggal: report_datetime(&row.tanggal, &row.waktu_kirim_wib)
+                    .0
+                    .map(|date| date.format("%Y-%m-%d").to_string())
+                    .unwrap_or_else(|| row.tanggal.clone()),
+                waktu: row.waktu_kirim_wib.clone(),
+                kode: found.code.to_string(),
+                kegiatan: row.kegiatan.clone(),
+                reason,
+            });
+        }
+    }
+
+    let mut list: Vec<CoverageDeadlineUnit> = units
+        .into_values()
+        .map(|mut acc| {
+            let mut codes: Vec<CoverageDeadlineCode> = acc
+                .codes
+                .into_iter()
+                .map(|(code, findings)| CoverageDeadlineCode { code, findings })
+                .collect();
+            codes.sort_by(|left, right| {
+                right
+                    .findings
+                    .cmp(&left.findings)
+                    .then_with(|| left.code.cmp(&right.code))
+            });
+            acc.details.sort_by_key(|row| row.source_row);
+            acc.details.truncate(50);
+            CoverageDeadlineUnit {
+                label: acc.label,
+                rows: acc.rows,
+                on_time: acc.on_time,
+                findings: acc.findings,
+                percent: deadline_percent(acc.on_time, acc.rows),
+                codes,
+                details: acc.details,
+            }
+        })
+        .collect();
+    list.sort_by(|left, right| {
+        right
+            .findings
+            .cmp(&left.findings)
+            .then_with(|| right.rows.cmp(&left.rows))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+
+    CoverageDeadlineReport {
+        rules,
+        total_rows,
+        on_time: total_on_time,
+        findings: total_findings,
+        percent: deadline_percent(total_on_time, total_rows),
+        units: list,
+    }
+}
+
+fn complete_rapid_ranking(ranking: &mut Vec<RapidInputRankUnit>, known: &KnownUnits) {
+    let existing: BTreeSet<String> = ranking
+        .iter()
+        .map(|unit| unit.label.to_lowercase())
+        .collect();
+    for (key, label) in known.set(Scope::Polres) {
+        if existing.contains(key) {
+            continue;
+        }
+        ranking.push(RapidInputRankUnit {
+            label: label.clone(),
+            findings: 0,
+            reports: 0,
+            unit_count: 0,
+            date_count: 0,
+            max_reports: 0,
+        });
+    }
+    ranking.sort_by(|left, right| {
+        right
+            .findings
+            .cmp(&left.findings)
+            .then_with(|| right.reports.cmp(&left.reports))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+}
+
+fn deadline_status(code: &str, tanggal: &str, waktu: &str) -> (bool, String) {
+    let (date, time) = report_datetime(tanggal, waktu);
+    let Some(date) = date else {
+        return (false, "Tanggal lapor tidak terbaca".to_string());
+    };
+    let Some(time) = time else {
+        return (false, "Waktu lapor tidak terbaca".to_string());
+    };
+    let weekday = date.weekday().number_from_monday();
+    let within = |hour: u32, minute: u32| {
+        NaiveTime::from_hms_opt(hour, minute, 0).is_some_and(|limit| time <= limit)
+    };
+    match code {
+        "QW1.1" => {
+            if weekday != 1 {
+                return (false, "Di luar hari Senin".to_string());
+            }
+            if within(8, 0) {
+                (true, String::new())
+            } else {
+                (false, "Melewati batas Senin 08:00".to_string())
+            }
+        }
+        "QW1.2" => {
+            if weekday != 1 {
+                return (false, "Di luar hari Senin".to_string());
+            }
+            if within(20, 0) {
+                (true, String::new())
+            } else {
+                (false, "Melewati batas Senin 20:00".to_string())
+            }
+        }
+        "QW1.3" => {
+            if weekday != 4 {
+                return (false, "Di luar hari Kamis".to_string());
+            }
+            if within(20, 0) {
+                (true, String::new())
+            } else {
+                (false, "Melewati batas Kamis 20:00".to_string())
+            }
+        }
+        "QW1.4" => {
+            if weekday != 3 {
+                return (false, "Di luar hari Rabu".to_string());
+            }
+            if within(20, 0) {
+                (true, String::new())
+            } else {
+                (false, "Melewati batas Rabu 20:00".to_string())
+            }
+        }
+        "QW1.5" | "QW1.6" => {
+            if weekday != 5 {
+                return (false, "Di luar hari Jumat".to_string());
+            }
+            if within(20, 0) {
+                (true, String::new())
+            } else {
+                (false, "Melewati batas Jumat 20:00".to_string())
+            }
+        }
+        "QW1.7" => {
+            if weekday == 6 {
+                (true, String::new())
+            } else if weekday == 7 {
+                if within(8, 0) {
+                    (true, String::new())
+                } else {
+                    (false, "Melewati batas Minggu 08:00".to_string())
+                }
+            } else {
+                (false, "Di luar jadwal Sabtu/Minggu".to_string())
+            }
+        }
+        "QW1.8" => {
+            if weekday != 7 {
+                return (false, "Di luar hari Minggu".to_string());
+            }
+            if within(20, 0) {
+                (true, String::new())
+            } else {
+                (false, "Melewati batas Minggu 20:00".to_string())
+            }
+        }
+        _ => (true, String::new()),
+    }
+}
+
+fn report_datetime(tanggal: &str, waktu: &str) -> (Option<NaiveDate>, Option<NaiveTime>) {
+    let mut date = NaiveDate::parse_from_str(tanggal.trim(), "%Y-%m-%d").ok();
+    let waktu = waktu.trim();
+    if waktu.len() >= 10 {
+        if let Ok(parsed) = NaiveDate::parse_from_str(&waktu[..10], "%Y-%m-%d") {
+            date = Some(parsed);
+        }
+    }
+    let clock = waktu
+        .split_whitespace()
+        .find(|part| part.contains(':'))
+        .unwrap_or("");
+    let clock = clock.split('T').last().unwrap_or(clock);
+    let time = ["%H:%M:%S", "%H:%M"]
+        .iter()
+        .find_map(|format| NaiveTime::parse_from_str(clock, format).ok());
+    (date, time)
+}
+
+fn deadline_percent(on_time: i64, rows: i64) -> f64 {
+    if rows == 0 {
+        0.0
+    } else {
+        (on_time as f64 / rows as f64 * 10000.0).round() / 100.0
+    }
 }
 
 fn schedule_units(
@@ -4504,8 +4831,18 @@ pub fn build_coverage_scoped_with_universe(
         .collect();
     let codes = build_code_programs(rows, &known, mode);
     let schedule = build_schedule(start, end, rows, &schedule_known, mode);
+    let mut deadline_known = KnownUnits::from_rows(rows, UnitMode::Polda);
+    if filter.is_none() {
+        if let Some(universe) = universe {
+            for label in &universe.primary {
+                deadline_known.insert(Scope::Polres, label);
+            }
+        }
+    }
+    let deadline = build_deadlines(rows, &deadline_known);
     let (media_metrics, media_tables) = media_coverage(rows);
-    let bot_detection = bot::detect_records(&rows.iter().collect::<Vec<_>>());
+    let mut bot_detection = bot::detect_records(&rows.iter().collect::<Vec<_>>());
+    complete_rapid_ranking(&mut bot_detection.rapid_ranking, &deadline_known);
 
     CoverageResponse {
         date_start: start.to_string(),
@@ -4529,6 +4866,7 @@ pub fn build_coverage_scoped_with_universe(
         programs,
         codes,
         schedule,
+        deadline,
         media_metrics,
         media_tables,
         bot_detection,
@@ -7753,6 +8091,89 @@ mod tests {
             .unwrap();
         assert_eq!(qw14.day, "Rabu");
         assert_eq!(qw14.expected_dates, vec!["2026-10-21"]);
+    }
+
+    #[test]
+    fn evaluates_report_deadline_rules() {
+        assert!(deadline_status("QW1.1", "2026-10-19", "2026-10-19 07:59").0);
+        assert!(deadline_status("QW1.1", "2026-10-19", "2026-10-19 08:00").0);
+        let (ok, reason) = deadline_status("QW1.1", "2026-10-19", "2026-10-19 08:01");
+        assert!(!ok);
+        assert_eq!(reason, "Melewati batas Senin 08:00");
+        assert!(!deadline_status("QW1.1", "2026-10-20", "2026-10-20 07:00").0);
+
+        assert!(deadline_status("QW1.2", "2026-10-19", "2026-10-19 20:00").0);
+        assert!(!deadline_status("QW1.2", "2026-10-19", "2026-10-19 20:01").0);
+        assert!(deadline_status("QW1.4", "2026-10-21", "2026-10-21 19:30").0);
+        assert!(deadline_status("QW1.3", "2026-10-22", "2026-10-22 19:30").0);
+
+        // QW1.7: kegiatan Sabtu, laporan Sabtu atau Minggu sampai 08:00.
+        assert!(deadline_status("QW1.7", "2026-10-24", "2026-10-24 23:00").0);
+        assert!(deadline_status("QW1.7", "2026-10-24", "2026-10-25 07:59").0);
+        assert!(!deadline_status("QW1.7", "2026-10-24", "2026-10-25 08:01").0);
+        assert!(!deadline_status("QW1.7", "2026-10-24", "2026-10-23 10:00").0);
+
+        let (ok, reason) = deadline_status("QW1.1", "2026-10-19", "");
+        assert!(!ok);
+        assert_eq!(reason, "Waktu lapor tidak terbaca");
+    }
+
+    #[test]
+    fn ranks_deadline_findings_per_polres() {
+        let mut on_time = row("QW1.1", "Polres", "Polres Badung", &[], 1, 0, 0.0, 0);
+        on_time.tanggal = "2026-10-19".into();
+        on_time.waktu_kirim_wib = "2026-10-19 07:00".into();
+        let mut late = row("QW1.1", "Polres", "Polres Tabanan", &[], 1, 0, 0.0, 0);
+        late.tanggal = "2026-10-19".into();
+        late.waktu_kirim_wib = "2026-10-19 08:30".into();
+        let mut late_qw12 = row("QW1.2", "Polres", "Polres Tabanan", &[], 1, 0, 0.0, 0);
+        late_qw12.tanggal = "2026-10-19".into();
+        late_qw12.waktu_kirim_wib = "2026-10-19 20:30".into();
+        let mut ignored_qw4 = row("QW4.1", "Polres", "Polres Tabanan", &[], 1, 0, 0.0, 0);
+        ignored_qw4.tanggal = "2026-10-21".into();
+        ignored_qw4.waktu_kirim_wib = "2026-10-21 20:30".into();
+        let mut ignored = row("QW1.10", "Polres", "Polres Bangli", &[], 1, 0, 0.0, 0);
+        ignored.tanggal = "2026-10-21".into();
+        ignored.waktu_kirim_wib = "2026-10-21 23:00".into();
+        let universe = CoverageUnitUniverse {
+            primary: vec![
+                "Polres Badung".into(),
+                "Polres Tabanan".into(),
+                "Polres Bangli".into(),
+                "Polres Buleleng".into(),
+            ],
+            secondary: Vec::new(),
+        };
+
+        let coverage = build_coverage_scoped_with_universe(
+            "2026-10-19",
+            "2026-10-25",
+            &[on_time, late, late_qw12, ignored_qw4, ignored],
+            None,
+            Some(&universe),
+        );
+        let deadline = coverage.deadline;
+        assert_eq!(deadline.total_rows, 3);
+        assert_eq!(deadline.on_time, 1);
+        assert_eq!(deadline.findings, 2);
+        assert_eq!(deadline.units[0].label, "Polres Tabanan");
+        assert_eq!(deadline.units[0].findings, 2);
+        assert_eq!(deadline.units[0].codes.len(), 2);
+        assert_eq!(deadline.units[0].details.len(), 2);
+
+        let unit = |label: &str| {
+            deadline
+                .units
+                .iter()
+                .find(|unit| unit.label == label)
+                .unwrap()
+        };
+        let badung = unit("Polres Badung");
+        assert_eq!(badung.rows, 1);
+        assert_eq!(badung.findings, 0);
+        assert_eq!(badung.percent, 100.0);
+        assert_eq!(unit("Polres Bangli").rows, 0);
+        assert_eq!(unit("Polres Buleleng").rows, 0);
     }
 
     #[test]

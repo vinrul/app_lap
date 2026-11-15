@@ -178,12 +178,28 @@ pub struct DuplicateRow {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct BotDetection {
     pub rapid_input: Vec<RapidInputSuspect>,
+    /// Peringkat polres dari indikasi input cepat berulang.
+    pub rapid_ranking: Vec<RapidInputRankUnit>,
     pub repeated_material: Vec<RepeatedMaterialSuspect>,
+}
+
+/// Peringkat satu polres pada indikasi input cepat berulang.
+#[derive(Clone, Debug, Serialize)]
+pub struct RapidInputRankUnit {
+    pub label: String,
+    /// Jumlah kelompok satuan+tanggal yang terindikasi.
+    pub findings: usize,
+    /// Jumlah laporan di dalam seluruh jendela indikasi.
+    pub reports: usize,
+    pub unit_count: usize,
+    pub date_count: usize,
+    pub max_reports: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct RapidInputSuspect {
     pub satuan: String,
+    pub polres: String,
     pub tanggal: String,
     pub report_count: usize,
     pub window_seconds: i64,
@@ -538,6 +554,8 @@ pub struct CoverageResponse {
     pub codes: Vec<CoverageProgram>,
     /// Kepatuhan jadwal mingguan untuk QW1.1–QW1.8.
     pub schedule: Vec<CoverageSchedule>,
+    /// Batas waktu laporan dan peringkat temuan per polres.
+    pub deadline: CoverageDeadlineReport,
     /// Ringkasan amplifikasi media dari tautan berita/media sosial.
     pub media_metrics: Vec<CoverageMetric>,
     /// Rekap media per kegiatan dan per satuan.
@@ -584,6 +602,65 @@ pub struct CoverageScheduleChild {
     pub off_schedule_rows: i64,
     pub on_time_dates: Vec<String>,
     pub off_schedule_dates: Vec<String>,
+}
+
+/// Aturan batas waktu laporan untuk satu sub-kode.
+#[derive(Clone, Debug, Serialize)]
+pub struct CoverageDeadlineRule {
+    pub code: String,
+    pub title: String,
+    /// Hari batas, mis. "Senin" atau "Setiap hari".
+    pub day: String,
+    /// Jam batas dalam format HH:MM, mis. "08:00".
+    pub time: String,
+    /// Penjelasan tambahan, mis. pengecualian QW1.7.
+    pub note: String,
+}
+
+/// Jumlah temuan per sub-kode pada satu satuan.
+#[derive(Clone, Debug, Serialize)]
+pub struct CoverageDeadlineCode {
+    pub code: String,
+    pub findings: i64,
+}
+
+/// Satu baris yang melewati batas waktu.
+#[derive(Clone, Debug, Serialize)]
+pub struct CoverageDeadlineRow {
+    pub source_row: i64,
+    pub tanggal: String,
+    pub waktu: String,
+    pub kode: String,
+    pub kegiatan: String,
+    pub reason: String,
+}
+
+/// Kepatuhan batas waktu satu polres, dipakai untuk peringkat.
+#[derive(Clone, Debug, Serialize)]
+pub struct CoverageDeadlineUnit {
+    pub label: String,
+    /// Baris dengan kode yang diperiksa (QW1.1–QW1.8 dan QW4.1–QW4.3).
+    pub rows: i64,
+    pub on_time: i64,
+    pub findings: i64,
+    /// Persentase tepat waktu; 0 bila tidak ada baris.
+    pub percent: f64,
+    /// Temuan per sub-kode, terurut dari terbanyak.
+    pub codes: Vec<CoverageDeadlineCode>,
+    /// Rincian temuan, dibatasi agar respons tetap ringkas.
+    pub details: Vec<CoverageDeadlineRow>,
+}
+
+/// Ringkasan aturan batas waktu dan peringkat temuan per polres.
+#[derive(Clone, Debug, Serialize)]
+pub struct CoverageDeadlineReport {
+    pub rules: Vec<CoverageDeadlineRule>,
+    pub total_rows: i64,
+    pub on_time: i64,
+    pub findings: i64,
+    pub percent: f64,
+    /// Diurutkan dari temuan terbanyak; satuan tanpa temuan tetap ditampilkan.
+    pub units: Vec<CoverageDeadlineUnit>,
 }
 
 #[derive(Clone, Debug, Serialize)]

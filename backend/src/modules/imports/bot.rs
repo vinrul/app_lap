@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{NaiveDate, NaiveDateTime, Timelike};
 use sha2::{Digest, Sha256};
 
 use crate::modules::imports::models::{
-    BotDetection, BotSuspectRow, ImportedRow, MaterialUnitCount, RapidInputSuspect, RecordView,
-    RepeatedMaterialSuspect,
+    BotDetection, BotSuspectRow, ImportedRow, MaterialUnitCount, RapidInputRankUnit,
+    RapidInputSuspect, RecordView, RepeatedMaterialSuspect,
 };
 
 const MAX_RAPID_SUSPECTS: usize = 20;
@@ -94,8 +94,12 @@ impl<'a> BotRow<'a> {
 }
 
 fn detect_rows(rows: &[BotRow<'_>]) -> BotDetection {
+    let mut rapid_input = detect_rapid_input(rows);
+    let rapid_ranking = rank_rapid_input(&rapid_input);
+    rapid_input.truncate(MAX_RAPID_SUSPECTS);
     BotDetection {
-        rapid_input: detect_rapid_input(rows),
+        rapid_input,
+        rapid_ranking,
         repeated_material: detect_repeated_material(rows),
     }
 }
@@ -187,8 +191,16 @@ fn detect_rapid_input(rows: &[BotRow<'_>]) -> Vec<RapidInputSuspect> {
 
         let first = items[window.start].1;
         let last = items[window.end].1;
+        let polres = items[window.start..=window.end]
+            .iter()
+            .find_map(|(index, _)| {
+                let value = rows[*index].polres.trim();
+                (!value.is_empty()).then(|| value.to_string())
+            })
+            .unwrap_or_default();
         suspects.push(RapidInputSuspect {
             satuan,
+            polres,
             tanggal: date.format("%Y-%m-%d").to_string(),
             report_count: window.count,
             window_seconds: window.span_seconds,
@@ -217,8 +229,57 @@ fn detect_rapid_input(rows: &[BotRow<'_>]) -> Vec<RapidInputSuspect> {
             .then_with(|| left.satuan.cmp(&right.satuan))
             .then_with(|| left.tanggal.cmp(&right.tanggal))
     });
-    suspects.truncate(MAX_RAPID_SUSPECTS);
     suspects
+}
+
+#[derive(Default)]
+struct RapidRankAcc {
+    label: String,
+    findings: usize,
+    reports: usize,
+    units: BTreeSet<String>,
+    dates: BTreeSet<String>,
+    max_reports: usize,
+}
+
+fn rank_rapid_input(suspects: &[RapidInputSuspect]) -> Vec<RapidInputRankUnit> {
+    let mut units: BTreeMap<String, RapidRankAcc> = BTreeMap::new();
+    for suspect in suspects {
+        let label = suspect.polres.trim();
+        if label.is_empty() {
+            continue;
+        }
+        let acc = units
+            .entry(label.to_lowercase())
+            .or_insert_with(|| RapidRankAcc {
+                label: label.to_string(),
+                ..RapidRankAcc::default()
+            });
+        acc.findings += 1;
+        acc.reports += suspect.report_count;
+        acc.units.insert(suspect.satuan.clone());
+        acc.dates.insert(suspect.tanggal.clone());
+        acc.max_reports = acc.max_reports.max(suspect.report_count);
+    }
+    let mut ranking: Vec<RapidInputRankUnit> = units
+        .into_values()
+        .map(|acc| RapidInputRankUnit {
+            label: acc.label,
+            findings: acc.findings,
+            reports: acc.reports,
+            unit_count: acc.units.len(),
+            date_count: acc.dates.len(),
+            max_reports: acc.max_reports,
+        })
+        .collect();
+    ranking.sort_by(|left, right| {
+        right
+            .findings
+            .cmp(&left.findings)
+            .then_with(|| right.reports.cmp(&left.reports))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    ranking
 }
 
 #[derive(Default)]
@@ -454,12 +515,21 @@ mod tests {
         assert_eq!(detection.rapid_input.len(), 1);
         let suspect = &detection.rapid_input[0];
         assert_eq!(suspect.satuan, "Polsek Cepat");
+        assert_eq!(suspect.polres, "Polres Contoh");
         assert_eq!(suspect.report_count, 8);
         assert_eq!(suspect.same_minute_count, 4);
         assert_eq!(suspect.window_seconds, 60);
         assert_eq!(suspect.rows.len(), 8);
         assert_eq!(suspect.rows[0].source_row, 1);
         assert_eq!(suspect.rows[0].kode, "QW5.2");
+        assert_eq!(detection.rapid_ranking.len(), 1);
+        let rank = &detection.rapid_ranking[0];
+        assert_eq!(rank.label, "Polres Contoh");
+        assert_eq!(rank.findings, 1);
+        assert_eq!(rank.reports, 8);
+        assert_eq!(rank.unit_count, 1);
+        assert_eq!(rank.date_count, 1);
+        assert_eq!(rank.max_reports, 8);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 pub mod anev_report;
 pub mod bot_report;
+pub mod deadline_report;
 pub mod fonts;
 mod handlers;
 pub mod icons;
@@ -41,6 +42,10 @@ pub fn period_routes() -> Router<AppState> {
         .route(
             "/periods/{period_id}/anev/schedule.pdf",
             get(handlers::schedule_report),
+        )
+        .route(
+            "/periods/{period_id}/anev/deadlines.pdf",
+            get(handlers::deadline_report),
         )
         .route(
             "/periods/{period_id}/anev/duplicates.pdf",

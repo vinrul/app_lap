@@ -215,6 +215,8 @@ export const reportsApi = {
     `/api/periods/${periodId}/anev/rapid.pdf${queryString({ polres })}`,
   scheduleReportUrl: (periodId: string, polres?: string) =>
     `/api/periods/${periodId}/anev/schedule.pdf${queryString({ polres })}`,
+  deadlineReportUrl: (periodId: string, polres?: string) =>
+    `/api/periods/${periodId}/anev/deadlines.pdf${queryString({ polres })}`,
   duplicateReportUrl: (periodId: string, polres?: string) =>
     `/api/periods/${periodId}/anev/duplicates.pdf${queryString({ polres })}`,
   driveReportUrl: (periodId: string, polres?: string) =>
@@ -401,6 +403,14 @@ export function downloadScheduleReport(periodId: string, polres?: string): Promi
     reportsApi.scheduleReportUrl(periodId, polres),
     'jadwal-pelaporan-qw1.pdf',
     'Laporan PDF jadwal pelaporan tidak dapat dibuat.',
+  )
+}
+
+export function downloadDeadlineReport(periodId: string, polres?: string): Promise<void> {
+  return downloadAnevPdf(
+    reportsApi.deadlineReportUrl(periodId, polres),
+    'temuan-batas-waktu.pdf',
+    'Laporan PDF batas waktu tidak dapat dibuat.',
   )
 }
 

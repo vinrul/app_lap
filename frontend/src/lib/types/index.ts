@@ -661,6 +661,7 @@ export interface BotSuspectRow {
 
 export interface RapidInputSuspect {
   satuan: string
+  polres: string
   tanggal: string
   report_count: number
   window_seconds: number
@@ -690,7 +691,17 @@ export interface RepeatedMaterialSuspect {
 
 export interface BotDetection {
   rapid_input: RapidInputSuspect[]
+  rapid_ranking: RapidInputRankUnit[]
   repeated_material: RepeatedMaterialSuspect[]
+}
+
+export interface RapidInputRankUnit {
+  label: string
+  findings: number
+  reports: number
+  unit_count: number
+  date_count: number
+  max_reports: number
 }
 
 export interface AnevRowView {
@@ -1018,6 +1029,7 @@ export interface CoverageResponse {
   programs: CoverageProgram[]
   codes: CoverageProgram[]
   schedule: CoverageSchedule[]
+  deadline: CoverageDeadlineReport
   media_metrics?: CoverageMetric[]
   media_tables?: CoverageTable[]
   bot_detection: BotDetection
@@ -1058,6 +1070,48 @@ export interface CoverageSchedule {
   expected_dates: string[]
   polres: CoverageScheduleUnit[]
   satker: CoverageScheduleUnit[]
+}
+
+/** Aturan batas waktu laporan per sub-kode. */
+export interface CoverageDeadlineRule {
+  code: string
+  title: string
+  day: string
+  time: string
+  note: string
+}
+
+export interface CoverageDeadlineCode {
+  code: string
+  findings: number
+}
+
+export interface CoverageDeadlineRow {
+  source_row: number
+  tanggal: string
+  waktu: string
+  kode: string
+  kegiatan: string
+  reason: string
+}
+
+export interface CoverageDeadlineUnit {
+  label: string
+  rows: number
+  on_time: number
+  findings: number
+  percent: number
+  codes: CoverageDeadlineCode[]
+  details: CoverageDeadlineRow[]
+}
+
+export interface CoverageDeadlineReport {
+  rules: CoverageDeadlineRule[]
+  total_rows: number
+  on_time: number
+  findings: number
+  percent: number
+  units: CoverageDeadlineUnit[]
 }
 
 export interface CoverageGroup {

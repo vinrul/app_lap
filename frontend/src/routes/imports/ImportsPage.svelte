@@ -71,7 +71,11 @@
 
   const maxBytes = $derived(meta.data?.max_upload_bytes ?? 32 * 1024 * 1024)
   const totalRows = $derived(imports.reduce((total, item) => total + item.row_count, 0))
-  const emptyBotDetection: BotDetection = { rapid_input: [], repeated_material: [] }
+  const emptyBotDetection: BotDetection = {
+    rapid_input: [],
+    rapid_ranking: [],
+    repeated_material: [],
+  }
   const botDetection = $derived(preview?.bot_detection ?? emptyBotDetection)
   const relatedRapid = $derived.by(() => {
     const current = botSuspect
