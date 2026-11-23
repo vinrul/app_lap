@@ -29,7 +29,7 @@ pub async fn list(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> ApiResult<Json<Vec<ImportView>>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     Ok(Json(service::list(&state.db).await?))
 }
 
@@ -38,7 +38,7 @@ pub async fn preview(
     user: AuthUser,
     multipart: Multipart,
 ) -> ApiResult<Json<ImportPreview>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let (_, bytes) = read_workbook(multipart, state.config.max_upload_bytes).await?;
     Ok(Json(service::preview(bytes).await?))
 }
@@ -48,7 +48,7 @@ pub async fn commit(
     user: AuthUser,
     multipart: Multipart,
 ) -> ApiResult<Json<ImportView>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let (filename, bytes) = read_workbook(multipart, state.config.max_upload_bytes).await?;
     let view = service::commit(&state.db, &state.config, &user.id, &filename, bytes).await?;
     cache::invalidate();
@@ -81,7 +81,7 @@ pub async fn rebuild_duplicates(
     user: AuthUser,
     Path(import_id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let count = service::rebuild_duplicates(&state.db, &state.config, &user.id, &import_id).await?;
     Ok(Json(serde_json::json!({ "duplicates": count })))
 }
@@ -91,7 +91,7 @@ pub async fn retry_evidence(
     user: AuthUser,
     Path(import_id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let queued = evidence::retry_import(
         &state.db,
         state.config.clone(),
@@ -110,7 +110,7 @@ pub async fn cancel_evidence(
     user: AuthUser,
     Path(import_id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let cancelled = state.jobs.cancel(&evidence::job_id(&import_id));
     Ok(Json(serde_json::json!({ "cancelled": cancelled })))
 }
@@ -120,7 +120,7 @@ pub async fn running_jobs(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> ApiResult<Json<Vec<String>>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     Ok(Json(state.jobs.running()))
 }
 
@@ -129,7 +129,7 @@ pub async fn evidence_file(
     user: AuthUser,
     Path(evidence_id): Path<String>,
 ) -> ApiResult<Response> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let (bytes, content_type, filename) =
         evidence::open(&state.db, &state.config, &evidence_id).await?;
     let safe_name: String = filename
@@ -164,7 +164,7 @@ pub async fn records(
     Path(import_id): Path<String>,
     Query(query): Query<RecordQuery>,
 ) -> ApiResult<Json<RecordsResponse>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     Ok(Json(
         service::records_for_import(&state.db, &import_id, &query).await?,
     ))
@@ -301,7 +301,7 @@ pub async fn rebuild_anev(
     user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let duplicates =
         anev::rebuild_period_duplicates(&state.db, &state.config, &user.id, &period_id).await?;
     Ok(Json(serde_json::json!({ "duplicates": duplicates })))

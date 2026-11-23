@@ -18,10 +18,29 @@ pub struct Hub {
 }
 
 impl Hub {
-    pub async fn room(&self, period_id: &str) -> Arc<Room> {
+    pub async fn room(&self, key: &str) -> Arc<Room> {
         let mut rooms = self.rooms.lock().await;
         rooms
-            .entry(period_id.to_string())
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(Room::new(key)))
+            .clone()
+    }
+
+    /// Kunci ruang desain memisahkan editor tiap cakupan unit pada periode yang
+    /// sama. Cakupan global memakai kunci periode apa adanya.
+    pub fn design_key(period_id: &str, scope: &str) -> String {
+        if scope.is_empty() {
+            period_id.to_string()
+        } else {
+            format!("{period_id}::{scope}")
+        }
+    }
+
+    pub async fn design_room(&self, period_id: &str, scope: &str) -> Arc<Room> {
+        let key = Self::design_key(period_id, scope);
+        let mut rooms = self.rooms.lock().await;
+        rooms
+            .entry(key.clone())
             .or_insert_with(|| Arc::new(Room::new(period_id)))
             .clone()
     }
@@ -30,6 +49,11 @@ impl Hub {
     /// perubahan ikut disiarkan ke editor lain.
     pub async fn publish(&self, period_id: &str, message: ServerMessage) {
         self.room(period_id).await.publish(message);
+    }
+
+    /// Siaran desain hanya sampai ke editor dengan cakupan yang sama.
+    pub async fn publish_design(&self, period_id: &str, scope: &str, message: ServerMessage) {
+        self.design_room(period_id, scope).await.publish(message);
     }
 }
 

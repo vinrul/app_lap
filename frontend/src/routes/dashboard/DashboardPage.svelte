@@ -53,7 +53,7 @@
   const latest = $derived(data?.latest_period ?? null)
   const metrics = $derived(data?.metrics ?? null)
   const status = $derived(latest ? statusOfPeriod(latest) : null)
-  const reader = $derived(user.role === 'polres' || user.role === 'polda')
+  const globalWriter = $derived(user.role === 'admin' || user.role === 'operator')
 
   // Ringkasan mengikuti halaman Cakupan periode terbaru agar angkanya sama.
   const coverage = $derived(data?.coverage ?? null)
@@ -140,12 +140,12 @@
           <Button variant="secondary" onclick={() => navigate(`/periods/${latest.id}/overview`)}>
             Buka periode <ArrowRight size={15} />
           </Button>
-          {#if !reader}
+          {#if globalWriter}
             <Button onclick={() => navigate(`/periods/${latest.id}/imports`)}>
               <CloudUpload size={15} /> Impor data
             </Button>
           {/if}
-        {:else if !reader}
+        {:else if globalWriter}
           <Button onclick={() => navigate('/periods')}><Plus size={15} /> Buat periode</Button>
         {/if}
       </div>
@@ -269,7 +269,9 @@
         </div>
       {:else}
         <EmptyState title="Arsip masih kosong" description="Periode yang Anda buat akan muncul di sini.">
-          <Button onclick={() => navigate('/periods')}><Plus size={15} /> Buat periode</Button>
+          {#if globalWriter}
+            <Button onclick={() => navigate('/periods')}><Plus size={15} /> Buat periode</Button>
+          {/if}
         </EmptyState>
       {/if}
     </div>
@@ -289,7 +291,7 @@
               <span class="flex h-9 w-9 items-center justify-center rounded-lg bg-forest-50 text-forest-700"><FileText size={17} /></span>
               <span class="min-w-0 flex-1">
                 <strong class="block truncate text-xs font-semibold text-ink">{report.period_label || 'Laporan mingguan'}</strong>
-                <small class="block truncate text-[10px] text-ink-muted">{formatDateTime(report.created_at)} · {report.source_filename}</small>
+                <small class="block truncate text-[10px] text-ink-muted">{formatDateTime(report.created_at)} · {report.scope_label ? `${report.scope_label} · ` : ''}{report.source_filename}</small>
               </span>
               <CheckCircle2 size={15} class="shrink-0 text-forest-500" />
             </button>

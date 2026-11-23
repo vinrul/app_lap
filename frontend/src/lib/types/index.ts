@@ -449,6 +449,10 @@ export interface ReportView {
   created_at: string
   source_filename: string
   period_label: string
+  /** Kosong untuk dokumen global Polda. */
+  scope: string
+  /** Nama unit dokumen satker; kosong untuk dokumen global. */
+  scope_label: string
   pdf_url: string
   preview_url: string
 }

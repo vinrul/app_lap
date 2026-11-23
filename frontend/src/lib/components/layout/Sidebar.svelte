@@ -38,7 +38,7 @@
     users: Users,
   }
 
-  const reader = $derived(user.role === 'polres' || user.role === 'polda')
+  const globalWriter = $derived(user.role === 'admin' || user.role === 'operator')
   const roleLabel = $derived(
     user.role === 'admin'
       ? 'Administrator'
@@ -46,7 +46,7 @@
         ? 'Operator'
         : user.role === 'polres'
           ? user.polres
-            ? `Polres ${user.polres}`
+            ? `Polres · ${user.polres}`
             : 'Polres'
           : user.satker
             ? `Polda · ${user.satker}`
@@ -55,7 +55,7 @@
 
   const items = $derived([
     { id: 'dashboard', label: 'Ringkasan', path: '/dashboard' },
-    ...(reader ? [] : [{ id: 'imports', label: 'Import data', path: '/imports' }]),
+    ...(globalWriter ? [{ id: 'imports', label: 'Import data', path: '/imports' }] : []),
     { id: 'periods', label: 'Periode laporan', path: '/periods' },
     ...(user.role === 'admin' ? [{ id: 'users', label: 'Pengguna & akses', path: '/users' }] : []),
   ])

@@ -36,7 +36,7 @@
   let editing = $state<Period | null>(null)
   let busyId = $state('')
 
-  const reader = $derived(auth.user?.role === 'polres' || auth.user?.role === 'polda')
+  const globalWriter = $derived(auth.user?.role === 'admin' || auth.user?.role === 'operator')
 
   onMount(load)
 
@@ -44,7 +44,7 @@
     loading = true
     error = ''
     try {
-      periods = await periodsApi.list(!reader)
+      periods = await periodsApi.list(globalWriter)
     } catch (caught) {
       error = errorMessage(caught)
     } finally {
@@ -128,7 +128,7 @@
   description="Kelola rentang laporan mingguan, unggah versi data, dan lanjutkan penyusunan dokumen."
 >
   {#snippet actions()}
-    {#if !reader}<Button onclick={openCreate}><Plus size={16} /> Buat periode</Button>{/if}
+    {#if globalWriter}<Button onclick={openCreate}><Plus size={16} /> Buat periode</Button>{/if}
   {/snippet}
 </PageHeader>
 
@@ -165,12 +165,12 @@
     </div>
     <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
       <Tabs
-        items={reader
-          ? [{ id: 'active', label: 'Aktif', count: activePeriods.length }]
-          : [
+        items={globalWriter
+          ? [
               { id: 'active', label: 'Aktif', count: activePeriods.length },
               { id: 'archived', label: 'Arsip', count: archivedPeriods.length },
-            ]}
+            ]
+          : [{ id: 'active', label: 'Aktif', count: activePeriods.length }]}
         active={scope}
         onchange={(id: string) => (scope = id as 'active' | 'archived')}
       />
@@ -218,7 +218,7 @@
               <td><Badge tone={status.tone}>{status.label}</Badge></td>
               <td class="text-right">
                 <div class="flex flex-wrap justify-end gap-1">
-                  {#if !reader}
+                  {#if globalWriter}
                     <button class="btn btn-ghost btn-sm" onclick={() => openEdit(period)}>
                       <Pencil size={14} /> Edit
                     </button>
@@ -269,7 +269,7 @@
     >
       {#if search}
         <Button variant="secondary" onclick={() => (search = '')}>Hapus pencarian</Button>
-      {:else if reader}
+      {:else if !globalWriter}
         <p class="text-xs text-ink-muted">Belum ada periode aktif yang dapat ditampilkan.</p>
       {:else if scope === 'active' && archivedPeriods.length}
         <Button variant="secondary" onclick={() => (scope = 'archived')}>

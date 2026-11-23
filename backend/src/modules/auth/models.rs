@@ -70,13 +70,25 @@ impl AuthUser {
         self.role == "admin"
     }
 
-    /// Peran baca-saja tidak boleh mengubah data apa pun.
+    /// Menulis data global (impor, periode, dokumentasi).
+    pub fn is_global_writer(&self) -> bool {
+        matches!(self.role.as_str(), "admin" | "operator")
+    }
+
+    /// Hanya peran polda yang benar-benar baca-saja. Akun polres boleh menyusun
+    /// desain dan PDF untuk polresnya sendiri.
     pub fn is_reader(&self) -> bool {
-        matches!(self.role.as_str(), "polres" | "polda")
+        self.role == "polda"
+    }
+
+    /// Peran yang boleh menyunting desain dan menerbitkan PDF laporan.
+    pub fn can_design(&self) -> bool {
+        matches!(self.role.as_str(), "admin" | "operator" | "polres")
     }
 
     pub fn data_scope(&self) -> DataScope {
         match self.role.as_str() {
+            "admin" | "operator" => DataScope::All,
             "polres" => {
                 if self.polres.trim().is_empty() {
                     DataScope::None
@@ -87,15 +99,28 @@ impl AuthUser {
             "polda" => DataScope::Polda {
                 satker: (!self.satker.trim().is_empty()).then(|| self.satker.clone()),
             },
-            _ => DataScope::All,
+            // Peran tak dikenal (mis. sisa migrasi lama) tidak mendapat data.
+            _ => DataScope::None,
         }
     }
 
+    /// Menyimpan desain dan menerbitkan PDF. Akun polres hanya untuk
+    /// polresnya; admin dan operator untuk cakupan global.
     pub fn require_writer(&self) -> crate::error::ApiResult<()> {
-        if self.is_reader() {
-            Err(crate::error::ApiError::forbidden())
-        } else {
+        if self.can_design() {
             Ok(())
+        } else {
+            Err(crate::error::ApiError::forbidden())
+        }
+    }
+
+    /// Menulis data global (impor, periode, dokumentasi) hanya untuk admin dan
+    /// operator. Akun polres tidak ikut.
+    pub fn require_global_writer(&self) -> crate::error::ApiResult<()> {
+        if self.is_global_writer() {
+            Ok(())
+        } else {
+            Err(crate::error::ApiError::forbidden())
         }
     }
 
@@ -143,7 +168,70 @@ impl From<AuthUser> for UserView {
 
 #[cfg(test)]
 mod tests {
-    use super::DataScope;
+    use super::{AuthUser, DataScope};
+
+    fn user(role: &str, polres: &str, satker: &str) -> AuthUser {
+        AuthUser {
+            id: "u1".into(),
+            username: "tester".into(),
+            role: role.into(),
+            polres: polres.into(),
+            satker: satker.into(),
+            token: "token".into(),
+        }
+    }
+
+    #[test]
+    fn unknown_role_gets_no_data_scope() {
+        let legacy = user("lain", "Polresta Surakarta", "Ditintelkam");
+        assert_eq!(legacy.data_scope(), DataScope::None);
+        assert!(!legacy.can_design());
+        assert!(!legacy.is_global_writer());
+    }
+
+    #[test]
+    fn polres_can_design_only_within_its_scope() {
+        let polres = user("polres", "Polresta Surakarta", "");
+        assert_eq!(
+            polres.data_scope(),
+            DataScope::Polres("Polresta Surakarta".into())
+        );
+        assert!(polres.can_design());
+        assert!(polres.require_writer().is_ok());
+        // Impor, periode, dan administrasi pengguna tetap tertutup.
+        assert!(polres.require_global_writer().is_err());
+        assert!(!polres.is_admin());
+        assert!(!polres.is_reader());
+
+        let empty = user("polres", "", "");
+        assert_eq!(empty.data_scope(), DataScope::None);
+    }
+
+    #[test]
+    fn polda_remains_read_only() {
+        let polda = user("polda", "", "Ditintelkam");
+        assert!(polda.is_reader());
+        assert!(!polda.can_design());
+        assert!(polda.require_writer().is_err());
+        assert_eq!(
+            polda.data_scope(),
+            DataScope::Polda {
+                satker: Some("Ditintelkam".into())
+            }
+        );
+    }
+
+    #[test]
+    fn global_writer_is_reserved_for_admin_and_operator() {
+        assert!(user("admin", "", "").require_global_writer().is_ok());
+        assert!(user("operator", "", "").require_global_writer().is_ok());
+        assert!(
+            user("polres", "Polresta Denpasar", "")
+                .require_global_writer()
+                .is_err()
+        );
+        assert!(user("polda", "", "").require_global_writer().is_err());
+    }
 
     #[test]
     fn polres_scope_includes_polsek_rows() {

@@ -101,10 +101,12 @@ Metrik dihitung dari baris sumber dan isian terstruktur. Angka yang tidak tersed
 |---|---|
 | `admin` | Semua fitur, termasuk pengelolaan pengguna |
 | `operator` | Semua fitur operasional kecuali pengelolaan pengguna |
-| `polres` | Baca-saja, hanya data polres yang ditetapkan pada akun |
+| `polres` | Desain dan PDF untuk polres yang ditetapkan pada akun; data lain baca-saja |
 | `polda` | Baca-saja, hanya data satker tingkat Polda (opsional satu satker) |
 
-Peran `polres` dan `polda` hanya melihat periode aktif, cakupan, data sumber, dan dokumen. Import, perubahan periode, desain, dan pembuatan PDF ditolak oleh backend, bukan hanya disembunyikan di antarmuka. Akun `polres` wajib memiliki nama polres; akun `polda` boleh dikosongkan satkernya untuk melihat seluruh satker Polda.
+Akun `polres` dapat membuka tab **Desain**, menyusun layout, menerapkan template, dan menerbitkan PDF untuk polresnya sendiri. Desain, draft editorial, metrik, dan PDF-nya dibatasi ke polres tersebut, terpisah dari desain global; editor realtime hanya menyinkronkan sesama pengguna dengan cakupan yang sama. Template mingguan otomatis memakai nama polres (mis. **POLRES BADUNG**) serta istilah **Kapolres/Wakapolres**, dan seluruh angka diambil dari data polres tersebut. PDF polres diberi nama `laporan-<nama polres>-<periode>.pdf` agar mudah dibedakan. Akun `polres` tetap tidak dapat mengimpor data, mengubah periode, mengakses dokumentasi, atau mengelola pengguna; batasan ini ditegakkan di backend, bukan hanya disembunyikan di antarmuka. Akun `polres` wajib memiliki nama polres.
+
+Peran `polda` tetap baca-saja: hanya melihat periode aktif, cakupan, data sumber, dan dokumen sesuai satkernya. Akun `polda` boleh dikosongkan satkernya untuk melihat seluruh satker Polda. Tab **Dokumen** menampilkan dokumen global Polda dan dokumen polres sesuai cakupan pengguna; admin dan operator melihat semuanya. Akun `polres` hanya dapat menghapus atau membagikan dokumen polresnya sendiri.
 
 ## Struktur proyek
 

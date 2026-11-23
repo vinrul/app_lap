@@ -47,12 +47,14 @@
   // Tab yang disembunyikan sementara. Hapus id dari daftar ini untuk menampilkan lagi.
   // `documentation` ikut disembunyikan karena pengecekan watermark dinonaktifkan sementara.
   const hiddenTabs = new Set(['overview', 'analysis', 'documentation'])
-  const reader = $derived(auth.user?.role === 'polres' || auth.user?.role === 'polda')
+  const canDesign = $derived(auth.user?.role !== 'polda')
+  const globalWriter = $derived(auth.user?.role === 'admin' || auth.user?.role === 'operator')
+  const scopedView = $derived(!globalWriter)
 
   const activeTab = $derived(
     ['overview', 'analysis', 'coverage', 'anev', 'records', 'design', 'documents', 'documentation'].includes(tab) &&
       !hiddenTabs.has(tab) &&
-      !(reader && (tab === 'design' || tab === 'documentation'))
+      (tab !== 'design' || canDesign)
       ? tab
       : 'coverage',
   )
@@ -148,7 +150,7 @@
   ].filter(
     (item) =>
       !hiddenTabs.has(item.id) &&
-      !(reader && (item.id === 'design' || item.id === 'documentation')),
+      (item.id !== 'design' || canDesign),
   ))
 </script>
 
@@ -183,7 +185,7 @@
       </div>
       <div class="flex flex-wrap items-center gap-2">
         {#if status}<Badge tone={status.tone}>{status.label}</Badge>{/if}
-        {#if !reader}
+        {#if globalWriter}
           <Button variant="secondary" size="sm" onclick={() => (editOpen = true)}>
             <Pencil size={14} /> Edit
           </Button>
@@ -199,6 +201,8 @@
           <Button variant="secondary" size="sm" onclick={() => navigate('/imports')}>
             <CloudUpload size={14} /> Import data
           </Button>
+        {/if}
+        {#if canDesign}
           <Button size="sm" onclick={() => navigate(`/periods/${periodId}/design`)}>
             <PenLine size={14} /> Susun desain
           </Button>
@@ -209,10 +213,10 @@
     <div class="flex flex-wrap items-center gap-3 bg-stone-50/60 px-6 py-3">
       <span class="text-[10px] font-bold tracking-[0.14em] text-ink-muted uppercase">Sumber data</span>
       {#if metrics || detail.imports.length}
-        <span class="text-[11px] font-medium text-ink-soft">{reader
+        <span class="text-[11px] font-medium text-ink-soft">{scopedView
             ? (metrics?.source_count ?? 0)
             : detail.imports.length} berkas · {metrics?.total_rows ?? detail.period.rows} baris unik dalam rentang</span>
-        {#if !reader && detail.imports.length > 1}
+        {#if globalWriter && detail.imports.length > 1}
           <span class="text-[10px] text-ink-muted">termasuk {detail.imports.slice(0, 2).map((item) => item.filename).join(', ')} dan lainnya</span>
         {/if}
       {:else}

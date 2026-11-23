@@ -137,7 +137,7 @@ async fn list(
     user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<DocumentationResponse>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let (start, end, _) = periods::service::dates(&state.db, &period_id).await?;
 
     let rows = period_rows(&state.db, &start, &end).await?;
@@ -206,7 +206,7 @@ async fn row_detail(
     user: AuthUser,
     Path((period_id, row_id)): Path<(String, i64)>,
 ) -> ApiResult<Json<Vec<DocumentationImage>>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let (start, end, _) = periods::service::dates(&state.db, &period_id).await?;
     let rows = sqlx::query(
         "SELECT e.id, e.filename, e.content_type, e.status AS evidence_status,
@@ -322,7 +322,7 @@ async fn scan(
     user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let started = start_scan(
         &state.db,
         state.config.clone(),
@@ -342,7 +342,7 @@ async fn rescan(
     user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let started = start_scan(
         &state.db,
         state.config.clone(),
@@ -360,7 +360,7 @@ async fn cancel(
     user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let cancelled = state.jobs.cancel(&job_id(&period_id));
     Ok(Json(serde_json::json!({ "cancelled": cancelled })))
 }

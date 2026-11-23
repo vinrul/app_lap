@@ -26,10 +26,18 @@ import type { MapRegion } from './regionMap'
  * template dibuat.
  */
 
+export interface WeeklyTemplateScope {
+  level: 'polda' | 'polres'
+  /// Nama unit: nama polres (mis. "Badung") atau nama Polda.
+  label: string
+}
+
 export interface WeeklyTemplateInput {
   metrics: ReportMetrics
   coverage: CoverageResponse | null
   detail: PeriodDetail
+  /// Cakupan laporan. Akun polres memakai nama polres dan istilah Kapolres.
+  scope?: WeeklyTemplateScope
   /// Sumber gambar peta yang sudah diunggah ke media desain (`upload:<id>`).
   mapImageSrc?: string
   /// Peta khusus titik Kumpul Bersama (QW1.4).
@@ -152,12 +160,12 @@ function shorten(value: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
 
-function compactLocation(value: string, max = 48): string {
+function compactLocation(value: string, max = 48, fallback = 'Forum Pimpinan'): string {
   const parts = value
     .split(',')
     .map((part) => part.trim())
     .filter(Boolean)
-  const picked = parts.slice(0, 2).join(', ') || 'Forum Pimpinan Polda'
+  const picked = parts.slice(0, 2).join(', ') || fallback
   if (picked.length <= max) return picked
   const cut = picked.slice(0, max)
   const lastSpace = cut.lastIndexOf(' ')
@@ -496,8 +504,22 @@ function newPage(
 
 interface Frame {
   polda: string
+  poldaTitle: string
+  level: 'polda' | 'polres'
   period: string
   shortPeriod: string
+}
+
+/** Nama tampilan polres: "Badung" -> "POLRES BADUNG". */
+function polresDisplayName(label: string): string {
+  const name = label.trim()
+  if (!name) return 'POLRES'
+  if (/^(polrestabes|polresta|polres)\b/i.test(name)) return name.toUpperCase()
+  return `POLRES ${name.toUpperCase()}`
+}
+
+function titleCase(value: string): string {
+  return value.toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase())
 }
 
 function addHeader(page: LayoutPage, frame: Frame): void {
@@ -918,7 +940,9 @@ function buildCover(data: Data): LayoutPage {
   text(
     page,
     { x: 18, y: 63, width: 178, height: 8 },
-    `${fmt(data.metrics.total_rows)} laporan unik dari ${data.metrics.by_polres.length} polres dan ${data.metrics.by_satker.length} satker; ${fmt(data.metrics.rows_with_coordinates)} baris berkoordinat.`,
+    data.frame.level === 'polres'
+      ? `${fmt(data.metrics.total_rows)} laporan unik dari ${fmt(data.metrics.by_polres.length)} polres; ${fmt(data.metrics.rows_with_coordinates)} baris berkoordinat.`
+      : `${fmt(data.metrics.total_rows)} laporan unik dari ${data.metrics.by_polres.length} polres dan ${data.metrics.by_satker.length} satker; ${fmt(data.metrics.rows_with_coordinates)} baris berkoordinat.`,
     { size: 7.4, color: PALE },
   )
 
@@ -1442,6 +1466,25 @@ function buildKapolda(data: Data): LayoutPage {
   const page = newPage(4)
   addHeader(page, data.frame)
   addFooter(page, data.frame, 4)
+  const levelLabel = data.frame.level === 'polres' ? 'Polres' : 'Polda'
+  const polrestabes =
+    data.frame.level === 'polres' && data.frame.polda.startsWith('POLRESTABES')
+  const polresta =
+    data.frame.level === 'polres' && data.frame.polda.startsWith('POLRESTA')
+  const leader = data.frame.level === 'polres'
+    ? polrestabes
+      ? 'Kapolrestabes'
+      : polresta
+        ? 'Kapolresta'
+        : 'Kapolres'
+    : 'Kapolda'
+  const deputy = data.frame.level === 'polres'
+    ? polrestabes
+      ? 'Wakapolrestabes'
+      : polresta
+        ? 'Wakapolresta'
+        : 'Wakapolres'
+    : 'Wakapolda'
   const leadership = data.leadership
   const entries = leadership?.entries ?? []
   const direct =
@@ -1453,18 +1496,18 @@ function buildKapolda(data: Data): LayoutPage {
     page,
     26,
     'Pimpinan di Tengah Warga',
-    'Timeline Kegiatan Pimpinan Polda',
-    `Timeline ${fmt(entries.length)} kegiatan utama Polda dari ${dayMonth(data.metrics.period_start)} sampai ${dayMonth(data.metrics.period_end)}, termasuk pejabat pelaksana dan isu yang dicatat pada laporan tingkat Polda.`,
+    `Timeline Kegiatan Pimpinan ${levelLabel}`,
+    `Timeline ${fmt(entries.length)} kegiatan utama ${levelLabel} dari ${dayMonth(data.metrics.period_start)} sampai ${dayMonth(data.metrics.period_end)}, termasuk pejabat pelaksana dan isu yang dicatat pada laporan tingkat ${levelLabel}.`,
   )
   const nextY = addCards(page, start + 2, [
     {
       label: 'Kegiatan pimpinan',
       value: fmt(entries.length),
       unit: 'kegiatan',
-      detail: 'Kapolda/Wakapolda & pejabat utama',
+      detail: `${leader}/${deputy} & pejabat utama`,
     },
     {
-      label: 'Dihadiri Kapolda',
+      label: `Dihadiri ${leader}`,
       value: fmt(direct),
       unit: 'kegiatan',
       detail: `${percent(direct, entries.length)}% dari timeline`,
@@ -1473,7 +1516,7 @@ function buildKapolda(data: Data): LayoutPage {
       label: 'Diwakili pejabat',
       value: fmt(represented),
       unit: 'kegiatan',
-      detail: 'Wakapolda/Irwasda/direktorat',
+      detail: data.frame.level === 'polres' ? `${deputy}/Kasat/Kanit` : 'Wakapolda/Irwasda/direktorat',
     },
     {
       label: 'QW4.3 · Panggilan 110',
@@ -1577,7 +1620,7 @@ function buildKapolda(data: Data): LayoutPage {
   text(
     page,
     { x: 14, y: issuesTop + 5, width: 182, height: 4.5 },
-    'Dicatat dalam laporan tingkat Polda',
+    `Dicatat dalam laporan tingkat ${levelLabel}`,
     { size: 6.4, color: MUTED },
   )
 
@@ -1590,7 +1633,7 @@ function buildKapolda(data: Data): LayoutPage {
     text(
       page,
       { x: 18, y: issuesTop + 22, width: 174, height: 8 },
-      'Belum ada isu atau keluhan warga yang dicatat pada laporan tingkat Polda.',
+      `Belum ada isu atau keluhan warga yang dicatat pada laporan tingkat ${levelLabel}.`,
       { size: 6.6, color: MUTED },
     )
   } else {
@@ -1617,7 +1660,7 @@ function buildKapolda(data: Data): LayoutPage {
       text(
         page,
         { x: 32, y: y + 3, width: 158, height: 5 },
-        `${timelineLabel(issue.tanggal)} · ${compactLocation(issue.location)}`,
+        `${timelineLabel(issue.tanggal)} · ${compactLocation(issue.location, 48, `Forum Pimpinan ${levelLabel}`)}`,
         { size: 7.2, bold: true, color: INK },
       )
       text(
@@ -2369,7 +2412,7 @@ function buildAspirationFollowUp(data: Data): LayoutPage {
     .filter((theme) => theme.count > 0 && !preferredThemes.includes(theme))
     .sort((left, right) => right.count - left.count)
   const displayThemes = [...preferredThemes, ...remainingThemes].slice(0, 6)
-  const region = info?.top_polres?.[0]?.label ?? data.metrics.polda_name ?? 'Polda'
+  const region = info?.top_polres?.[0]?.label ?? data.frame.poldaTitle
   const total = info?.total ?? data.metrics.aspirations.total
   const doneThemes = displayThemes.filter((theme) => theme.follow_up === 'done').length
   const runningThemes = displayThemes.length - doneThemes
@@ -2620,7 +2663,7 @@ function buildAspirationsPage(data: Data): LayoutPage {
   const programColumns = [
     { key: 'gatur_polidik', label: 'Gatur & Polidik', color: '#2563a8' },
     { key: 'kumpul', label: 'Kumpul Bersama', color: '#b8894b' },
-    { key: 'polda', label: 'Forum Kapolda', color: '#1f3a5f' },
+    { key: 'polda', label: data.frame.level === 'polres' ? 'Forum Kapolres' : 'Forum Kapolda', color: '#1f3a5f' },
     { key: 'poliran', label: 'Poliran', color: '#7a9e8e' },
     { key: 'green', label: 'Green Policing', color: '#2f7d4f' },
     { key: 'jumat', label: 'Jumat Keliling', color: '#2f6db0' },
@@ -2713,7 +2756,7 @@ function buildAspirationsPage(data: Data): LayoutPage {
     family: 'montserrat',
     color: GOLD,
   })
-  const wilayah = topPolres.length ? topPolres.join(', ') : (data.metrics.polda_name ?? 'Polda')
+  const wilayah = topPolres.length ? topPolres.join(', ') : data.frame.poldaTitle
   text(
     page,
     { x: 52, y: numberY, width: 144, height: 14 },
@@ -3106,7 +3149,9 @@ function buildMedia(data: Data): LayoutPage {
   text(
     page,
     { x: 108, y: nextY + 82, width: 88, height: 62 },
-    `Setiap kegiatan utama Polda, Polres, dan Polsek diunggah minimal satu kali ke akun media sosial resmi dan tautannya dilampirkan pada laporan aplikasi di hari yang sama.\n\nTautan Google Drive, situs judi temuan patroli siber, dan tautan peta tidak dihitung sebagai publikasi media.`,
+    data.frame.level === 'polres'
+      ? 'Setiap kegiatan utama Polres dan Polsek diunggah minimal satu kali ke akun media sosial resmi dan tautannya dilampirkan pada laporan aplikasi di hari yang sama.\n\nTautan Google Drive, situs judi temuan patroli siber, dan tautan peta tidak dihitung sebagai publikasi media.'
+      : `Setiap kegiatan utama Polda, Polres, dan Polsek diunggah minimal satu kali ke akun media sosial resmi dan tautannya dilampirkan pada laporan aplikasi di hari yang sama.\n\nTautan Google Drive, situs judi temuan patroli siber, dan tautan peta tidak dihitung sebagai publikasi media.`,
     { size: 7.4, color: SOFT },
   )
   return page
@@ -3121,7 +3166,7 @@ function buildNotes(data: Data): LayoutPage {
     26,
     'Catatan dan Penekanan',
     'Rekap Pelaksanaan dan Rencana Tindak Lanjut',
-    `Rekap pelaksanaan ${data.frame.shortPeriod} untuk pelaksana Quick Wins di ${data.frame.polda}.`,
+    `Rekap pelaksanaan ${data.frame.shortPeriod} untuk pelaksana Quick Wins di ${data.frame.poldaTitle}.`,
   )
   const nextY = addCards(page, start + 2, [
     { label: 'Total laporan', value: fmt(data.metrics.total_rows), unit: 'baris', detail: 'unik setelah deduplikasi' },
@@ -3265,9 +3310,7 @@ function buildCentralNotes(data: Data): LayoutPage {
     'Catatan dan Penekanan Ketua Pusat',
     { size: 20, bold: true, family: 'montserrat', color: FOREST },
   )
-  const polda = (data.metrics.polda_name || 'Polda')
-    .toLowerCase()
-    .replace(/\b\w/g, (char) => char.toUpperCase())
+  const polda = data.frame.poldaTitle
   text(
     page,
     { x: 14, y: 44, width: 182, height: 10 },
@@ -3461,7 +3504,9 @@ function buildClosing(data: Data): LayoutPage {
   text(
     page,
     { x: 18, y: 228, width: 174, height: 6 },
-    `${fmt(data.metrics.total_rows)} laporan unik · ${fmt(data.metrics.by_polres.length)} polres · ${data.frame.period}`,
+    data.frame.level === 'polres'
+      ? `${fmt(data.metrics.total_rows)} laporan unik · ${data.frame.poldaTitle} · ${data.frame.period}`
+      : `${fmt(data.metrics.total_rows)} laporan unik · ${fmt(data.metrics.by_polres.length)} polres · ${data.frame.period}`,
     { size: 8, color: PALE, align: 'center' },
   )
   rect(page, { x: 60, y: 240, width: 90, height: 0.6 }, { fill: GOLD, z: 3 })
@@ -3483,10 +3528,17 @@ function buildClosing(data: Data): LayoutPage {
 export function buildWeeklyReportTemplate(input: WeeklyTemplateInput): ReportLayout {
   elementCounter = 0
   const { metrics, coverage, detail } = input
+  const isPolres = input.scope?.level === 'polres'
   const start = detail.period.start_date || metrics.period_start
   const end = detail.period.end_date || metrics.period_end
   const frame: Frame = {
-    polda: (metrics.polda_name || 'POLDA').toUpperCase(),
+    polda: isPolres
+      ? polresDisplayName(input.scope?.label ?? '')
+      : (metrics.polda_name || 'POLDA').toUpperCase(),
+    poldaTitle: isPolres
+      ? titleCase(polresDisplayName(input.scope?.label ?? ''))
+      : metrics.polda_name || 'Polda',
+    level: isPolres ? 'polres' : 'polda',
     period: periodShort(start, end),
     shortPeriod: periodShort(start, end),
   }

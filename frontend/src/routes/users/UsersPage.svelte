@@ -415,7 +415,7 @@
       <select id="new-role" class="input" bind:value={form.role}>
         <option value="operator">Operator</option>
         <option value="admin">Administrator</option>
-        <option value="polres">Polres (baca-saja)</option>
+        <option value="polres">Polres (desain & PDF polres)</option>
         <option value="polda">Polda (baca-saja)</option>
       </select>
     </div>
@@ -423,7 +423,7 @@
       <div>
         <label class="label" for="new-polres">Polres</label>
         <input id="new-polres" class="input" bind:value={form.polres} list="polres-options" placeholder="Pilih atau ketik nama polres" required />
-        <p class="hint mt-1.5">Saran diambil dari data import; Anda tetap bisa mengetik nama lain.</p>
+        <p class="hint mt-1.5">Akun ini dapat menyusun desain dan PDF untuk polres tersebut.</p>
       </div>
     {:else if form.role === 'polda'}
       <div>
@@ -459,7 +459,7 @@
       <select id="edit-role" class="input" bind:value={editForm.role}>
         <option value="operator">Operator</option>
         <option value="admin">Administrator</option>
-        <option value="polres">Polres (baca-saja)</option>
+        <option value="polres">Polres (desain & PDF polres)</option>
         <option value="polda">Polda (baca-saja)</option>
       </select>
     </div>
@@ -467,7 +467,7 @@
       <div>
         <label class="label" for="edit-polres">Polres</label>
         <input id="edit-polres" class="input" bind:value={editForm.polres} list="polres-options" placeholder="Pilih atau ketik nama polres" required />
-        <p class="hint mt-1.5">Saran diambil dari data import; Anda tetap bisa mengetik nama lain.</p>
+        <p class="hint mt-1.5">Akun ini dapat menyusun desain dan PDF untuk polres tersebut.</p>
       </div>
     {:else if editForm.role === 'polda'}
       <div>

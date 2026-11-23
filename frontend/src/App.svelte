@@ -104,7 +104,7 @@
               : 'Pengguna & akses',
   )
 
-  const reader = $derived(auth.user?.role === 'polres' || auth.user?.role === 'polda')
+  const globalWriter = $derived(auth.user?.role === 'admin' || auth.user?.role === 'operator')
 </script>
 
 <svelte:head>
@@ -144,11 +144,11 @@
     <AppShell user={auth.user} routeName={router.route.name} {title}>
       {#if router.route.name === 'dashboard'}
         <DashboardPage user={auth.user} />
-      {:else if router.route.name === 'imports' && reader}
+      {:else if router.route.name === 'imports' && !globalWriter}
         <div class="card">
           <EmptyState
-            title="Akses baca-saja"
-            description="Peran polres dan polda hanya dapat melihat periode, cakupan, dan dokumen."
+            title="Akses impor terbatas"
+            description="Hanya administrator dan operator yang dapat mengimpor data. Akun polres dapat menyusun desain dan PDF untuk polresnya melalui tab Desain."
           >
             <Button onclick={() => navigate('/dashboard')}>Kembali ke ringkasan</Button>
           </EmptyState>

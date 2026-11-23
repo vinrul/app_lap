@@ -10,7 +10,7 @@ use serde_json::json;
 use crate::{
     error::{ApiError, ApiResult},
     modules::{
-        auth::AuthUser,
+        auth::{AuthUser, DataScope},
         live::ServerMessage,
         notifications,
         reports::{
@@ -22,7 +22,8 @@ use crate::{
             },
             models::{
                 DraftView, GenerateReportRequest, PreviewReportRequest, PreviewResponse,
-                PublicShareView, ReportContent, ReportMetrics, ReportShareView, ReportView,
+                PublicShareView, ReportContent, ReportMetrics, ReportScope, ReportShareView,
+                ReportView,
             },
             schedule_report, service, sources,
         },
@@ -47,7 +48,10 @@ pub async fn get_draft(
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<DraftView>> {
     user.require_writer()?;
-    Ok(Json(service::get_draft(&state.db, &period_id).await?))
+    let scope = ReportScope::from_user(&user);
+    Ok(Json(
+        service::get_draft(&state.db, &period_id, &scope.key).await?,
+    ))
 }
 
 pub async fn save_draft(
@@ -57,17 +61,21 @@ pub async fn save_draft(
     Json(content): Json<ReportContent>,
 ) -> ApiResult<Json<DraftView>> {
     user.require_writer()?;
+    let scope = ReportScope::from_user(&user);
     Ok(Json(
-        service::save_draft(&state.db, &user.id, &period_id, &content).await?,
+        service::save_draft(&state.db, &user.id, &period_id, &scope.key, &content).await?,
     ))
 }
 
 pub async fn list(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<Vec<ReportView>>> {
-    Ok(Json(service::list_for_period(&state.db, &period_id).await?))
+    let filter = ReportScope::document_filter(&user);
+    Ok(Json(
+        service::list_for_period(&state.db, &period_id, filter.as_deref()).await?,
+    ))
 }
 
 pub async fn get_layout(
@@ -76,7 +84,10 @@ pub async fn get_layout(
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<LayoutView>> {
     user.require_writer()?;
-    Ok(Json(service::get_layout(&state.db, &period_id).await?))
+    let scope = ReportScope::from_user(&user);
+    Ok(Json(
+        service::get_layout(&state.db, &period_id, &scope.key).await?,
+    ))
 }
 
 pub async fn save_layout(
@@ -87,11 +98,14 @@ pub async fn save_layout(
 ) -> ApiResult<Json<LayoutView>> {
     user.require_writer()?;
     let _guard = state.design_lock.lock().await;
-    let view = service::save_layout(&state.db, &user.id, &period_id, input.layout).await?;
+    let scope = ReportScope::from_user(&user);
+    let view =
+        service::save_layout(&state.db, &user.id, &period_id, &scope.key, input.layout).await?;
     state
         .hub
-        .publish(
+        .publish_design(
             &period_id,
+            &scope.key,
             ServerMessage::DesignPatch {
                 period_id: period_id.clone(),
                 revision: view.revision,
@@ -119,12 +133,15 @@ pub async fn patch_layout(
 ) -> ApiResult<Json<LayoutView>> {
     user.require_writer()?;
     let _guard = state.design_lock.lock().await;
-    let view = service::apply_patch(&state.db, &user.id, &period_id, &input.patch).await?;
+    let scope = ReportScope::from_user(&user);
+    let view =
+        service::apply_patch(&state.db, &user.id, &period_id, &scope.key, &input.patch).await?;
     let snapshot = ServerMessage::snapshot(&view.layout);
     state
         .hub
-        .publish(
+        .publish_design(
             &period_id,
+            &scope.key,
             ServerMessage::DesignPatch {
                 period_id: period_id.clone(),
                 revision: view.revision,
@@ -145,7 +162,9 @@ pub async fn design_sources(
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<Vec<DesignSource>>> {
     user.require_writer()?;
-    let metrics = service::metrics_for(&state.db, &state.config, &period_id).await?;
+    let metrics =
+        service::metrics_for_scope(&state.db, &state.config, &period_id, &user.data_scope())
+            .await?;
     Ok(Json(sources::design_sources(&metrics)))
 }
 
@@ -162,7 +181,8 @@ pub async fn save_template(
     user: AuthUser,
     Json(input): Json<SaveTemplateRequest>,
 ) -> ApiResult<Json<DesignTemplateView>> {
-    user.require_writer()?;
+    // Pustaka template dipakai bersama; hanya admin dan operator yang mengubahnya.
+    user.require_global_writer()?;
     Ok(Json(
         service::save_template(&state.db, &user.id, &input.name, input.layout).await?,
     ))
@@ -173,7 +193,7 @@ pub async fn delete_template(
     user: AuthUser,
     Path(template_id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     service::delete_template(&state.db, &user.id, &template_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -185,13 +205,21 @@ pub async fn apply_template(
 ) -> ApiResult<Json<LayoutView>> {
     user.require_writer()?;
     let _guard = state.design_lock.lock().await;
-    let view =
-        service::apply_template(&state.db, &state.config, &user.id, &period_id, &template_id)
-            .await?;
+    let scope = ReportScope::from_user(&user);
+    let view = service::apply_template(
+        &state.db,
+        &state.config,
+        &user.id,
+        &period_id,
+        &scope.key,
+        &template_id,
+    )
+    .await?;
     state
         .hub
-        .publish(
+        .publish_design(
             &period_id,
+            &scope.key,
             ServerMessage::DesignPatch {
                 period_id: period_id.clone(),
                 revision: view.revision,
@@ -274,13 +302,25 @@ pub async fn design_media(
     Query(query): Query<MediaQuery>,
 ) -> ApiResult<Json<Vec<MediaItem>>> {
     user.require_writer()?;
+    let scope = user.data_scope();
+    if !scope.is_all() && user.polres.trim().is_empty() {
+        return Err(ApiError::forbidden());
+    }
+    // Akun polres hanya melihat media milik polresnya sendiri.
+    let polres = if scope.is_all() {
+        query.polres.as_deref()
+    } else {
+        Some(user.polres.trim())
+    };
+    let owner = (!scope.is_all()).then_some(user.id.as_str());
     Ok(Json(
         service::list_media(
             &state.db,
             &period_id,
             query.kode.as_deref(),
-            query.polres.as_deref(),
+            polres,
             query.satker.as_deref(),
+            owner,
         )
         .await?,
     ))
@@ -299,9 +339,16 @@ pub async fn design_media_filters(
     Path(period_id): Path<String>,
 ) -> ApiResult<Json<MediaFilters>> {
     user.require_writer()?;
-    Ok(Json(
-        service::list_media_filters(&state.db, &period_id).await?,
-    ))
+    let mut filters = service::list_media_filters(&state.db, &period_id).await?;
+    if let DataScope::Polres(polres) = user.data_scope() {
+        let target = polres.trim().to_lowercase();
+        filters
+            .polres
+            .retain(|item| item.label.trim().to_lowercase() == target);
+        // Satker Polda bukan bagian cakupan akun polres.
+        filters.satker.clear();
+    }
+    Ok(Json(filters))
 }
 
 pub async fn import_media(
@@ -317,6 +364,7 @@ pub async fn import_media(
             &state.config,
             &user.id,
             &period_id,
+            &user.data_scope(),
             &input.source,
             &input.id,
         )
@@ -476,8 +524,10 @@ pub async fn generate(
     Json(input): Json<GenerateReportRequest>,
 ) -> ApiResult<Json<ReportView>> {
     user.require_writer()?;
+    let scope = ReportScope::from_user(&user);
+    let data_scope = user.data_scope();
     if let Some(content) = input.content.as_ref() {
-        service::save_draft(&state.db, &user.id, &period_id, content).await?;
+        service::save_draft(&state.db, &user.id, &period_id, &scope.key, content).await?;
     }
 
     let request_id = input
@@ -492,6 +542,8 @@ pub async fn generate(
     let task_job = job.clone();
     let user_id = user.id.clone();
     let task_period = period_id.clone();
+    let task_scope = scope.clone();
+    let task_data_scope = data_scope.clone();
     let task = tokio::spawn(async move {
         let result = service::generate(
             &task_state.db,
@@ -502,6 +554,8 @@ pub async fn generate(
             &task_handle,
             &user_id,
             &task_period,
+            &task_scope,
+            &task_data_scope,
         )
         .await;
         let _ = sender.send(result);
@@ -594,10 +648,13 @@ pub async fn preview_render(
     Json(input): Json<PreviewReportRequest>,
 ) -> ApiResult<Json<PreviewResponse>> {
     user.require_writer()?;
+    let scope = ReportScope::from_user(&user);
     let html = service::preview_html(
         &state.db,
         &state.config,
         &period_id,
+        &scope.key,
+        &user.data_scope(),
         input.content.as_ref(),
         input.layout.as_ref(),
     )
@@ -630,6 +687,7 @@ pub async fn delete_report(
     Path(report_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     user.require_writer()?;
+    authorize_report_scope(&state, &user, &report_id).await?;
     service::delete_report(&state.db, &state.config, &user.id, &report_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -640,9 +698,33 @@ pub async fn create_share(
     Path(report_id): Path<String>,
 ) -> ApiResult<Json<ReportShareView>> {
     user.require_writer()?;
+    authorize_report_scope(&state, &user, &report_id).await?;
     Ok(Json(
         service::create_share(&state.db, &user.id, &report_id).await?,
     ))
+}
+
+/// Akun polres hanya boleh mengubah atau membagikan dokumen polresnya.
+/// Admin global dan operator tidak dibatasi.
+async fn authorize_report_scope(
+    state: &AppState,
+    user: &AuthUser,
+    report_id: &str,
+) -> ApiResult<()> {
+    let scope = ReportScope::from_user(user);
+    if scope.key.is_empty() {
+        return Ok(());
+    }
+    let stored: Option<String> = sqlx::query_scalar("SELECT scope FROM report_runs WHERE id = ?")
+        .bind(report_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(ApiError::internal)?;
+    match stored {
+        Some(stored) if stored == scope.key => Ok(()),
+        Some(_) => Err(ApiError::forbidden()),
+        None => Err(ApiError::not_found("Dokumen laporan tidak ditemukan.")),
+    }
 }
 
 pub async fn public_share(

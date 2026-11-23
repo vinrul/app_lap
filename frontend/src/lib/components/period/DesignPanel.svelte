@@ -341,6 +341,14 @@
 
   const hasImport = $derived(detail.imports.length > 0)
   const draftOwner = $derived(auth.user?.id ?? 'anon')
+  const reportScope = $derived(
+    auth.user?.role === 'polres'
+      ? { level: 'polres' as const, label: auth.user.polres }
+      : { level: 'polda' as const, label: meta.data?.polda_name ?? 'Polda' },
+  )
+  const canManageTemplates = $derived(
+    auth.user?.role === 'admin' || auth.user?.role === 'operator',
+  )
   const dirty = $derived(JSON.stringify(layout) !== savedJson)
   const liveEditorNames = $derived(
     liveEditors.map((editor) => `${editor.username} (hal. ${editor.page})`).join(', '),
@@ -2899,11 +2907,14 @@
 
   async function applyWeeklyTemplate(fromChooser = false): Promise<void> {
     if (!hasImport || templateBusy) return
+    const scopeText =
+      reportScope.level === 'polres'
+        ? `Polres ${reportScope.label}`
+        : reportScope.label
     if (!fromChooser) {
       const confirmed = await dialog.confirm({
         title: 'Terapkan template Laporan Mingguan?',
-        message:
-          'Template 15 halaman bergaya laporan mingguan akan menggantikan desain saat ini. Seluruh tulisan dan angka dibuat sebagai elemen yang dapat diedit. Perubahan bisa di-undo.',
+        message: `Template 15 halaman bergaya laporan mingguan akan menggantikan desain saat ini dan memakai data ${scopeText}. Seluruh tulisan dan angka dibuat sebagai elemen yang dapat diedit. Perubahan bisa di-undo.`,
         confirmLabel: 'Terapkan template',
       })
       if (!confirmed) return
@@ -2912,13 +2923,14 @@
     templateBusy = true
     error = ''
     try {
-      const metricsData = metricsSnapshot ?? (await periodsApi.metrics(periodId))
+      // Selalu ambil ulang metrik dan cakupan agar template memakai data
+      // cakupan akun yang sedang aktif, bukan state lama/akun sebelumnya.
+      const [metricsData, coverageData] = await Promise.all([
+        periodsApi.metrics(periodId),
+        importsApi.coverage(periodId).catch(() => null),
+      ])
       metricsSnapshot = metricsData
-      let coverageData = coverage
-      if (!coverageData) {
-        coverageData = await importsApi.coverage(periodId).catch(() => null)
-        coverage = coverageData
-      }
+      coverage = coverageData
       let mapImageSrc = ''
       let kumpulMapImageSrc = ''
       let greenMapImageSrc = ''
@@ -3053,6 +3065,7 @@
         metrics: metricsData,
         coverage: coverageData,
         detail,
+        scope: reportScope,
         mapRegion: meta.data?.map_region ?? 'bali',
         mapImageSrc,
         kumpulMapImageSrc,
@@ -3090,7 +3103,7 @@
       void refreshCanvasStructure()
       connectLive()
       scheduleAutosave()
-      toast.success('Template Laporan Mingguan diterapkan. Tulisan dan angka bisa diedit langsung.')
+      toast.success(`Template Laporan Mingguan ${scopeText} diterapkan. Tulisan dan angka bisa diedit langsung.`)
     } catch (caught) {
       const message = errorMessage(caught)
       error = message
@@ -6010,6 +6023,11 @@
     <div>
       <div class="flex flex-wrap items-center gap-2">
         <span class="eyebrow">EDITOR DESAIN</span>
+        {#if auth.user?.role === 'polres'}
+          <span class="badge badge-neutral" title="Desain dan PDF hanya memuat data polres ini">
+            {auth.user.polres}
+          </span>
+        {/if}
         {#if saving}
           <span class="badge badge-progress">Menyimpan…</span>
         {:else if autosaveState === 'error' && dirty}
@@ -7023,7 +7041,11 @@
             <li>5. Klik blok laporan untuk geser; tarik sudut kanan bawah untuk resize.</li>
             <li>6. Klik dua kali teks blok untuk mengeditnya.</li>
             <li>7. Gunakan panel Layer untuk menyembunyikan, mengunci posisi, mengurutkan, atau menggabungkan objek.</li>
-            <li>8. Simpan desain sebagai template untuk dipakai pada periode lain.</li>
+            {#if canManageTemplates}
+              <li>8. Simpan desain sebagai template untuk dipakai pada periode lain.</li>
+            {:else}
+              <li>8. Terapkan template pustaka atau susun desain langsung untuk polres Anda.</li>
+            {/if}
             <li>9. Simpan, lalu Buat PDF.</li>
           </ul>
         </section>
@@ -7602,10 +7624,12 @@
           <Layers size={18} class="text-gold-500" />
         </div>
         <div class="space-y-3 p-4">
-          <div class="flex gap-2">
-            <input class="input min-w-0 flex-1 py-1.5 text-xs" placeholder="Nama template baru" data-template-name bind:value={templateName} />
-            <span data-template-save><Button variant="secondary" size="sm" loading={templateBusy} disabled={!templateName.trim()} onclick={saveAsTemplate}>Simpan</Button></span>
-          </div>
+          {#if canManageTemplates}
+            <div class="flex gap-2">
+              <input class="input min-w-0 flex-1 py-1.5 text-xs" placeholder="Nama template baru" data-template-name bind:value={templateName} />
+              <span data-template-save><Button variant="secondary" size="sm" loading={templateBusy} disabled={!templateName.trim()} onclick={saveAsTemplate}>Simpan</Button></span>
+            </div>
+          {/if}
           {#if templates.length}
             <select class="input py-1.5 text-xs" data-template-select bind:value={selectedTemplateId}>
               <option value="">Pilih template…</option>
@@ -7615,7 +7639,9 @@
             </select>
             <div class="flex flex-wrap gap-2">
               <span data-template-apply><Button variant="secondary" size="sm" loading={templateBusy} disabled={!selectedTemplateId} onclick={applySelectedTemplate}>Terapkan</Button></span>
-              <span data-template-delete><Button variant="ghost" size="sm" disabled={!selectedTemplateId} onclick={deleteSelectedTemplate}>Hapus</Button></span>
+              {#if canManageTemplates}
+                <span data-template-delete><Button variant="ghost" size="sm" disabled={!selectedTemplateId} onclick={deleteSelectedTemplate}>Hapus</Button></span>
+              {/if}
             </div>
           {:else}
             <p class="text-xs text-ink-muted">Belum ada template tersimpan.</p>

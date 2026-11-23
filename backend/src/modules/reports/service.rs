@@ -25,8 +25,8 @@ use crate::{
             },
             metrics,
             models::{
-                DraftView, PublicShareView, ReportContent, ReportMetrics, ReportShareView,
-                ReportView,
+                DraftView, PublicShareView, ReportContent, ReportMetrics, ReportScope,
+                ReportShareView, ReportView,
             },
             render,
         },
@@ -34,18 +34,25 @@ use crate::{
     shared::{audit, cache, truncate},
 };
 
-pub async fn list_for_period(db: &SqlitePool, period_id: &str) -> ApiResult<Vec<ReportView>> {
+pub async fn list_for_period(
+    db: &SqlitePool,
+    period_id: &str,
+    scope_filter: Option<&str>,
+) -> ApiResult<Vec<ReportView>> {
     periods::service::get(db, period_id).await?;
     let rows = sqlx::query(
-        "SELECT r.id, r.period_id, r.created_at,
+        "SELECT r.id, r.period_id, r.created_at, r.scope, r.scope_label,
                 COALESCE(NULLIF(r.period_label, ''), p.label) AS period_label,
                 r.source_filename
          FROM report_runs r
          JOIN report_periods p ON p.id = r.period_id
          WHERE r.period_id = ?
+           AND (? IS NULL OR r.scope = '' OR r.scope = ?)
          ORDER BY r.created_at DESC",
     )
     .bind(period_id)
+    .bind(scope_filter)
+    .bind(scope_filter)
     .fetch_all(db)
     .await
     .map_err(ApiError::internal)?;
@@ -53,15 +60,16 @@ pub async fn list_for_period(db: &SqlitePool, period_id: &str) -> ApiResult<Vec<
     Ok(rows.into_iter().map(report_from_row).collect())
 }
 
-pub async fn get_draft(db: &SqlitePool, period_id: &str) -> ApiResult<DraftView> {
+pub async fn get_draft(db: &SqlitePool, period_id: &str, scope: &str) -> ApiResult<DraftView> {
     periods::service::get(db, period_id).await?;
     let row = sqlx::query(
         "SELECT d.content_json, d.updated_at, u.username AS updated_by
          FROM report_drafts d
          LEFT JOIN users u ON u.id = d.updated_by
-         WHERE d.period_id = ?",
+         WHERE d.period_id = ? AND d.scope = ?",
     )
     .bind(period_id)
+    .bind(scope)
     .fetch_optional(db)
     .await
     .map_err(ApiError::internal)?;
@@ -89,6 +97,7 @@ pub async fn save_draft(
     db: &SqlitePool,
     user_id: &str,
     period_id: &str,
+    scope: &str,
     content: &ReportContent,
 ) -> ApiResult<DraftView> {
     periods::service::get(db, period_id).await?;
@@ -100,15 +109,16 @@ pub async fn save_draft(
     }
 
     sqlx::query(
-        "INSERT INTO report_drafts(id, period_id, content_json, updated_by, updated_at)
-         VALUES(?,?,?,?,CURRENT_TIMESTAMP)
-         ON CONFLICT(period_id) DO UPDATE SET
+        "INSERT INTO report_drafts(id, period_id, scope, content_json, updated_by, updated_at)
+         VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+         ON CONFLICT(period_id, scope) DO UPDATE SET
            content_json = excluded.content_json,
            updated_by = excluded.updated_by,
            updated_at = CURRENT_TIMESTAMP",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(period_id)
+    .bind(scope)
     .bind(&content_json)
     .bind(user_id)
     .execute(db)
@@ -121,22 +131,23 @@ pub async fn save_draft(
         "draft.update",
         "period",
         period_id,
-        serde_json::json!({}),
+        serde_json::json!({ "scope": scope }),
     )
     .await?;
 
-    get_draft(db, period_id).await
+    get_draft(db, period_id, scope).await
 }
 
-pub async fn get_layout(db: &SqlitePool, period_id: &str) -> ApiResult<LayoutView> {
+pub async fn get_layout(db: &SqlitePool, period_id: &str, scope: &str) -> ApiResult<LayoutView> {
     periods::service::get(db, period_id).await?;
     let row = sqlx::query(
         "SELECT l.layout_json, l.updated_at, l.revision, u.username AS updated_by
          FROM report_layouts l
          LEFT JOIN users u ON u.id = l.updated_by
-         WHERE l.period_id = ?",
+         WHERE l.period_id = ? AND l.scope = ?",
     )
     .bind(period_id)
+    .bind(scope)
     .fetch_optional(db)
     .await
     .map_err(ApiError::internal)?;
@@ -166,6 +177,7 @@ pub async fn save_layout(
     db: &SqlitePool,
     user_id: &str,
     period_id: &str,
+    scope: &str,
     layout: ReportLayout,
 ) -> ApiResult<LayoutView> {
     periods::service::get(db, period_id).await?;
@@ -179,9 +191,9 @@ pub async fn save_layout(
     let now = chrono::Utc::now().to_rfc3339();
 
     let revision: i64 = sqlx::query_scalar(
-        "INSERT INTO report_layouts(period_id, layout_json, updated_by, updated_at, revision)
-         VALUES(?,?,?,?,1)
-         ON CONFLICT(period_id) DO UPDATE SET
+        "INSERT INTO report_layouts(period_id, scope, layout_json, updated_by, updated_at, revision)
+         VALUES(?,?,?,?,?,1)
+         ON CONFLICT(period_id, scope) DO UPDATE SET
            layout_json = excluded.layout_json,
            updated_by = excluded.updated_by,
            updated_at = excluded.updated_at,
@@ -189,6 +201,7 @@ pub async fn save_layout(
          RETURNING revision",
     )
     .bind(period_id)
+    .bind(scope)
     .bind(&layout_json)
     .bind(user_id)
     .bind(&now)
@@ -202,7 +215,7 @@ pub async fn save_layout(
         "layout.update",
         "period",
         period_id,
-        serde_json::json!({}),
+        serde_json::json!({ "scope": scope }),
     )
     .await?;
 
@@ -226,12 +239,13 @@ pub async fn apply_patch(
     db: &SqlitePool,
     user_id: &str,
     period_id: &str,
+    scope: &str,
     patch: &LayoutPatch,
 ) -> ApiResult<LayoutView> {
-    let current = get_layout(db, period_id).await?;
+    let current = get_layout(db, period_id, scope).await?;
     let mut layout = current.layout;
     layout.apply_patch(patch);
-    save_layout(db, user_id, period_id, layout).await
+    save_layout(db, user_id, period_id, scope, layout).await
 }
 
 pub async fn list_templates(db: &SqlitePool) -> ApiResult<Vec<DesignTemplateView>> {
@@ -323,6 +337,7 @@ pub async fn apply_template(
     config: &Config,
     user_id: &str,
     period_id: &str,
+    scope: &str,
     template_id: &str,
 ) -> ApiResult<LayoutView> {
     periods::service::get(db, period_id).await?;
@@ -363,7 +378,7 @@ pub async fn apply_template(
         }
     }
 
-    save_layout(db, user_id, period_id, layout).await
+    save_layout(db, user_id, period_id, scope, layout).await
 }
 
 async fn clone_template_image(
@@ -698,6 +713,7 @@ pub async fn list_media(
     kode: Option<&str>,
     polres: Option<&str>,
     satker: Option<&str>,
+    owner: Option<&str>,
 ) -> ApiResult<Vec<MediaItem>> {
     periods::service::get(db, period_id).await?;
     let (start, end, _) = periods::service::dates(db, period_id).await?;
@@ -708,17 +724,31 @@ pub async fn list_media(
     let mut items = Vec::new();
 
     if !filtered {
-        let design_rows = sqlx::query(
+        // Akun polres hanya melihat gambar desain yang ia unggah sendiri.
+        let design_sql = if owner.is_some() {
+            "SELECT d.id, d.filename, d.content_type, d.size_bytes, d.created_at,
+                d.period_id, COALESCE(p.label, '') AS period_label
+         FROM design_images d
+         LEFT JOIN report_periods p ON p.id = d.period_id
+         WHERE d.created_by = ?
+         ORDER BY d.created_at DESC, d.id DESC
+         LIMIT 200"
+        } else {
             "SELECT d.id, d.filename, d.content_type, d.size_bytes, d.created_at,
                 d.period_id, COALESCE(p.label, '') AS period_label
          FROM design_images d
          LEFT JOIN report_periods p ON p.id = d.period_id
          ORDER BY d.created_at DESC, d.id DESC
-         LIMIT 200",
-        )
-        .fetch_all(db)
-        .await
-        .map_err(ApiError::internal)?;
+         LIMIT 200"
+        };
+        let mut design_query = sqlx::query(design_sql);
+        if let Some(owner) = owner {
+            design_query = design_query.bind(owner);
+        }
+        let design_rows = design_query
+            .fetch_all(db)
+            .await
+            .map_err(ApiError::internal)?;
         for row in design_rows {
             let id: String = row.get("id");
             let origin_period: String = row.get("period_id");
@@ -881,6 +911,7 @@ pub async fn import_media_image(
     config: &Config,
     user_id: &str,
     period_id: &str,
+    scope: &DataScope,
     source: &str,
     media_id: &str,
 ) -> ApiResult<UploadedImage> {
@@ -888,13 +919,20 @@ pub async fn import_media_image(
     match source {
         "design" => {
             let row = sqlx::query(
-                "SELECT period_id, filename, stored_path FROM design_images WHERE id = ?",
+                "SELECT period_id, filename, stored_path, created_by
+                 FROM design_images WHERE id = ?",
             )
             .bind(media_id)
             .fetch_optional(db)
             .await
             .map_err(ApiError::internal)?
             .ok_or_else(|| ApiError::not_found("Gambar media tidak ditemukan."))?;
+            if !scope.is_all() {
+                let created_by: Option<String> = row.try_get("created_by").ok();
+                if created_by.as_deref() != Some(user_id) {
+                    return Err(ApiError::not_found("Gambar media tidak ditemukan."));
+                }
+            }
             let origin_period: String = row.get("period_id");
             if origin_period == period_id {
                 return Ok(UploadedImage {
@@ -912,7 +950,8 @@ pub async fn import_media_image(
         "evidence" => {
             let (start, end, _) = periods::service::dates(db, period_id).await?;
             let row = sqlx::query(
-                "SELECT e.import_id, e.filename, e.stored_path, e.content_type, e.status
+                "SELECT e.import_id, e.filename, e.stored_path, e.content_type, e.status,
+                        r.level, r.polres, r.satker
                  FROM import_evidence e
                  JOIN import_rows r ON r.id = e.row_id
                  WHERE e.id = ? AND r.tanggal BETWEEN ? AND ?",
@@ -924,6 +963,14 @@ pub async fn import_media_image(
             .await
             .map_err(ApiError::internal)?
             .ok_or_else(|| ApiError::not_found("Bukti dukung tidak ditemukan pada periode ini."))?;
+            let level: String = row.get("level");
+            let row_polres: String = row.get("polres");
+            let row_satker: String = row.get("satker");
+            if !scope.matches_fields(&level, &row_polres, &row_satker) {
+                return Err(ApiError::not_found(
+                    "Bukti dukung tidak ditemukan pada periode ini.",
+                ));
+            }
             let status: String = row.get("status");
             if status != "ready" {
                 return Err(ApiError::bad_request(
@@ -955,8 +1002,9 @@ pub async fn import_media_image(
 pub async fn load_design(
     db: &SqlitePool,
     period_id: &str,
+    scope: &str,
 ) -> ApiResult<(ReportLayout, HashMap<String, String>)> {
-    let layout = get_layout(db, period_id).await?.layout;
+    let layout = get_layout(db, period_id, scope).await?.layout;
     let images = load_images(db, period_id, &layout).await?;
     Ok((layout, images))
 }
@@ -1127,13 +1175,15 @@ pub async fn preview_html(
     db: &SqlitePool,
     config: &Config,
     period_id: &str,
+    scope: &str,
+    data_scope: &DataScope,
     content_override: Option<&ReportContent>,
     layout_override: Option<&ReportLayout>,
 ) -> ApiResult<String> {
-    let metrics = metrics_for(db, config, period_id).await?;
+    let metrics = metrics_for_scope(db, config, period_id, data_scope).await?;
     let content = match content_override {
         Some(content) => content.clone(),
-        None => get_draft(db, period_id).await?.content,
+        None => get_draft(db, period_id, scope).await?.content,
     };
     let (layout, images) = match layout_override {
         Some(layout) => {
@@ -1141,7 +1191,7 @@ pub async fn preview_html(
             let images = load_images(db, period_id, &layout).await?;
             (layout, images)
         }
-        None => load_design(db, period_id).await?,
+        None => load_design(db, period_id, scope).await?,
     };
     Ok(render::render_with_layout(
         &metrics, &content, config, &layout, &images,
@@ -1157,16 +1207,19 @@ pub async fn generate(
     handle: &JobHandle,
     user_id: &str,
     period_id: &str,
+    scope: &ReportScope,
+    data_scope: &DataScope,
 ) -> ApiResult<ReportView> {
     publish_phase(hub, job, "build").await;
     if handle.is_cancelled() {
         return Err(cancelled_pdf());
     }
     let (start_date, end_date, label) = periods::service::dates(db, period_id).await?;
-    let source_filename = source_summary(db, &start_date, &end_date).await?;
-    let content = get_draft(db, period_id).await?.content;
-    let metrics = metrics_for(db, config, period_id).await?;
-    let (layout, images) = load_design(db, period_id).await?;
+    let content = get_draft(db, period_id, &scope.key).await?.content;
+    let metrics = metrics_for_scope(db, config, period_id, data_scope).await?;
+    // Nama berkas sumber mengikuti data yang benar-benar masuk ke laporan.
+    let source_filename = metrics.source_filename.clone();
+    let (layout, images) = load_design(db, period_id, &scope.key).await?;
     let html = render::render_with_layout(&metrics, &content, config, &layout, &images);
 
     let report_id = Uuid::new_v4().to_string();
@@ -1214,12 +1267,14 @@ pub async fn generate(
 
     sqlx::query(
         "INSERT INTO report_runs(
-            id, period_id, content_json, metrics_json, layout_json, pdf_path, html_path,
-            polda_name, source_filename, period_label, created_by
-         ) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            id, period_id, scope, scope_label, content_json, metrics_json, layout_json,
+            pdf_path, html_path, polda_name, source_filename, period_label, created_by
+         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .bind(&report_id)
     .bind(period_id)
+    .bind(&scope.key)
+    .bind(&scope.label)
     .bind(serde_json::to_string(&content).map_err(ApiError::internal)?)
     .bind(serde_json::to_string(&metrics).map_err(ApiError::internal)?)
     .bind(serde_json::to_string(&layout).map_err(ApiError::internal)?)
@@ -1242,6 +1297,7 @@ pub async fn generate(
         serde_json::json!({
             "start_date": start_date,
             "end_date": end_date,
+            "scope": scope.key,
         }),
     )
     .await?;
@@ -1253,6 +1309,8 @@ pub async fn generate(
         created_at: chrono::Utc::now().to_rfc3339(),
         source_filename,
         period_label: label,
+        scope: scope.key.clone(),
+        scope_label: scope.label.clone(),
         pdf_url: format!("/api/reports/{report_id}/pdf"),
         preview_url: format!("/api/reports/{report_id}/preview"),
     })
@@ -1417,6 +1475,8 @@ fn report_from_row(row: sqlx::sqlite::SqliteRow) -> ReportView {
         created_at: row.get("created_at"),
         source_filename: row.get("source_filename"),
         period_label: row.get("period_label"),
+        scope: row.get("scope"),
+        scope_label: row.get("scope_label"),
         pdf_url: format!("/api/reports/{id}/pdf"),
         preview_url: format!("/api/reports/{id}/preview"),
     }
@@ -1434,26 +1494,42 @@ fn file_url(path: &Path) -> String {
 pub async fn report_paths(
     db: &SqlitePool,
     report_id: &str,
-) -> ApiResult<(PathBuf, String, String)> {
-    let row = sqlx::query("SELECT pdf_path, html_path, period_label FROM report_runs WHERE id = ?")
-        .bind(report_id)
-        .fetch_optional(db)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found("Dokumen laporan tidak ditemukan."))?;
+) -> ApiResult<(PathBuf, String, String, String)> {
+    let row = sqlx::query(
+        "SELECT pdf_path, html_path, period_label, scope_label
+         FROM report_runs WHERE id = ?",
+    )
+    .bind(report_id)
+    .fetch_optional(db)
+    .await
+    .map_err(ApiError::internal)?
+    .ok_or_else(|| ApiError::not_found("Dokumen laporan tidak ditemukan."))?;
     Ok((
         PathBuf::from(row.get::<String, _>("pdf_path")),
         row.get::<String, _>("html_path"),
         row.get("period_label"),
+        row.get("scope_label"),
     ))
 }
 
-fn report_filename(label: &str) -> String {
-    let sanitized: String = label
+/// Nama berkas unduhan; dokumen satker menyertakan nama unit agar mudah
+/// dibedakan dari dokumen global Polda.
+fn report_filename(label: &str, scope_label: &str) -> String {
+    let label = filename_part(label);
+    let scope_label = filename_part(scope_label);
+    if scope_label.is_empty() {
+        format!("laporan-{label}.pdf")
+    } else {
+        format!("laporan-{scope_label}-{label}.pdf")
+    }
+}
+
+fn filename_part(value: &str) -> String {
+    let sanitized: String = value
         .chars()
         .map(|ch| if ch.is_alphanumeric() { ch } else { '-' })
         .collect();
-    format!("laporan-{}.pdf", sanitized.trim_matches('-'))
+    sanitized.trim_matches('-').to_string()
 }
 
 pub async fn download_path(
@@ -1461,11 +1537,11 @@ pub async fn download_path(
     _config: &Config,
     report_id: &str,
 ) -> ApiResult<(PathBuf, String)> {
-    let (path, _html, label) = report_paths(db, report_id).await?;
+    let (path, _html, label, scope_label) = report_paths(db, report_id).await?;
     if !path.exists() {
         return Err(ApiError::not_found("Berkas PDF tidak ditemukan."));
     }
-    Ok((path, report_filename(&label)))
+    Ok((path, report_filename(&label, &scope_label)))
 }
 
 pub async fn delete_report(
@@ -1615,7 +1691,7 @@ pub async fn create_share(
 
 async fn public_share_row(db: &SqlitePool, token: &str) -> ApiResult<sqlx::sqlite::SqliteRow> {
     sqlx::query(
-        "SELECT r.pdf_path, r.html_path,
+        "SELECT r.pdf_path, r.html_path, r.scope_label,
                 COALESCE(NULLIF(r.period_label, ''), p.label) AS period_label,
                 s.created_at AS shared_at
          FROM report_shares s
@@ -1633,9 +1709,15 @@ async fn public_share_row(db: &SqlitePool, token: &str) -> ApiResult<sqlx::sqlit
 pub async fn public_share(db: &SqlitePool, token: &str) -> ApiResult<PublicShareView> {
     let row = public_share_row(db, token).await?;
     let period_label: String = row.get("period_label");
+    let scope_label: String = row.get("scope_label");
+    let title = if scope_label.is_empty() {
+        period_label.clone()
+    } else {
+        format!("{period_label} · {scope_label}")
+    };
     Ok(PublicShareView {
         token: token.to_string(),
-        title: period_label.clone(),
+        title,
         period_label,
         created_at: row.get("shared_at"),
     })
@@ -1661,7 +1743,8 @@ pub async fn public_download_path(db: &SqlitePool, token: &str) -> ApiResult<(Pa
         return Err(ApiError::not_found("Berkas PDF tidak ditemukan."));
     }
     let label: String = row.get("period_label");
-    Ok((path, report_filename(&label)))
+    let scope_label: String = row.get("scope_label");
+    Ok((path, report_filename(&label, &scope_label)))
 }
 
 #[cfg(test)]
@@ -1752,7 +1835,7 @@ mod tests {
         .await
         .unwrap();
 
-        let media = super::list_media(&db, "p1", None, None, None)
+        let media = super::list_media(&db, "p1", None, None, None, None)
             .await
             .unwrap();
         assert_eq!(media.len(), 3);
@@ -1762,24 +1845,24 @@ mod tests {
         assert_eq!(evidence.context, "Polsek Kuta · Patroli");
         assert_eq!(evidence.kode, "QW1.1");
 
-        let group = super::list_media(&db, "p1", Some("QW1"), None, None)
+        let group = super::list_media(&db, "p1", Some("QW1"), None, None, None)
             .await
             .unwrap();
         assert_eq!(group.len(), 2);
         assert!(
-            super::list_media(&db, "p1", Some("QW2"), None, None)
+            super::list_media(&db, "p1", Some("QW2"), None, None, None)
                 .await
                 .unwrap()
                 .is_empty()
         );
 
-        let polres = super::list_media(&db, "p1", None, Some("Polresta Denpasar"), None)
+        let polres = super::list_media(&db, "p1", None, Some("Polresta Denpasar"), None, None)
             .await
             .unwrap();
         assert_eq!(polres.len(), 1);
         assert_eq!(polres[0].id, "ev1");
 
-        let satker = super::list_media(&db, "p1", None, None, Some("SPKT"))
+        let satker = super::list_media(&db, "p1", None, None, Some("SPKT"), None)
             .await
             .unwrap();
         assert_eq!(satker.len(), 1);
@@ -1799,14 +1882,23 @@ mod tests {
         ordered.sort_by(|left, right| super::code_sort_key(left).cmp(&super::code_sort_key(right)));
         assert_eq!(ordered, vec!["QW1.2", "QW1.10", "QW2.1"]);
 
-        let same = super::import_media_image(&db, &config, "u1", "p1", "design", &uploaded.id)
-            .await
-            .unwrap();
+        let same = super::import_media_image(
+            &db,
+            &config,
+            "u1",
+            "p1",
+            &DataScope::All,
+            "design",
+            &uploaded.id,
+        )
+        .await
+        .unwrap();
         assert_eq!(same.id, uploaded.id);
 
-        let copied = super::import_media_image(&db, &config, "u1", "p1", "evidence", "ev1")
-            .await
-            .unwrap();
+        let copied =
+            super::import_media_image(&db, &config, "u1", "p1", &DataScope::All, "evidence", "ev1")
+                .await
+                .unwrap();
         assert_ne!(copied.id, uploaded.id);
         assert!(
             tokio::fs::try_exists(dir.path().join("design/p1"))
@@ -1821,9 +1913,17 @@ mod tests {
                 .unwrap();
         assert_eq!(count, 2);
 
-        let cross = super::import_media_image(&db, &config, "u1", "p2", "design", &uploaded.id)
-            .await
-            .unwrap();
+        let cross = super::import_media_image(
+            &db,
+            &config,
+            "u1",
+            "p2",
+            &DataScope::All,
+            "design",
+            &uploaded.id,
+        )
+        .await
+        .unwrap();
         assert_ne!(cross.id, uploaded.id);
     }
 
@@ -1868,7 +1968,7 @@ mod tests {
         let template = super::save_template(&db, "u1", "Latar", layout)
             .await
             .unwrap();
-        let applied = super::apply_template(&db, &config, "u1", "p2", &template.id)
+        let applied = super::apply_template(&db, &config, "u1", "p2", "", &template.id)
             .await
             .unwrap();
 
@@ -2007,7 +2107,7 @@ mod tests {
                 ..PageLayout::default()
             }],
         };
-        let first = save_layout(&db, "u1", "p1", layout).await.unwrap();
+        let first = save_layout(&db, "u1", "p1", "", layout).await.unwrap();
         assert_eq!(first.revision, 1);
 
         let mut changed = element();
@@ -2021,8 +2121,79 @@ mod tests {
             }],
             ..LayoutPatch::default()
         };
-        let second = apply_patch(&db, "u1", "p1", &patch).await.unwrap();
+        let second = apply_patch(&db, "u1", "p1", "", &patch).await.unwrap();
         assert_eq!(second.revision, 2);
         assert_eq!(second.layout.pages[0].elements[0].text, "Diperbarui");
+    }
+
+    #[tokio::test]
+    async fn keeps_design_and_draft_per_scope_separate() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::test_config();
+        config.data_dir = dir.path().to_path_buf();
+        let db = crate::db::connect(&config).await.unwrap();
+        sqlx::query(
+            "INSERT INTO users(id,username,password_hash,role,polres)
+             VALUES('u1','tester','x','polres','Polresta Surakarta'),
+                   ('u2','global','x','admin','')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO report_periods(id,start_date,end_date,label,created_by)
+             VALUES('p1','2026-10-19','2026-10-25','19–25 Oktober 2026','u1')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let scope = "polres:Polresta Surakarta";
+        let layout = ReportLayout {
+            version: 1,
+            mode: "blank".into(),
+            orientation: "portrait".into(),
+            pages: vec![PageLayout {
+                page: 1,
+                elements: vec![LayoutElement {
+                    id: "teks-1".into(),
+                    kind: "text".into(),
+                    text: "Satker".into(),
+                    ..LayoutElement::default()
+                }],
+                ..PageLayout::default()
+            }],
+        };
+        save_layout(&db, "u1", "p1", scope, layout).await.unwrap();
+
+        // Desain global belum tersentuh oleh simpanan satker.
+        let global = get_layout(&db, "p1", "").await.unwrap();
+        assert_eq!(global.revision, 0);
+        assert!(
+            global
+                .layout
+                .pages
+                .iter()
+                .flat_map(|page| &page.elements)
+                .all(|element| element.text != "Satker")
+        );
+        let satker = get_layout(&db, "p1", scope).await.unwrap();
+        assert_eq!(satker.revision, 1);
+
+        let mut content = ReportContent::default();
+        content.summary = "Ringkasan satker".into();
+        save_draft(&db, "u1", "p1", scope, &content).await.unwrap();
+        assert_eq!(
+            get_draft(&db, "p1", scope).await.unwrap().content.summary,
+            "Ringkasan satker"
+        );
+        assert!(
+            get_draft(&db, "p1", "")
+                .await
+                .unwrap()
+                .content
+                .summary
+                .is_empty()
+        );
     }
 }

@@ -29,7 +29,7 @@ pub async fn list(
     Query(query): Query<ListPeriodsQuery>,
 ) -> ApiResult<Json<Vec<PeriodView>>> {
     // Peran baca-saja hanya melihat periode aktif.
-    let include_archived = query.include_archived && !user.is_reader();
+    let include_archived = query.include_archived && user.is_global_writer();
     Ok(Json(
         periods::service::list(&state.db, include_archived).await?,
     ))
@@ -40,7 +40,7 @@ pub async fn create(
     user: AuthUser,
     Json(input): Json<CreatePeriodRequest>,
 ) -> ApiResult<Json<PeriodView>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let period = periods::service::create(&state.db, &user.id, &input).await?;
     audit::record(
         &state.db,
@@ -64,7 +64,7 @@ pub async fn update(
     Path(period_id): Path<String>,
     Json(input): Json<UpdatePeriodRequest>,
 ) -> ApiResult<Json<PeriodView>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let period = periods::service::update(&state.db, &period_id, &input).await?;
     cache::invalidate();
     audit::record(
@@ -106,7 +106,7 @@ async fn set_archived(
     period_id: String,
     archived: bool,
 ) -> ApiResult<Json<PeriodView>> {
-    user.require_writer()?;
+    user.require_global_writer()?;
     let period = periods::service::set_archived(&state.db, &period_id, archived).await?;
     audit::record(
         &state.db,
@@ -132,18 +132,21 @@ pub async fn detail(
     let period = periods::service::get(&state.db, &period_id).await?;
     let imports =
         imports::service::list_for_range(&state.db, &period.start_date, &period.end_date).await?;
-    let reports = reports::service::list_for_period(&state.db, &period_id).await?;
+    let filter = reports::models::ReportScope::document_filter(&user);
+    let documents =
+        reports::service::list_for_period(&state.db, &period_id, filter.as_deref()).await?;
     // Draft adalah konten editorial Polda; peran baca-saja tidak memerlukannya.
     let draft = if user.is_reader() {
         None
     } else {
-        Some(reports::service::get_draft(&state.db, &period_id).await?)
+        let scope = reports::models::ReportScope::from_user(&user);
+        Some(reports::service::get_draft(&state.db, &period_id, &scope.key).await?)
     };
 
     Ok(Json(PeriodDetail {
         period,
         imports,
-        reports,
+        reports: documents,
         draft,
     }))
 }

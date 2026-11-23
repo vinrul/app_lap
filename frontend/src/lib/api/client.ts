@@ -18,6 +18,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 
   const response = await fetch(`/api${path}`, {
     credentials: 'same-origin',
+    cache: 'no-store',
     ...init,
     headers,
   })

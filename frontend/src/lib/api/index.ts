@@ -437,7 +437,11 @@ export async function downloadReport(report: ReportView): Promise<void> {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = `laporan-mingguan-${report.period_label.replace(/\s+/g, '-')}.pdf`
+  // Nama berkas dari server sudah memuat nama satker untuk dokumen satker.
+  const disposition = response.headers.get('content-disposition') ?? ''
+  const serverName = /filename="?([^";]+)"?/i.exec(disposition)?.[1]
+  const unit = report.scope_label ? `${report.scope_label.replace(/\s+/g, '-')}-` : ''
+  anchor.download = serverName ?? `laporan-${unit}${report.period_label.replace(/\s+/g, '-')}.pdf`
   document.body.appendChild(anchor)
   anchor.click()
   anchor.remove()

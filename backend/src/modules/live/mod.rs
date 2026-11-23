@@ -47,6 +47,8 @@ async fn upgrade(ws: WebSocketUpgrade, State(state): State<AppState>, user: Auth
 struct Session {
     conn_id: Uuid,
     client_id: String,
+    /// Cakupan desain yang diikuti; kosong berarti desain global.
+    scope: String,
     room: Arc<hub::Room>,
     forward: tokio::task::JoinHandle<()>,
 }
@@ -190,7 +192,7 @@ async fn handle(
             Ok(())
         }
         ClientMessage::WatchJob { job } => {
-            user.require_writer().map_err(|_| {
+            user.require_global_writer().map_err(|_| {
                 (
                     "forbidden",
                     "Hanya pengguna dengan izin menyunting yang dapat memantau pekerjaan."
@@ -258,7 +260,7 @@ async fn handle(
             Ok(())
         }
         ClientMessage::Cancel { job } => {
-            user.require_writer().map_err(|_| {
+            user.require_global_writer().map_err(|_| {
                 (
                     "forbidden",
                     "Hanya pengguna dengan izin menyunting yang dapat membatalkan pekerjaan."
@@ -288,10 +290,11 @@ async fn handle(
             if let Some(previous) = connection.session.take() {
                 previous.close().await;
             }
-            let snapshot = reports::service::get_layout(&state.db, &period_id)
+            let scope = reports::models::ReportScope::from_user(user);
+            let snapshot = reports::service::get_layout(&state.db, &period_id, &scope.key)
                 .await
                 .map_err(|error| ("not_found", error.to_string()))?;
-            let room = state.hub.room(&period_id).await;
+            let room = state.hub.design_room(&period_id, &scope.key).await;
             let conn_id = Uuid::new_v4();
             let client_id = if client_id.trim().is_empty() {
                 Uuid::new_v4().to_string()
@@ -330,6 +333,7 @@ async fn handle(
             connection.session = Some(Session {
                 conn_id,
                 client_id,
+                scope: scope.key,
                 room,
                 forward,
             });
@@ -359,10 +363,12 @@ async fn handle(
             };
             let period_id = active.room.period_id().to_string();
             let client_id = active.client_id.clone();
+            let scope = active.scope.clone();
             let _guard = state.design_lock.lock().await;
-            let view = reports::service::apply_patch(&state.db, &user.id, &period_id, &patch)
-                .await
-                .map_err(|error| ("save_failed", error.to_string()))?;
+            let view =
+                reports::service::apply_patch(&state.db, &user.id, &period_id, &scope, &patch)
+                    .await
+                    .map_err(|error| ("save_failed", error.to_string()))?;
             let snapshot = ServerMessage::snapshot(&view.layout);
             active.room.publish(ServerMessage::DesignPatch {
                 period_id: period_id.clone(),

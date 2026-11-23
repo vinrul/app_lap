@@ -3,6 +3,7 @@
   import { downloadReport, openReportPreview, reportsApi } from '../../api'
   import type { ReportView } from '../../types'
   import { formatDateTime } from '../../utils/format'
+  import { auth } from '../../stores/auth.svelte'
   import { toast } from '../../stores/toast.svelte'
   import { dialog } from '../../stores/dialog.svelte'
   import Button from '../ui/Button.svelte'
@@ -19,6 +20,16 @@
   let busyId = $state('')
   let deletingId = $state('')
   let shareTarget = $state<ReportView | null>(null)
+
+  /** Admin global mengelola semua dokumen; akun polres hanya dokumen polresnya. */
+  function canManage(report: ReportView): boolean {
+    const role = auth.user?.role
+    if (role === 'admin' || role === 'operator') return true
+    if (role === 'polres') {
+      return report.scope_label === (auth.user?.polres || '')
+    }
+    return false
+  }
 
   async function download(report: ReportView) {
     busyId = report.id
@@ -74,24 +85,35 @@
         <div class="flex flex-wrap items-center gap-3 px-5 py-4">
           <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-forest-50 text-forest-700"><FileText size={18} /></span>
           <div class="min-w-0 flex-1">
-            <p class="truncate text-sm font-semibold text-ink">{report.period_label || 'Laporan mingguan'}</p>
+            <div class="flex flex-wrap items-center gap-2">
+              <p class="truncate text-sm font-semibold text-ink">{report.period_label || 'Laporan mingguan'}</p>
+              {#if report.scope_label}
+                <span class="badge badge-neutral" title="Dokumen satker">{report.scope_label}</span>
+              {:else}
+                <span class="badge badge-neutral" title="Dokumen global Polda">Global Polda</span>
+              {/if}
+            </div>
             <p class="mt-0.5 text-[11px] text-ink-muted">{formatDateTime(report.created_at)} · Sumber {report.source_filename}</p>
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <Button variant="secondary" size="sm" disabled={deletingId !== ''} onclick={() => openReportPreview(report)}>
               <Eye size={14} /> Pratinjau
             </Button>
-            <Button variant="secondary" size="sm" disabled={deletingId !== ''} onclick={() => (shareTarget = report)}>
-              <Share2 size={14} /> Bagikan & presentasi
-            </Button>
+            {#if canManage(report)}
+              <Button variant="secondary" size="sm" disabled={deletingId !== ''} onclick={() => (shareTarget = report)}>
+                <Share2 size={14} /> Bagikan & presentasi
+              </Button>
+            {/if}
             <Button size="sm" loading={busyId === report.id} disabled={deletingId !== ''} onclick={() => download(report)}>
               <Download size={14} /> Unduh
             </Button>
-            <Button variant="danger" size="sm" loading={deletingId === report.id}
-              disabled={deletingId !== '' && deletingId !== report.id || busyId === report.id}
-              onclick={() => remove(report)}>
-              <Trash2 size={14} /> Hapus
-            </Button>
+            {#if canManage(report)}
+              <Button variant="danger" size="sm" loading={deletingId === report.id}
+                disabled={deletingId !== '' && deletingId !== report.id || busyId === report.id}
+                onclick={() => remove(report)}>
+                <Trash2 size={14} /> Hapus
+              </Button>
+            {/if}
           </div>
         </div>
       {/each}

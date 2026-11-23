@@ -75,7 +75,8 @@ pub async fn load(
         .and_then(|metrics| metrics.coverage.clone());
 
     let recent_periods = periods.into_iter().take(6).collect();
-    let recent_reports = recent_reports(db).await?;
+    let report_filter = reports::models::ReportScope::document_filter_for_scope(scope);
+    let recent_reports = recent_reports(db, report_filter.as_deref()).await?;
 
     Ok(DashboardResponse {
         polda_name: config.polda_name.clone(),
@@ -97,17 +98,20 @@ async fn scalar(db: &SqlitePool, query: &'static str) -> ApiResult<i64> {
         .map_err(ApiError::internal)
 }
 
-async fn recent_reports(db: &SqlitePool) -> ApiResult<Vec<ReportView>> {
+async fn recent_reports(db: &SqlitePool, scope_filter: Option<&str>) -> ApiResult<Vec<ReportView>> {
     let rows = sqlx::query(
-        "SELECT r.id, r.period_id, r.created_at,
+        "SELECT r.id, r.period_id, r.created_at, r.scope, r.scope_label,
                 COALESCE(NULLIF(r.period_label, ''), p.label) AS period_label,
                 r.source_filename
          FROM report_runs r
          JOIN report_periods p ON p.id = r.period_id
          WHERE p.archived_at IS NULL
+           AND (? IS NULL OR r.scope = '' OR r.scope = ?)
          ORDER BY r.created_at DESC
          LIMIT 6",
     )
+    .bind(scope_filter)
+    .bind(scope_filter)
     .fetch_all(db)
     .await
     .map_err(ApiError::internal)?;
@@ -122,6 +126,8 @@ async fn recent_reports(db: &SqlitePool) -> ApiResult<Vec<ReportView>> {
                 created_at: row.get("created_at"),
                 source_filename: row.get("source_filename"),
                 period_label: row.get("period_label"),
+                scope: row.get("scope"),
+                scope_label: row.get("scope_label"),
                 pdf_url: format!("/api/reports/{id}/pdf"),
                 preview_url: format!("/api/reports/{id}/preview"),
             }

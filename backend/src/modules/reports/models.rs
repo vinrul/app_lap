@@ -2,9 +2,56 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    modules::{imports::models::CoverageResponse, reports::layout::ReportLayout},
+    modules::{
+        auth::{AuthUser, DataScope},
+        imports::models::CoverageResponse,
+        reports::layout::ReportLayout,
+    },
     shared::types::{LabeledCount, UnitBreakdown},
 };
+
+/// Cakupan penyimpanan desain, draft, dan dokumen. `key` kosong berarti
+/// cakupan global Polda; `label` dipakai pada nama berkas PDF dan daftar
+/// dokumen.
+#[derive(Clone, Debug, Default)]
+pub struct ReportScope {
+    pub key: String,
+    pub label: String,
+}
+
+impl ReportScope {
+    /// Akun polres memakai cakupan polresnya; admin dan operator memakai
+    /// cakupan global. Peran polda baca-saja tidak menulis desain.
+    pub fn from_user(user: &AuthUser) -> Self {
+        if user.is_global_writer() {
+            return Self::default();
+        }
+        let label = if !user.polres.trim().is_empty() {
+            user.polres.trim()
+        } else {
+            user.satker.trim()
+        };
+        Self {
+            key: user.data_scope().key(),
+            label: label.to_string(),
+        }
+    }
+
+    /// Penyaring daftar dokumen. `None` berarti semua dokumen; `Some(key)`
+    /// berarti dokumen global ditambah dokumen milik cakupan tersebut.
+    pub fn document_filter(user: &AuthUser) -> Option<String> {
+        Self::document_filter_for_scope(&user.data_scope())
+    }
+
+    pub fn document_filter_for_scope(scope: &DataScope) -> Option<String> {
+        match scope {
+            DataScope::All => None,
+            // Polda tanpa satker tetap melihat seluruh dokumen Polda.
+            DataScope::Polda { satker: None } => None,
+            other => Some(other.key()),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -46,6 +93,11 @@ pub struct ReportView {
     pub created_at: String,
     pub source_filename: String,
     pub period_label: String,
+    /// Cakupan dokumen: kosong untuk global Polda, atau kunci unit seperti
+    /// `polres:Polresta Surakarta`.
+    pub scope: String,
+    /// Nama unit untuk tampilan; kosong pada dokumen global.
+    pub scope_label: String,
     pub pdf_url: String,
     pub preview_url: String,
 }
