@@ -106,6 +106,19 @@ def date_count_text(dates) -> str:
     return f"{len(dates)} hari · {date_short(dates[0])}–{date_short(dates[-1])}" if dates else "—"
 
 
+def format_isian_full(text: str) -> str:
+    text = mask_sensitive(str(text or ""))
+    lines = []
+    for raw_line in text.replace("\r", "\n").split("\n"):
+        line = re.sub(r"[ \t]+", " ", raw_line).strip()
+        if not line:
+            continue
+        line = re.sub(r"\s+(?=[a-j]\.\s)", "\n", line)
+        line = re.sub(r"\s+(?=\d{1,2}\)\s)", "\n", line)
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
 def display_narrative(text: str) -> str:
     text = URL_RE.sub(" ", str(text or ""))
     text = COORD_RE.sub(" ", text)
@@ -395,7 +408,7 @@ def ranking_pelapor_rows(mode: str) -> str:
     return "".join(rows)
 
 
-def pair_block(pair: dict, show_shared: bool = True) -> str:
+def pair_block(pair: dict, show_shared: bool = True, full: bool = False) -> str:
     satker = pair["satuan"]
     polres_raw = pair["polres"]
     polres = polres_raw or "Polda Bali"
@@ -441,9 +454,57 @@ def pair_block(pair: dict, show_shared: bool = True) -> str:
         shared_html = (
             '<div class="shared-box">'
             f"<b>Bagian yang sama</b> · {num(pair['shared_len'])} karakter: "
-            f"<i>{esc(truncate(shared, 230))}</i>"
+            f"<i>{esc(truncate(shared, 200))}</i>"
             "</div>"
         )
+
+    def full_text(report):
+        text = format_isian_full(report["isian"])
+        if not text:
+            text = "(isian kosong)"
+        return "".join(f'<div class="fl">{esc(part)}</div>' for part in text.split("\n"))
+
+    def full_head(side_label, report):
+        return (
+            '<div class="full-report-head">'
+            f'<span class="side">{side_label}</span>'
+            f'<span class="kode">{esc(report["kode"])}</span>'
+            f'<span class="jam">{esc(date_short(report["wib"][:10]))} {esc(report["jam"])} WIB</span>'
+            f'<span class="uuid">UUID {esc(report["uuid"])} · baris {num(report["row"])}</span>'
+            "</div>"
+        )
+
+    if full:
+        body = (
+            '<div class="full-report">'
+            + full_head("A", a)
+            + f'<div class="full-text">{full_text(a)}</div>'
+            + "</div>"
+            + '<div class="full-report">'
+            + full_head("B", b)
+            + f'<div class="full-text">{full_text(b)}</div>'
+            + "</div>"
+        )
+        return f"""
+<div class="full-pair">
+  <div class="pair-head">
+    <div class="who">
+      <strong>{esc(satker)}</strong>
+      <span>{esc(unit_line)} · {esc(pelapor)}</span>
+    </div>
+    <div class="badge {badge_class}">{esc(badge)}</div>
+  </div>
+  <div class="pair-meta">
+    <span>Tanggal kegiatan <b>{esc(date_id(tanggal))}</b></span>
+    <span>Kemiripan <b>{pct(pair['ratio'])}</b></span>
+    <span>Teks sama <b>{num(pair['matched'])} karakter</b></span>
+    <span>Cakupan <b>{pct(pair['coverage'])}</b></span>
+    {"<span><b>Isian identik</b></span>" if identical else ""}
+  </div>
+  {shared_html}
+  {body}
+</div>
+"""
 
     return f"""
 <div class="pair">
@@ -479,7 +540,7 @@ def section_a_html() -> str:
             f"{num(len(uuid_set(items)))} laporan</span></div>"
         )
         for pair in items:
-            blocks.append(pair_block(pair))
+            blocks.append(pair_block(pair, full=True))
     return "".join(blocks)
 
 
@@ -495,7 +556,7 @@ def section_b1_html() -> str:
             f"{num(len(uuid_set(items)))} laporan</span></div>"
         )
         for pair in items:
-            blocks.append(pair_block(pair))
+            blocks.append(pair_block(pair, full=True))
     return "".join(blocks)
 
 
@@ -621,7 +682,7 @@ def accident_html() -> str:
         return '<p class="small">Tidak ada pasangan kecelakaan lintas QW yang memenuhi ambang.</p>'
     blocks = []
     for pair in ACCIDENT:
-        blocks.append(pair_block(pair))
+        blocks.append(pair_block(pair, full=True))
     return "".join(blocks)
 
 
@@ -682,6 +743,15 @@ ul.list li { margin-bottom:1.2mm; }
 .unit-head h3 { color:#fff; margin:0; font-size:11.5pt; }
 .unit-head span { font-size:7.2pt; color:#cfe0d6; }
 .pair { border:.5pt solid var(--line); border-radius:2mm; margin:0 0 3.2mm; break-inside:avoid; page-break-inside:avoid; overflow:hidden; }
+.full-pair { border:.5pt solid var(--line); border-radius:2mm; margin:0 0 3.2mm; }
+.full-report { padding:1.6mm 3mm 2mm; border-top:.4pt solid var(--line); }
+.full-report:first-of-type { border-top:none; }
+.full-report-head { display:flex; flex-wrap:wrap; gap:1mm 4mm; align-items:center; font-size:6.8pt; color:var(--soft); break-after:avoid; page-break-after:avoid; }
+.full-report-head .side { display:inline-block; width:3.4mm; height:3.4mm; line-height:3.4mm; text-align:center; border-radius:50%; background:var(--forest); color:#fff; font-weight:700; font-size:5.8pt; }
+.full-report-head .jam { color:var(--ink); font-weight:700; }
+.full-report-head .uuid { font-family:Consolas,monospace; font-size:5.6pt; color:var(--muted); }
+.full-text { font-size:6.9pt; line-height:1.42; color:#35413b; margin-top:.9mm; overflow-wrap:anywhere; word-break:break-word; column-count:2; column-gap:6mm; }
+.full-text .fl { margin:0 0 .5mm; break-inside:avoid; }
 .pair-head { background:var(--pale); padding:2mm 3mm; border-bottom:.5pt solid var(--line); display:flex; justify-content:space-between; gap:4mm; break-after:avoid; page-break-after:avoid; }
 .pair-head .who { min-width:0; }
 .pair-head .who strong { font-size:9.4pt; color:var(--forest); }
@@ -964,7 +1034,8 @@ Peringkat isian berulang dihitung terpisah dari Kategori C karena sifatnya linta
 <h2 class="section">4. Kategori A — Pengiriman Ganda pada QW yang Sama (≤10 Menit)</h2>
 <p>Kategori ini paling mendekati pola yang Anda contohkan: satker dan pelapor yang sama mengirim isian yang sama
 pada QW yang sama dalam hitungan menit. Dari {num(TOTAL_REPORTS)} laporan, ditemukan <strong>{num(len(PAIRS_A))} pasangan</strong>
-yang memenuhi ambang, seluruhnya pada <strong>QW1.10</strong>. Isian yang berulang adalah rute patroli dan alasan pemilihan rute.</p>
+yang memenuhi ambang, seluruhnya pada <strong>QW1.10</strong>. Isian yang berulang adalah rute patroli dan alasan pemilihan rute.
+Isian kedua laporan ditampilkan <strong>lengkap</strong> di bawah ini.</p>
 <div class="note">
   <strong>Contoh tercepat.</strong> {esc(top_a['satuan'])} — {esc(top_a['pelapor'])}, {esc(date_id(top_a['tanggal']))},
   QW1.10 pukul {esc(top_a['a']['jam'])} WIB lalu {esc(top_a['b']['jam'])} WIB: jeda {esc(gap_text(top_a['gap_s']))},
@@ -975,7 +1046,7 @@ yang memenuhi ambang, seluruhnya pada <strong>QW1.10</strong>. Isian yang berula
 <h2 class="section">5. Kategori B1 — Narasi Kejadian yang Sama pada QW Berbeda</h2>
 <p>Kategori ini menjawab pola kedua: isian tentang suatu kejadian dilaporkan pada satu QW, lalu bagian yang sama
 muncul pada QW lain. Ditemukan <strong>{num(len(PAIRS_B1))} pasangan</strong> pada {num(len({pair['satuan'] for pair in PAIRS_B1}))} satker;
-<strong>{num(FAST_B1)} pasangan terjadi ≤10 menit</strong>.</p>
+<strong>{num(FAST_B1)} pasangan terjadi ≤10 menit</strong>. Isian lengkap ditampilkan pada contoh 5.1 dan seluruh pasangan 5.2.</p>
 <div class="note">
   <strong>Catatan tentang contoh QW5.3 → QW4.2.</strong> Pola persis “kecelakaan pada QW5.3 lalu diulang pada QW4.2”
   tidak ditemukan pada data Bali. Dari {num(QW53_PAIRS)} pasangan QW5.3–QW4.2 yang berjarak ≤10 menit,
@@ -994,7 +1065,9 @@ muncul pada QW lain. Ditemukan <strong>{num(len(PAIRS_B1))} pasangan</strong> pa
 <h2 class="section">6. Kategori B2 — Narasi Templat yang Sama pada QW Berbeda</h2>
 <p>Kategori ini memuat <strong>{num(len(PAIRS_B2))} pasangan</strong> pada {num(len({pair['satuan'] for pair in PAIRS_B2}))} satker.
 Sebagian besar merupakan jawaban formulir yang sama (misalnya “belum ada saran atau keluhan”) yang disalin ke beberapa QW.
-Pola ini tidak selalu berarti laporan ganda, tetapi menunjukkan isian yang tidak spesifik dan berpotensi mengaburkan penilaian.</p>
+Pola ini tidak selalu berarti laporan ganda, tetapi menunjukkan isian yang tidak spesifik dan berpotensi mengaburkan penilaian.
+Kategori B2 dan C ditampilkan dalam bentuk ringkas/cuplikan karena narasinya bersifat templat atau kelompok;
+isian lengkap per laporan ada pada pasangan A dan B1 di bagian 4–5.</p>
 <div class="note">
   <strong>Konsentrasi terbesar.</strong> {esc(b2_top[0])} menyumbang {num(b2_top[1])} pasangan.
   Satu pelapor menyalin narasi yang sama ke QW3.2 dan QW4.1–QW4.4 pada hari yang sama.
