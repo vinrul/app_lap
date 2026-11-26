@@ -1092,11 +1092,18 @@ export interface CoverageDeadlineCode {
 
 export interface CoverageDeadlineRow {
   source_row: number
+  /** Satuan pelapor baris ini, mis. "Polsek Kuta". */
+  unit: string
   tanggal: string
   waktu: string
   kode: string
   kegiatan: string
   reason: string
+}
+
+export interface CoverageDeadlineSubunit {
+  label: string
+  findings: number
 }
 
 export interface CoverageDeadlineUnit {
@@ -1106,6 +1113,8 @@ export interface CoverageDeadlineUnit {
   findings: number
   percent: number
   codes: CoverageDeadlineCode[]
+  /** Rekap temuan per satuan pelapor (polsek/polres) dalam polres ini. */
+  subunits: CoverageDeadlineSubunit[]
   details: CoverageDeadlineRow[]
 }
 

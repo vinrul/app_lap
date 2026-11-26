@@ -792,7 +792,8 @@
               Laporan QW1.1–QW1.8 diperiksa terhadap hari dan jam batas.
               Satu baris yang melewati batas dihitung satu temuan. Peringkat diurutkan dari
               temuan terbanyak sampai satuan tanpa temuan. Total dan peringkat hanya menghitung
-              satuan tingkat polres; laporan satker Polda tidak diikutkan.
+              satuan tingkat polres; laporan satker Polda tidak diikutkan. Rincian setiap temuan
+              mencantumkan satuan pelapor (polsek atau polres) beserta rekap per satuan.
               Section ini memakai <strong>Tanggal lapor (WIB)</strong>; jadwal di atas memeriksa
               hari kegiatan. Khusus QW1.7, laporan hari Minggu sampai pukul 08:00 tetap dianggap tepat waktu.
             </p>
@@ -820,7 +821,7 @@
               <p class="mt-1 text-2xl font-bold text-red-700">{formatNumber(deadline.findings)}</p>
             </div>
             <div class="rounded-xl border border-line bg-white p-3">
-              <span class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">Satuan dengan temuan</span>
+              <span class="text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">Polres dengan temuan</span>
               <p class="mt-1 text-2xl font-bold text-gold-700">{formatNumber(deadlineUnitsWithFindings)}</p>
             </div>
             <div class="rounded-xl border border-line bg-white p-3">
@@ -869,7 +870,7 @@
               <div>
                 <h3 class="text-[11px] font-bold tracking-[0.12em] text-ink-muted uppercase">Peringkat per polres</h3>
                 <p class="mt-0.5 text-[10px] text-ink-muted">
-                  Klik satuan untuk melihat rincian temuan. Maksimal 50 baris ditampilkan per satuan.
+                  Klik satuan untuk melihat rincian temuan beserta polsek/satuan pelakunya. Maksimal 50 baris ditampilkan per satuan.
                 </p>
               </div>
               <label class="flex flex-col gap-1">
@@ -896,7 +897,7 @@
                           : 'Tidak ada laporan'}
                     </span>
                     <span class="text-[10px] text-ink-muted">
-                      {formatNumber(unit.rows)} baris · {deadlinePercent(unit)} tepat waktu
+                      {formatNumber(unit.rows)} baris · {deadlinePercent(unit)} tepat waktu{#if unit.subunits?.length} · {unit.subunits.length} satuan{/if}
                     </span>
                   </summary>
                   <div class="border-t border-line p-3">
@@ -907,12 +908,23 @@
                         {/each}
                       </div>
                     {/if}
+                    {#if unit.subunits?.length}
+                      <div class="mb-2">
+                        <p class="mb-1 text-[9px] font-bold tracking-[0.1em] text-ink-muted uppercase">Satuan dengan temuan</p>
+                        <div class="flex flex-wrap gap-1">
+                          {#each unit.subunits ?? [] as subunit (subunit.label)}
+                            <span class="badge badge-danger">{subunit.label} · {formatNumber(subunit.findings)}</span>
+                          {/each}
+                        </div>
+                      </div>
+                    {/if}
                     {#if unit.details.length}
                       <div class="max-h-72 overflow-auto rounded-lg border border-line">
                         <table class="min-w-full text-left text-[10px]">
                           <thead class="sticky top-0 bg-stone-50 text-[9px] text-ink-muted uppercase">
                             <tr>
                               <th class="px-2 py-1.5">Baris</th>
+                              <th class="px-2 py-1.5">Satuan</th>
                               <th class="px-2 py-1.5">Tanggal lapor</th>
                               <th class="px-2 py-1.5">Jam</th>
                               <th class="px-2 py-1.5">Kode</th>
@@ -924,6 +936,7 @@
                             {#each unit.details as detail, detailIndex (detailIndex)}
                               <tr class="align-top">
                                 <td class="px-2 py-1.5 font-semibold">{detail.source_row}</td>
+                                <td class="min-w-[150px] px-2 py-1.5 text-ink-soft">{detail.unit || '—'}</td>
                                 <td class="whitespace-nowrap px-2 py-1.5">{formatDate(detail.tanggal)}</td>
                                 <td class="whitespace-nowrap px-2 py-1.5">{reportTime(detail.waktu)}</td>
                                 <td class="whitespace-nowrap px-2 py-1.5">{detail.kode}</td>

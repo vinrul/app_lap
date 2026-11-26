@@ -628,11 +628,20 @@ pub struct CoverageDeadlineCode {
 #[derive(Clone, Debug, Serialize)]
 pub struct CoverageDeadlineRow {
     pub source_row: i64,
+    /// Satuan pelapor baris ini, mis. `Polsek Kuta` atau `Polres Badung`.
+    pub unit: String,
     pub tanggal: String,
     pub waktu: String,
     pub kode: String,
     pub kegiatan: String,
     pub reason: String,
+}
+
+/// Sebaran temuan satu satuan pelapor di dalam satu polres.
+#[derive(Clone, Debug, Serialize)]
+pub struct CoverageDeadlineSubunit {
+    pub label: String,
+    pub findings: i64,
 }
 
 /// Kepatuhan batas waktu satu polres, dipakai untuk peringkat.
@@ -643,11 +652,10 @@ pub struct CoverageDeadlineUnit {
     pub rows: i64,
     pub on_time: i64,
     pub findings: i64,
-    /// Persentase tepat waktu; 0 bila tidak ada baris.
     pub percent: f64,
-    /// Temuan per sub-kode, terurut dari terbanyak.
     pub codes: Vec<CoverageDeadlineCode>,
-    /// Rincian temuan, dibatasi agar respons tetap ringkas.
+    /// Rekap temuan per satuan pelapor (polsek/polres) di polres ini.
+    pub subunits: Vec<CoverageDeadlineSubunit>,
     pub details: Vec<CoverageDeadlineRow>,
 }
 

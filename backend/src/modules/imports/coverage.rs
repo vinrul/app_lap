@@ -7,10 +7,11 @@ use crate::{
         bot,
         models::{
             CoverageBreakdown, CoverageCode, CoverageDeadlineCode, CoverageDeadlineReport,
-            CoverageDeadlineRow, CoverageDeadlineRule, CoverageDeadlineUnit, CoverageGroup,
-            CoverageMetric, CoverageProgram, CoverageResponse, CoverageSchedule,
-            CoverageScheduleChild, CoverageScheduleUnit, CoverageTable, CoverageTableRow,
-            CoverageUnit, CoverageUnitCount, CoverageUnitValue, RapidInputRankUnit, RecordView,
+            CoverageDeadlineRow, CoverageDeadlineRule, CoverageDeadlineSubunit,
+            CoverageDeadlineUnit, CoverageGroup, CoverageMetric, CoverageProgram, CoverageResponse,
+            CoverageSchedule, CoverageScheduleChild, CoverageScheduleUnit, CoverageTable,
+            CoverageTableRow, CoverageUnit, CoverageUnitCount, CoverageUnitValue,
+            RapidInputRankUnit, RecordView,
         },
         qw,
     },
@@ -4256,7 +4257,25 @@ struct DeadlineAcc {
     on_time: i64,
     findings: i64,
     codes: BTreeMap<String, i64>,
+    subunits: BTreeMap<String, i64>,
     details: Vec<CoverageDeadlineRow>,
+}
+
+/// Satuan pelapor satu baris: unit kolom Satuan, lalu polsek, satker, polres.
+fn deadline_unit_label(row: &RecordView) -> String {
+    let unit = row.unit.trim();
+    if !unit.is_empty() {
+        return unit.to_string();
+    }
+    let polsek = row.polsek.trim();
+    if !polsek.is_empty() {
+        return polsek.to_string();
+    }
+    let satker = record_satker_label(row);
+    if !satker.trim().is_empty() {
+        return satker;
+    }
+    row.polres.trim().to_string()
 }
 
 fn build_deadlines(rows: &[RecordView], known: &KnownUnits) -> CoverageDeadlineReport {
@@ -4319,9 +4338,12 @@ fn build_deadlines(rows: &[RecordView], known: &KnownUnits) -> CoverageDeadlineR
         } else {
             acc.findings += 1;
             total_findings += 1;
+            let unit = deadline_unit_label(row);
             *acc.codes.entry(found.code.to_string()).or_insert(0) += 1;
+            *acc.subunits.entry(unit.clone()).or_insert(0) += 1;
             acc.details.push(CoverageDeadlineRow {
                 source_row: row.source_row,
+                unit,
                 tanggal: report_datetime(&row.tanggal, &row.waktu_kirim_wib)
                     .0
                     .map(|date| date.format("%Y-%m-%d").to_string())
@@ -4348,6 +4370,17 @@ fn build_deadlines(rows: &[RecordView], known: &KnownUnits) -> CoverageDeadlineR
                     .cmp(&left.findings)
                     .then_with(|| left.code.cmp(&right.code))
             });
+            let mut subunits: Vec<CoverageDeadlineSubunit> = acc
+                .subunits
+                .into_iter()
+                .map(|(label, findings)| CoverageDeadlineSubunit { label, findings })
+                .collect();
+            subunits.sort_by(|left, right| {
+                right
+                    .findings
+                    .cmp(&left.findings)
+                    .then_with(|| left.label.cmp(&right.label))
+            });
             acc.details.sort_by_key(|row| row.source_row);
             acc.details.truncate(50);
             CoverageDeadlineUnit {
@@ -4357,6 +4390,7 @@ fn build_deadlines(rows: &[RecordView], known: &KnownUnits) -> CoverageDeadlineR
                 findings: acc.findings,
                 percent: deadline_percent(acc.on_time, acc.rows),
                 codes,
+                subunits,
                 details: acc.details,
             }
         })
@@ -8126,9 +8160,13 @@ mod tests {
         let mut late = row("QW1.1", "Polres", "Polres Tabanan", &[], 1, 0, 0.0, 0);
         late.tanggal = "2026-10-19".into();
         late.waktu_kirim_wib = "2026-10-19 08:30".into();
+        late.unit = "Polsek Kediri".into();
+        late.polsek = "Polsek Kediri".into();
         let mut late_qw12 = row("QW1.2", "Polres", "Polres Tabanan", &[], 1, 0, 0.0, 0);
         late_qw12.tanggal = "2026-10-19".into();
         late_qw12.waktu_kirim_wib = "2026-10-19 20:30".into();
+        late_qw12.unit = "Polsek Kediri".into();
+        late_qw12.polsek = "Polsek Kediri".into();
         let mut ignored_qw4 = row("QW4.1", "Polres", "Polres Tabanan", &[], 1, 0, 0.0, 0);
         ignored_qw4.tanggal = "2026-10-21".into();
         ignored_qw4.waktu_kirim_wib = "2026-10-21 20:30".into();
@@ -8160,6 +8198,15 @@ mod tests {
         assert_eq!(deadline.units[0].findings, 2);
         assert_eq!(deadline.units[0].codes.len(), 2);
         assert_eq!(deadline.units[0].details.len(), 2);
+        assert_eq!(deadline.units[0].subunits.len(), 1);
+        assert_eq!(deadline.units[0].subunits[0].label, "Polsek Kediri");
+        assert_eq!(deadline.units[0].subunits[0].findings, 2);
+        assert!(
+            deadline.units[0]
+                .details
+                .iter()
+                .all(|detail| detail.unit == "Polsek Kediri")
+        );
 
         let unit = |label: &str| {
             deadline

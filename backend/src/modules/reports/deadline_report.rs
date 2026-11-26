@@ -91,6 +91,20 @@ pub fn render_deadline_report(config: &Config, data: &DeadlineReportData<'_>) ->
                 .collect::<Vec<_>>()
                 .join(" · ")
         };
+        let subunits = if unit.subunits.is_empty() {
+            "—".to_string()
+        } else {
+            let mut parts: Vec<String> = unit
+                .subunits
+                .iter()
+                .take(8)
+                .map(|subunit| format!("{} ({})", subunit.label, subunit.findings))
+                .collect();
+            if unit.subunits.len() > 8 {
+                parts.push(format!("+{} satuan lainnya", unit.subunits.len() - 8));
+            }
+            parts.join(" · ")
+        };
         ranking_rows.push_str(&format!(
             "<tr class=\"{class}\">\
 <td class=\"num\">{number}</td>\
@@ -98,6 +112,7 @@ pub fn render_deadline_report(config: &Config, data: &DeadlineReportData<'_>) ->
 <td class=\"num\">{findings}</td>\
 <td class=\"num\">{rows}</td>\
 <td>{codes}</td>\
+<td>{subunits}</td>\
 <td class=\"num\">{percent}</td>\
 </tr>",
             class = if unit.findings == 0 { "muted" } else { "" },
@@ -106,6 +121,7 @@ pub fn render_deadline_report(config: &Config, data: &DeadlineReportData<'_>) ->
             findings = unit.findings,
             rows = unit.rows,
             codes = escape(&codes),
+            subunits = escape(&subunits),
             percent = format!("{:.2}%", unit.percent),
         ));
     }
@@ -186,14 +202,15 @@ pub fn render_deadline_report(config: &Config, data: &DeadlineReportData<'_>) ->
 {empty_rules}\
 <section class=\"ranking\">\
 <h2 class=\"section-title\">Peringkat polres</h2>\
-<p class=\"ranking-note\">Temuan = baris yang melewati batas; baris = jumlah baris yang diperiksa pada satuan; kode temuan = sebaran temuan per sub-kode; tepat waktu = persentase baris yang tidak melewati batas. Satuan tanpa laporan tetap ditampilkan.</p>\
+<p class=\"ranking-note\">Temuan = baris yang melewati batas; baris = jumlah baris yang diperiksa pada satuan; kode temuan = sebaran temuan per sub-kode; satuan dengan temuan = sebaran temuan per polsek/satuan pelapor; tepat waktu = persentase baris yang tidak melewati batas. Satuan tanpa laporan tetap ditampilkan.</p>\
 <table class=\"ranking-table\">\
 <colgroup>\
 <col style=\"width:4%\">\
-<col style=\"width:30%\">\
-<col style=\"width:10%\">\
-<col style=\"width:9%\">\
-<col style=\"width:37%\">\
+<col style=\"width:20%\">\
+<col style=\"width:7%\">\
+<col style=\"width:6%\">\
+<col style=\"width:18%\">\
+<col style=\"width:35%\">\
 <col style=\"width:10%\">\
 </colgroup>\
 <thead><tr>\
@@ -202,6 +219,7 @@ pub fn render_deadline_report(config: &Config, data: &DeadlineReportData<'_>) ->
 <th class=\"num\">Temuan</th>\
 <th class=\"num\">Baris</th>\
 <th>Kode temuan</th>\
+<th>Satuan dengan temuan</th>\
 <th class=\"num\">Tepat waktu</th>\
 </tr></thead>\
 <tbody>{ranking_rows}</tbody>\
@@ -293,7 +311,7 @@ mod tests {
         config::Config,
         modules::imports::models::{
             CoverageDeadlineCode, CoverageDeadlineReport, CoverageDeadlineRule,
-            CoverageDeadlineUnit,
+            CoverageDeadlineSubunit, CoverageDeadlineUnit,
         },
     };
 
@@ -320,6 +338,10 @@ mod tests {
                     code: "QW1.1".to_string(),
                     findings: 3,
                 }],
+                subunits: vec![CoverageDeadlineSubunit {
+                    label: "Polsek Contoh".to_string(),
+                    findings: 3,
+                }],
                 details: Vec::new(),
             }],
         }
@@ -344,6 +366,7 @@ mod tests {
         assert!(html.contains("Temuan Batas Waktu dan Peringkat Polres"));
         assert!(html.contains("Polres Contoh"));
         assert!(html.contains("QW1.1 (3)"));
+        assert!(html.contains("Polsek Contoh (3)"));
         assert!(html.contains("hanya QW1.1–QW1.8"));
         assert!(html.contains("QW4.1–QW4.3 tidak diikutkan"));
     }
